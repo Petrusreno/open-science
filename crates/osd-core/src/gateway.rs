@@ -743,6 +743,7 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str) {
             Ok(list) => respond_json(stream, 200, &serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())),
             Err(e) => respond_json(stream, 500, &err_json(&e)),
         },
+        ("POST", ["runs"]) => record_run(stream, req, ctx),
         ("GET", ["runs", "query"]) => {
             let q = req.query_get("q").unwrap_or_else(|| "{}".into());
             match serde_json::from_str::<crate::runs_index::RunQuery>(&q) {
@@ -756,6 +757,20 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str) {
         ("GET", ["runs", "log"]) => {
             let hash = req.query_get("hash").unwrap_or_default();
             match crate::runs::read_run_log(&ctx.env, &hash) {
+                Ok(text) => respond(stream, 200, "text/plain; charset=utf-8", text.as_bytes()),
+                Err(e) => respond_json(stream, 404, &err_json(&e)),
+            }
+        }
+        ("GET", ["provenance"]) => {
+            let path = req.query_get("path").unwrap_or_default();
+            match crate::provenance::list_provenance(&ctx.env, &path) {
+                Ok(list) => respond_json(stream, 200, &serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())),
+                Err(e) => respond_json(stream, 400, &err_json(&e)),
+            }
+        }
+        ("GET", ["provenance", "lockfile"]) => {
+            let hash = req.query_get("hash").unwrap_or_default();
+            match crate::provenance::read_env_lockfile(&ctx.env, &hash) {
                 Ok(text) => respond(stream, 200, "text/plain; charset=utf-8", text.as_bytes()),
                 Err(e) => respond_json(stream, 404, &err_json(&e)),
             }
@@ -779,6 +794,76 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str) {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunRecordRequest {
+    command: String,
+    session_id: String,
+    started_at: u64,
+    ended_at: u64,
+    status: String,
+    log: Option<String>,
+    surface: Option<String>,
+    model: Option<String>,
+}
+
+fn parse_run_record_request(body: &[u8]) -> Result<RunRecordRequest, String> {
+    let input: RunRecordRequest = serde_json::from_slice(body).map_err(|e| format!("bad run: {e}"))?;
+    if input.command.trim().is_empty() || input.session_id.trim().is_empty() {
+        return Err("run needs a command and sessionId".into());
+    }
+    if input.started_at == 0 || input.ended_at < input.started_at {
+        return Err("run needs a valid execution window".into());
+    }
+    if !matches!(input.status.as_str(), "ok" | "failed") {
+        return Err("run status must be ok or failed".into());
+    }
+    if input.surface.as_deref().is_some_and(|s| s != "local") {
+        return Err("gateway can only record local runs".into());
+    }
+    Ok(input)
+}
+
+/// Record the same local run/provenance pair as the Tauri bridge. The caller
+/// supplies the completed tool event; the sidecar supplies the session folder.
+fn record_run(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
+    let input = match parse_run_record_request(&req.body) {
+        Ok(v) => v,
+        Err(e) => return respond_json(stream, 400, &err_json(&e)),
+    };
+    let response = match upstream_get(ctx, &format!("/session/{}", enc(&input.session_id)), &[]) {
+        Ok(r) if r.status().is_success() => r,
+        _ => return respond_json(stream, 404, &err_json("session not found")),
+    };
+    let session: serde_json::Value = match response.bytes().ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+        Some(v) => v,
+        None => return respond_json(stream, 502, &err_json("invalid session reply")),
+    };
+    let Some(dir) = session.get("directory").and_then(|v| v.as_str()) else {
+        return respond_json(stream, 502, &err_json("session has no directory"));
+    };
+    let root = match session_dir(ctx, dir) {
+        Ok(v) => PathBuf::from(v),
+        Err(e) => return respond_json(stream, 403, &err_json(&e)),
+    };
+    let env = crate::provenance::capture_env(
+        &root, ctx.env.version().to_string(), Some(&input.command), None,
+    );
+    static RUN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let lock = RUN_LOCK.get_or_init(|| Mutex::new(()));
+    let Ok(_guard) = lock.lock() else {
+        return respond_json(stream, 500, &err_json("run lock poisoned"));
+    };
+    match crate::runs::record_run_inner(
+        &root, &input.command, input.log.as_deref(),
+        Some(input.started_at), Some(input.ended_at), &input.status,
+        Some("local".into()), Some(input.session_id), input.model, Some(env),
+    ) {
+        Ok(record) => respond_json(stream, 200, &serde_json::to_string(&record).unwrap_or_default()),
+        Err(e) => respond_json(stream, 500, &err_json(&e)),
+    }
+}
+
 /// Split "provider/model" into the `{providerID, modelID}` OpenCode expects.
 /// None when there is no separator, or either half is empty — a typo must be
 /// reported, never silently dropped into a default model.
@@ -791,8 +876,9 @@ fn split_model(model: &str) -> Option<serde_json::Value> {
 }
 
 /// Validate a caller-supplied session directory. Same rule as file access: it
-/// must sit under the base workspace, or BE a registered project's own folder
-/// (an in-place import lives outside the base). Anything else is refused —
+/// must sit under the base workspace, be the active workspace, or BE a
+/// registered project's own folder (an in-place import lives outside the base).
+/// Anything else is refused —
 /// creating a session elsewhere would point the agent at an arbitrary path.
 fn session_dir(ctx: &Ctx, dir: &str) -> Result<String, String> {
     let canon = PathBuf::from(dir)
@@ -804,7 +890,11 @@ fn session_dir(ctx: &Ctx, dir: &str) -> Result<String, String> {
     let base = crate::runtime::base_workspace_dir(&ctx.env)?
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    if canon.starts_with(&base) || crate::project::is_registered_project_path(&ctx.env, &canon) {
+    let active = workspace_dir(&ctx.env).ok().and_then(|p| p.canonicalize().ok());
+    if canon.starts_with(&base)
+        || active.as_ref() == Some(&canon)
+        || crate::project::is_registered_project_path(&ctx.env, &canon)
+    {
         return Ok(crate::artifact_file::native_path(&canon));
     }
     Err("directory is outside the workspace".into())
@@ -1518,6 +1608,14 @@ pub fn regenerate_gateway_token(env: &Env, state: &GatewayState) -> Result<Gatew
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_record_request_requires_a_session_and_bounded_execution() {
+        assert!(parse_run_record_request(br#"{"command":"python3 analysis.py","sessionId":"ses_123","startedAt":100,"endedAt":200,"status":"ok"}"#).is_ok());
+        assert!(parse_run_record_request(br#"{"command":"python3 analysis.py","startedAt":100,"endedAt":200,"status":"ok"}"#).is_err());
+        assert!(parse_run_record_request(br#"{"command":"python3 analysis.py","sessionId":"ses_123","startedAt":200,"endedAt":100,"status":"ok"}"#).is_err());
+        assert!(parse_run_record_request(br#"{"command":"python3 analysis.py","sessionId":"ses_123","startedAt":100,"endedAt":200,"status":"unknown"}"#).is_err());
+    }
 
     /// A gateway record with `port` set, in a throwaway data dir.
     fn env_with_recorded_port(name: &str, port: Option<u16>) -> (Env, PathBuf) {

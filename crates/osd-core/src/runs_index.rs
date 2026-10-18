@@ -11,7 +11,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use crate::env::Env;
 use crate::runs::RunRecord;
-use crate::runtime::base_workspace_dir;
+use crate::runtime::{base_workspace_dir, workspace_dir};
 
 const DB_FILE: &str = "runs.db";
 /// Bump to force a full rebuild when the schema or ingest logic changes.
@@ -145,7 +145,7 @@ fn get_wm(conn: &Connection, key: &str) -> i64 {
 /// workspaces under `projects/` and `sessions/`, plus legacy root-level
 /// workspaces. This is what makes the index GLOBAL — one DB over all sessions,
 /// with per-session views being just a `session_id` filter.
-fn source_files(base: &Path) -> Vec<PathBuf> {
+fn source_files(base: &Path, active: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = vec![base.to_path_buf()];
     if let Ok(entries) = std::fs::read_dir(base) {
         for e in entries.flatten() {
@@ -177,6 +177,12 @@ fn source_files(base: &Path) -> Vec<PathBuf> {
             .into_iter()
             .filter(|dir| !dir.starts_with(&base_canon)),
     );
+    // A headless server may select an explicit workspace outside the base
+    // without registering it as a project. Its completed runs still belong in
+    // the Runs viewer for this server.
+    if let Some(active) = active {
+        dirs.push(active.to_path_buf());
+    }
     dirs.sort();
     dirs.dedup();
     dirs.into_iter()
@@ -194,7 +200,11 @@ fn wm_key(path: &Path) -> String {
 /// nothing changed (a stat + watermark compare per file). If any log shrank
 /// (replaced/truncated), rebuild the whole index from zero.
 pub fn sync_index(conn: &Connection, base: &Path) -> Result<(), String> {
-    let files = source_files(base);
+    sync_index_with_active(conn, base, None)
+}
+
+fn sync_index_with_active(conn: &Connection, base: &Path, active: Option<&Path>) -> Result<(), String> {
+    let files = source_files(base, active);
     let shrank = files.iter().any(|p| {
         let size = std::fs::metadata(p).map(|m| m.len() as i64).unwrap_or(0);
         size < get_wm(conn, &wm_key(p))
@@ -398,13 +408,28 @@ pub fn query_runs_cmd(env: &Env, query: RunQuery) -> Result<RunPage, String> {
     // `sessionId` to narrow to its own runs.
     let base = base_workspace_dir(env)?;
     let conn = open_index(&base)?;
-    sync_index(&conn, &base)?;
+    let active = workspace_dir(env)?;
+    sync_index_with_active(&conn, &base, Some(&active))?;
     query_runs(&conn, &query)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn includes_an_explicit_active_workspace_outside_the_base() {
+        let base = temp_root("base-active");
+        let active = temp_root("external-active");
+        write_log(&active, RUNS_FILE, &[&rec("outside", 100, "ok", None, "python analysis.py")]);
+        let conn = open_index(&base).unwrap();
+        sync_index_with_active(&conn, &base, Some(&active)).unwrap();
+        let page = query_runs(&conn, &RunQuery::default()).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.rows[0].run_id, "outside");
+        std::fs::remove_dir_all(base).unwrap();
+        std::fs::remove_dir_all(active).unwrap();
+    }
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ai4s-runidx-{tag}-{}", std::process::id()));

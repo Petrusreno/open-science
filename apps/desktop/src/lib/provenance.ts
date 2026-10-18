@@ -5,6 +5,7 @@
 import type { ToolUpdatedEvent } from "@ai4s/sdk";
 import type { ProvenanceRecord } from "@ai4s/shared";
 import { isTauri, logDebug } from "./tauri";
+import { isGatewayWeb, gatewayGet } from "./webMode";
 import { deriveArtifact, parsePatchFiles } from "./artifacts";
 
 export interface ProvenanceInput {
@@ -108,6 +109,13 @@ export async function recordProvenance(
 
 /** All recorded versions of one artifact, oldest first ([] in browser dev). */
 export async function listProvenance(path: string): Promise<ProvenanceRecord[]> {
+  if (isGatewayWeb) {
+    try {
+      return (await gatewayGet<ProvenanceRecord[]>(`/v1/provenance?path=${encodeURIComponent(path)}`)) ?? [];
+    } catch {
+      return [];
+    }
+  }
   if (!isTauri) return [];
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -119,6 +127,13 @@ export async function listProvenance(path: string): Promise<ProvenanceRecord[]> 
 
 /** The captured `pip freeze` list for a package snapshot hash (null if unreadable). */
 export async function readEnvLockfile(hash: string): Promise<string | null> {
+  if (isGatewayWeb) {
+    try {
+      return await gatewayGet<string>(`/v1/provenance/lockfile?hash=${encodeURIComponent(hash)}`);
+    } catch {
+      return null;
+    }
+  }
   if (!isTauri) return null;
   try {
     const { invoke } = await import("@tauri-apps/api/core");

@@ -2005,6 +2005,7 @@ pub fn set_workspace(
     // Persisted and returned in native form — on Windows the verbatim `\\?\`
     // path `canonicalize()` produces matches nothing the sidecar reports (#76).
     let native = crate::artifact_file::native_path(&canon);
+    std::fs::create_dir_all(runtime_root(env)?).map_err(|e| e.to_string())?;
     std::fs::write(active_workspace_file(env)?, native.as_bytes()).map_err(|e| e.to_string())?;
 
     // Follow the active folder with the snapshot watcher so out-of-app edits
@@ -2638,6 +2639,27 @@ mod tests {
         assert!(root.join("sessions").is_dir());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn set_workspace_creates_runtime_dir_on_first_start() {
+        let (env, dir) = temp_env("first-workspace");
+        let workspace = dir.join("workspace");
+        assert!(!dir.join("runtime").exists());
+
+        let selected = super::set_workspace(&env, workspace.to_string_lossy().to_string())
+            .expect("a fresh state dir accepts a workspace");
+
+        assert_eq!(
+            selected,
+            crate::artifact_file::native_path(&workspace.canonicalize().unwrap())
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("runtime/active-workspace.txt")).unwrap(),
+            selected
+        );
+        assert_eq!(super::workspace_dir(&env).unwrap(), std::path::PathBuf::from(&selected));
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// The base layout belongs to the BASE folder only. `workspace_dir` returns

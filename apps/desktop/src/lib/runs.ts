@@ -7,7 +7,7 @@
 import type { RunArtifact, RunRecord } from "@ai4s/shared";
 import type { ToolUpdatedEvent } from "@ai4s/sdk";
 import { isTauri, logDebug } from "./tauri";
-import { isGatewayWeb, gatewayGet } from "./webMode";
+import { isGatewayWeb, gatewayGet, gatewayPost } from "./webMode";
 
 /** The compute surface a run targeted. Only "local" runs produce workspace
  *  files we can hash; remote surfaces are recorded honestly with their command
@@ -220,14 +220,23 @@ function fileList(files: RunArtifact[], cap = 6): string {
   return shown.join(", ") + more;
 }
 
-/** Append a run record (desktop only). Recording must never break the chat flow. */
+/** Append a run record. Recording must never break the chat flow. */
 export async function recordRun(
   input: RunInput,
   sessionId: string | undefined,
   model: string | null,
 ): Promise<void> {
-  if (!isTauri) return;
+  if (!isTauri && !isGatewayWeb) return;
   try {
+    if (isGatewayWeb) {
+      if (!sessionId) return;
+      await gatewayPost<RunRecord>("/v1/runs", {
+        ...input,
+        sessionId,
+        model,
+      });
+      return;
+    }
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("record_run", {
       command: input.command,
