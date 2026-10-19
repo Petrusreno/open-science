@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-19 23:06 · A successful run now returns an error if linking its output provenance fails, including the already-stored run ID; regression test confirms the partial ledger state. On the PR candidate, `cargo test -p osd-core --offline`: 242 passed, 1 ignored; `cargo check -p osd-cli --offline` passed. Run and provenance JSONL writes remain non-atomic.
+
 2026-10-13 23:58 · Custom endpoint probe retries `{base}/v1/models` when the entered root fails (#159): relay gateways like RunAPI serve an HTML console at `/models`, so model detection said "not JSON" and the saved base would have broken chat too; the probe now returns the corrected base and Settings rewrites the field. 2 new Rust tests, 1682 vitest green.
 
 2026-10-08 11:40 · No-root Linux install (#156): `scripts/install.sh` (curl | sh) installs `osd` or, with `--desktop`, the desktop app under $HOME; CI now attaches `open-science-desktop-<ver>-<target>.tar.gz` (the .deb payload). Verified as a non-root user on Ubuntu 22.04 containers with the 0.6.0 artifacts: osd serves HTTP 200; the desktop app runs from ~/.local/share with its WebKit and opencode sidecar; missing WebKitGTK is refused before download. AppImage stays off (tauri#8929).

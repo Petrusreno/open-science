@@ -354,10 +354,12 @@ pub fn record_run_inner(
     // Link the produced files to this run in provenance (their lineage shows
     // "produced by run X" + the reproduce recipe) — but only for a run that
     // SUCCEEDED. A failed run's partial/corrupt files are not trustworthy
-    // artifacts, so they don't get a "run"-produced version. Best-effort.
+    // artifacts, so they don't get a "run"-produced version. A write failure
+    // must reach the caller: the run was already stored, but its lineage is
+    // incomplete and must not be reported as a successful record operation.
     if status == "ok" && !outputs.is_empty() {
         let paths: Vec<String> = outputs.iter().map(|o| o.path.clone()).collect();
-        let _ = crate::provenance::link_run_outputs(
+        crate::provenance::link_run_outputs(
             root,
             &paths,
             session_id.clone(),
@@ -365,7 +367,8 @@ pub fn record_run_inner(
             Some(command.to_string()),
             env.clone(),
             run_id.clone(),
-        );
+        )
+        .map_err(|e| format!("run {run_id} stored, but output provenance failed: {e}"))?;
     }
     Ok(record)
 }
@@ -499,6 +502,43 @@ mod tests {
         assert_eq!(prov[0].tool, "run");
         assert_eq!(prov[0].run_id.as_deref(), Some(rec.run_id.as_str()));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reports_provenance_write_failure_after_storing_run() {
+        let root = temp_root("blocked-provenance");
+        let store = root.join(".openscience");
+        std::fs::create_dir_all(store.join("provenance.jsonl")).unwrap();
+        std::fs::write(
+            root.join("figure.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+        )
+        .unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let result = record_run_inner(
+            &root,
+            "python analysis.py",
+            None,
+            Some((now - 5) * 1000),
+            Some((now + 5) * 1000),
+            "ok",
+            Some("local".into()),
+            Some("ses_synthetic".into()),
+            None,
+            None,
+        );
+        let error = match result {
+            Ok(_) => panic!("a missing figure provenance record must not be reported as success"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("provenance open failed"), "{error}");
+        assert!(error.contains("run_"), "{error}");
+        // The first append already happened, so the caller needs to know that
+        // the run ledger may contain a partial record after this error.
+        assert_eq!(read_runs(&root).len(), 1);
         let _ = std::fs::remove_dir_all(root);
     }
 
