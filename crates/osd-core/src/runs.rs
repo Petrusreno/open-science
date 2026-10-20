@@ -253,13 +253,7 @@ fn append_run(root: &Path, record: &RunRecord) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("runs dir failed: {e}"))?;
     }
     let line = serde_json::to_string(record).map_err(|e| e.to_string())?;
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&file)
-        .map_err(|e| format!("runs open failed: {e}"))?;
-    writeln!(f, "{line}").map_err(|e| format!("runs write failed: {e}"))?;
+    crate::provenance::append_jsonl(&file, format!("{line}\n").as_bytes(), "runs")?;
     Ok(())
 }
 
@@ -308,14 +302,10 @@ pub fn record_run_inner(
     model: Option<String>,
     env: Option<EnvInfo>,
 ) -> Result<RunRecord, String> {
-    // Serialize the read/append/link sequence across the gateway and desktop
-    // callers. Both JSONL files are append-only, but retries of the same run
-    // must reuse its stored record and fill only missing provenance links.
-    static RECORD_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    let _record_guard = RECORD_LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .map_err(|_| "run record lock poisoned")?;
+    // Hold the workspace lock across deduplication, the run append, and output
+    // links. Desktop and gateway callers, including separate processes, share it.
+    let ledger_guard = crate::provenance::lock_ledger(root)?;
+    crate::provenance::validate_jsonl_tail(&runs_file(root), "runs")?;
 
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
     let start_ms = started_ms.unwrap_or(now_ms);
@@ -376,8 +366,9 @@ pub fn record_run_inner(
     // incomplete and must not be reported as a successful record operation.
     if record.status == "ok" && !record.outputs.is_empty() {
         let paths: Vec<String> = record.outputs.iter().map(|o| o.path.clone()).collect();
-        crate::provenance::link_run_outputs(
+        crate::provenance::link_run_outputs_locked(
             root,
+            &ledger_guard,
             &paths,
             record.session_id.clone(),
             record.model.clone(),
@@ -386,6 +377,10 @@ pub fn record_run_inner(
             record.run_id.clone(),
         )
         .map_err(|e| format!("run {} stored, but output provenance failed: {e}", record.run_id))?;
+    } else {
+        // Even a run without links must not report a successful retry while a
+        // previous provenance append is missing its line terminator.
+        crate::provenance::validate_jsonl_tail(&root.join(STORE_DIR).join("provenance.jsonl"), "provenance")?;
     }
     Ok(record)
 }
@@ -409,6 +404,160 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn child_records_same_run_under_workspace_lock() {
+        let Ok(root) = std::env::var("OSD_RUN_LEDGER_TEST_ROOT") else {
+            return;
+        };
+        let child = std::env::var("OSD_RUN_LEDGER_TEST_CHILD").unwrap();
+        let root = Path::new(&root);
+        std::fs::write(root.join(format!(".openscience/child-{child}-ready")), "ready").unwrap();
+        let now_ms: u64 = std::env::var("OSD_RUN_LEDGER_TEST_NOW").unwrap().parse().unwrap();
+        record_run_inner(
+            root,
+            "echo synthetic",
+            None,
+            Some(now_ms - 2_000),
+            Some(now_ms + 2_000),
+            "ok",
+            Some("local".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn separate_processes_do_not_duplicate_a_run() {
+        use std::time::{Duration, Instant};
+
+        let root = temp_root("process-dedup");
+        std::fs::write(root.join("output.csv"), "value\n1\n").unwrap();
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let guard = crate::provenance::lock_ledger(&root).unwrap();
+        let mut children: Vec<_> = (0..2)
+            .map(|i| {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .arg("--exact")
+                    .arg("runs::tests::child_records_same_run_under_workspace_lock")
+                    .env("OSD_RUN_LEDGER_TEST_ROOT", &root)
+                    .env("OSD_RUN_LEDGER_TEST_CHILD", i.to_string())
+                    .env("OSD_RUN_LEDGER_TEST_NOW", now_ms.to_string())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(0..2).all(|i| root.join(format!(".openscience/child-{i}-ready")).exists()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!((0..2).all(|i| root.join(format!(".openscience/child-{i}-ready")).exists()));
+        assert!(children.iter_mut().all(|child| child.try_wait().unwrap().is_none()));
+        drop(guard);
+        for child in &mut children {
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    panic!("run writer did not finish after the workspace lock was released");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let runs = read_runs(&root);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outputs.len(), 1);
+        assert_eq!(runs[0].outputs[0].path, "output.csv");
+        let links = crate::provenance::versions_for(&root, "output.csv").unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].run_id.as_deref(), Some(runs[0].run_id.as_str()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn authored_and_run_processes_serialize_versions_for_one_output() {
+        use std::time::{Duration, Instant};
+
+        let root = temp_root("mixed-writers");
+        std::fs::write(root.join("output.csv"), "value\n1\n").unwrap();
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let guard = crate::provenance::lock_ledger(&root).unwrap();
+        let mut authored = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("provenance::tests::child_append_waits_for_workspace_lock")
+            .env("OSD_LEDGER_TEST_ROOT", &root)
+            .env("OSD_LEDGER_TEST_PATH", "output.csv")
+            .spawn().unwrap();
+        let mut run = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("runs::tests::child_records_same_run_under_workspace_lock")
+            .env("OSD_RUN_LEDGER_TEST_ROOT", &root)
+            .env("OSD_RUN_LEDGER_TEST_CHILD", "mixed")
+            .env("OSD_RUN_LEDGER_TEST_NOW", now_ms.to_string())
+            .spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(root.join(".openscience/child-ready").exists() && root.join(".openscience/child-mixed-ready").exists()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(root.join(".openscience/child-ready").exists());
+        assert!(root.join(".openscience/child-mixed-ready").exists());
+        drop(guard);
+        for child in [&mut authored, &mut run] {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    panic!("mixed writer did not finish");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let versions = crate::provenance::versions_for(&root, "output.csv").unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!((versions[0].version, versions[1].version), (1, 2));
+        assert!(versions.iter().any(|v| v.tool == "write"));
+        assert!(versions.iter().any(|v| v.tool == "run"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unfinished_runs_tail_blocks_new_record_without_changing_bytes() {
+        use std::io::Write;
+
+        let root = temp_root("unfinished-tail");
+        record_run_inner(&root, "echo first", None, Some(100_000), Some(101_000), "ok", None, None, None, None).unwrap();
+        let file = root.join(".openscience/runs.jsonl");
+        std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b"{\"runId\":").unwrap();
+        let before = std::fs::read(&file).unwrap();
+        let error = record_run_inner(&root, "echo second", None, Some(200_000), Some(201_000), "ok", None, None, None, None).err().unwrap();
+        assert!(error.contains("unterminated JSONL tail"));
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        assert_eq!(read_runs(&root).len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn valid_run_without_newline_blocks_same_run_retry() {
+        let root = temp_root("valid-tail");
+        record_run_inner(&root, "echo first", None, Some(100_000), Some(101_000), "ok", None, None, None, None).unwrap();
+        let file = root.join(".openscience/runs.jsonl");
+        let mut before = std::fs::read(&file).unwrap();
+        before.pop();
+        std::fs::write(&file, &before).unwrap();
+        let error = record_run_inner(&root, "echo first", None, Some(100_000), Some(101_000), "ok", None, None, None, None).err().unwrap();
+        assert!(error.contains("unterminated JSONL tail"));
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -558,7 +707,7 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error.contains("provenance open failed"), "{error}");
+        assert!(error.contains("provenance read failed") || error.contains("provenance open failed"), "{error}");
         assert!(error.contains("run_"), "{error}");
         // The first append already happened, so the caller needs to know that
         // the run ledger may contain a partial record after this error.

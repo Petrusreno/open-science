@@ -4,7 +4,7 @@
 // environment, and originating conversation, per version.
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::env::Env;
@@ -15,14 +15,65 @@ const STORE_FILE: &str = "provenance.jsonl";
 /// Per-record content cap: keeps the store bounded; larger writes are truncated.
 const CONTENT_CAP: usize = 100_000;
 
-/// Serializes in-process writes to provenance.jsonl from the desktop and gateway.
-static PROVENANCE_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+/// One workspace lock covers run deduplication and provenance version assignment
+/// across desktop, gateway, and separate processes. Dropping the file unlocks it.
+pub(crate) struct LedgerGuard {
+    _file: std::fs::File,
+}
 
-fn lock_provenance_file() -> Result<MutexGuard<'static, ()>, String> {
-    PROVENANCE_FILE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .map_err(|_| "provenance file lock poisoned".to_string())
+pub(crate) fn lock_ledger(root: &Path) -> Result<LedgerGuard, String> {
+    let dir = root.join(STORE_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("ledger dir failed: {e}"))?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(dir.join("ledger.lock"))
+        .map_err(|e| format!("ledger lock open failed: {e}"))?;
+    file.lock().map_err(|e| format!("ledger lock failed: {e}"))?;
+    Ok(LedgerGuard { _file: file })
+}
+
+/// Never concatenate a new record onto a line left unfinished by a crash or
+/// short write. Keep the original bytes for an explicit, reviewable repair.
+pub(crate) fn append_jsonl(file: &Path, bytes: &[u8], kind: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(file)
+        .map_err(|e| format!("{kind} open failed: {e}"))?;
+    validate_jsonl_tail_open(&mut f, kind)?;
+    f.write_all(bytes).map_err(|e| format!("{kind} write failed: {e}"))
+}
+
+fn validate_jsonl_tail_open(f: &mut std::fs::File, kind: &str) -> Result<(), String> {
+    use std::io::{Read, Seek};
+
+    let len = f.metadata().map_err(|e| format!("{kind} read failed: {e}"))?.len();
+    if len > 0 {
+        f.seek(std::io::SeekFrom::End(-1))
+            .map_err(|e| format!("{kind} read failed: {e}"))?;
+        let mut last = [0];
+        f.read_exact(&mut last)
+            .map_err(|e| format!("{kind} read failed: {e}"))?;
+        if last[0] != b'\n' {
+            return Err(format!("{kind} has an unterminated JSONL tail; repair required"));
+        }
+    }
+    Ok(())
+}
+
+/// Call under the workspace ledger guard before any successful deduplication.
+pub(crate) fn validate_jsonl_tail(file: &Path, kind: &str) -> Result<(), String> {
+    let mut f = match std::fs::OpenOptions::new().read(true).open(file) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{kind} read failed: {e}")),
+    };
+    validate_jsonl_tail_open(&mut f, kind)
 }
 
 /// Serializes appends so two tool events can't interleave lines or race versions.
@@ -509,8 +560,9 @@ pub fn append_record(
     call_id: Option<String>,
 ) -> Result<ProvenanceRecord, String> {
     let rel = normalize_rel(root, path)?;
-    let _file_guard = lock_provenance_file()?;
+    let _ledger_guard = lock_ledger(root)?;
     let file = store_file(root);
+    validate_jsonl_tail(&file, "provenance")?;
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("provenance dir failed: {e}"))?;
     }
@@ -537,20 +589,14 @@ pub fn append_record(
         call_id,
     };
     let line = serde_json::to_string(&record).map_err(|e| e.to_string())?;
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&file)
-        .map_err(|e| format!("provenance open failed: {e}"))?;
-    writeln!(f, "{line}").map_err(|e| format!("provenance write failed: {e}"))?;
+    append_jsonl(&file, format!("{line}\n").as_bytes(), "provenance")?;
     Ok(record)
 }
 
 /// Append a `run`-produced version record for each of `paths` in ONE pass:
 /// reads the store once to compute per-path next versions, then writes all
 /// lines together. Used by runs.rs to link a run's outputs — a single read +
-/// write instead of one full store re-read per output. A process-wide file lock
+/// write instead of one full store re-read per output. The workspace ledger lock
 /// serializes this with authored writes and other run links.
 pub fn link_run_outputs(
     root: &Path,
@@ -564,8 +610,24 @@ pub fn link_run_outputs(
     if paths.is_empty() {
         return Ok(());
     }
-    let _file_guard = lock_provenance_file()?;
+    let ledger_guard = lock_ledger(root)?;
+    link_run_outputs_locked(root, &ledger_guard, paths, session_id, model, log, env, run_id)
+}
+
+/// Called by run recording while its workspace lock also protects runs.jsonl.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn link_run_outputs_locked(
+    root: &Path,
+    _ledger_guard: &LedgerGuard,
+    paths: &[String],
+    session_id: Option<String>,
+    model: Option<String>,
+    log: Option<String>,
+    env: Option<EnvInfo>,
+    run_id: String,
+) -> Result<(), String> {
     let file = store_file(root);
+    validate_jsonl_tail(&file, "provenance")?;
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("provenance dir failed: {e}"))?;
     }
@@ -611,13 +673,7 @@ pub fn link_run_outputs(
     if buf.is_empty() {
         return Ok(());
     }
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&file)
-        .map_err(|e| format!("provenance open failed: {e}"))?;
-    f.write_all(buf.as_bytes()).map_err(|e| format!("provenance write failed: {e}"))?;
+    append_jsonl(&file, buf.as_bytes(), "provenance")?;
     Ok(())
 }
 
@@ -658,7 +714,7 @@ pub fn read_lockfile(root: &Path, hash: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_record, cap_content, link_run_outputs, normalize_rel, versions_for, CONTENT_CAP,
+        append_record, cap_content, link_run_outputs, lock_ledger, normalize_rel, versions_for, CONTENT_CAP,
     };
 
     fn temp_root(tag: &str) -> std::path::PathBuf {
@@ -666,6 +722,92 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn child_append_waits_for_workspace_lock() {
+        let Ok(root) = std::env::var("OSD_LEDGER_TEST_ROOT") else {
+            return;
+        };
+        let root = std::path::Path::new(&root);
+        let path = std::env::var("OSD_LEDGER_TEST_PATH").unwrap_or_else(|_| "figure.svg".into());
+        std::fs::write(root.join(".openscience/child-ready"), "ready").unwrap();
+        append_record(root, &path, "write", None, None, None, None, None, None, None, None).unwrap();
+    }
+
+    #[test]
+    fn workspace_lock_excludes_a_separate_process() {
+        use std::time::{Duration, Instant};
+
+        let root = temp_root("process-lock");
+        let guard = lock_ledger(&root).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("provenance::tests::child_append_waits_for_workspace_lock")
+            .env("OSD_LEDGER_TEST_ROOT", &root)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !root.join(".openscience/child-ready").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(root.join(".openscience/child-ready").exists(), "child did not reach the append");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(child.try_wait().unwrap().is_none(), "child bypassed the workspace lock");
+        drop(guard);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                panic!("child did not finish after the workspace lock was released");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success());
+        assert_eq!(versions_for(&root, "figure.svg").unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unfinished_provenance_tail_blocks_append_without_changing_bytes() {
+        use std::io::Write;
+
+        let root = temp_root("unfinished-tail");
+        append_record(&root, "figure.svg", "write", None, None, None, None, None, None, None, None).unwrap();
+        let file = root.join(".openscience/provenance.jsonl");
+        std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b"{\"path\":").unwrap();
+        let before = std::fs::read(&file).unwrap();
+        let error = append_record(&root, "figure.svg", "write", None, None, None, None, None, None, None, None).err().unwrap();
+        assert!(error.contains("unterminated JSONL tail"));
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        assert_eq!(versions_for(&root, "figure.svg").unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn valid_record_without_newline_blocks_dedup_and_existing_link() {
+        let root = temp_root("valid-tail");
+        let record = append_record(&root, "figure.svg", "write", None, None, None, None, None, None, None, Some("call-1".into())).unwrap();
+        let file = root.join(".openscience/provenance.jsonl");
+        let mut before = std::fs::read(&file).unwrap();
+        before.pop();
+        std::fs::write(&file, &before).unwrap();
+        let error = append_record(&root, "figure.svg", "write", None, None, None, None, None, None, None, Some("call-1".into())).err().unwrap();
+        assert!(error.contains("unterminated JSONL tail"));
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        assert_eq!(record.version, 1);
+
+        std::fs::write(&file, format!("{}\n", String::from_utf8(before).unwrap())).unwrap();
+        link_run_outputs(&root, &["output.csv".into()], None, None, None, None, "run-1".into()).unwrap();
+        let mut before = std::fs::read(&file).unwrap();
+        before.pop();
+        std::fs::write(&file, &before).unwrap();
+        let error = link_run_outputs(&root, &["output.csv".into()], None, None, None, None, "run-1".into()).err().unwrap();
+        assert!(error.contains("unterminated JSONL tail"));
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
