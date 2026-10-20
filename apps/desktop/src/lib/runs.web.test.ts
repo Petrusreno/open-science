@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useToastStore } from "./toast";
 
 (window as unknown as { __OS_WEB__?: boolean }).__OS_WEB__ = true;
 Object.defineProperty(window, "location", {
@@ -20,6 +21,7 @@ describe("run recording in the web client", () => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
     localStorage.setItem("os_gateway_token", "synthetic-token");
+    useToastStore.setState({ toasts: [] });
   });
 
   it("posts a completed execution with its session and window to the gateway", async () => {
@@ -54,5 +56,19 @@ describe("run recording in the web client", () => {
   it("does not submit an unbound run", async () => {
     await recordRun({ command: "python3 analysis.py", status: "ok", surface: "local" }, undefined, null);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a visible warning when the gateway rejects run provenance", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: "run run_1 stored, but output provenance failed: disk full" }),
+    });
+
+    await recordRun({ command: "python3 analysis.py", status: "ok", surface: "local" }, "ses_1", null);
+
+    expect(useToastStore.getState().toasts.map((item) => item.message)).toContain(
+      "Run provenance could not be saved: run run_1 stored, but output provenance failed: disk full",
+    );
   });
 });

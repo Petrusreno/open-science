@@ -8,6 +8,7 @@ import type { RunArtifact, RunRecord } from "@ai4s/shared";
 import type { ToolUpdatedEvent } from "@ai4s/sdk";
 import { isTauri, logDebug } from "./tauri";
 import { isGatewayWeb, gatewayGet, gatewayPost } from "./webMode";
+import { toast } from "./toast";
 
 /** The compute surface a run targeted. Only "local" runs produce workspace
  *  files we can hash; remote surfaces are recorded honestly with their command
@@ -250,7 +251,9 @@ export async function recordRun(
     });
     void logDebug(`run ✓ ${input.command.slice(0, 60)}`);
   } catch (e) {
-    void logDebug(`run FAILED for ${input.command.slice(0, 60)}: ${e instanceof Error ? e.message : String(e)}`);
+    const detail = e instanceof Error ? e.message : String(e);
+    void logDebug(`run FAILED for ${input.command.slice(0, 60)}: ${detail}`);
+    toast.error(`Run provenance could not be saved: ${detail}`);
   }
 }
 
