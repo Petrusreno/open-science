@@ -278,12 +278,17 @@ fn read_run_file(path: &Path) -> Vec<RunRecord> {
 /// All recorded runs, newest first — local runs (`runs.jsonl`) merged with
 /// remote runs the skills recorded (`remote-runs.jsonl`), sorted by start time.
 pub fn read_runs(root: &Path) -> Vec<RunRecord> {
+    read_runs_checked(root).unwrap_or_default()
+}
+
+/// Built-in readers propagate transactional storage errors, never fall back.
+pub fn read_runs_checked(root: &Path) -> Result<Vec<RunRecord>, String> {
     let dir = root.join(STORE_DIR);
-    let mut v = read_run_file(&dir.join(RUNS_FILE));
+    let mut v = if crate::ledger::enabled(root) { crate::ledger::runs(root)? } else { read_run_file(&dir.join(RUNS_FILE)) };
     v.extend(read_run_file(&dir.join(REMOTE_RUNS_FILE)));
     // Newest first; sort is stable so same-ts records keep file order.
     v.sort_by_key(|r| std::cmp::Reverse(r.ts));
-    v
+    Ok(v)
 }
 
 /// Build and store a run record, linking each output file back to the run in
@@ -313,7 +318,9 @@ pub fn record_run_inner(
     // Millisecond precision so two identical commands a second apart don't
     // collide on the same run id.
     let run_id = run_id(command, start_ms);
-    let record = if let Some(stored) = read_run_file(&runs_file(root))
+    let transactional = crate::ledger::enabled(root);
+    let previous = if transactional { crate::ledger::runs(root)? } else { read_run_file(&runs_file(root)) };
+    let record = if let Some(stored) = previous
         .into_iter()
         .find(|stored| stored.run_id == run_id)
     {
@@ -354,9 +361,14 @@ pub fn record_run_inner(
             log_hash,
             env: env.clone(),
         };
-        append_run(root, &record)?;
+        if !transactional { append_run(root, &record)?; }
         record
     };
+
+    if transactional {
+        crate::ledger::commit_run(root, &record)?;
+        return Ok(record);
+    }
 
     // Link the produced files to this run in provenance (their lineage shows
     // "produced by run X" + the reproduce recipe) — but only for a run that
@@ -387,7 +399,7 @@ pub fn record_run_inner(
 
 /// Every run recorded in the active workspace, newest first.
 pub fn list_runs(env: &Env) -> Result<Vec<RunRecord>, String> {
-    Ok(read_runs(&workspace_dir(env)?))
+    read_runs_checked(&workspace_dir(env)?)
 }
 
 /// Read a run's captured stdout/stderr by its log hash.

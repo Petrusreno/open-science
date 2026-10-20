@@ -520,3 +520,58 @@ One line:
 **Use Tauri for a high-performance modern desktop shell, a bundled+isolated OpenCode as
 the Claude Code alternative layer, scientific skills and MCP as the research capability
 layer, and provenance/reviewer as the real moat of an open-source Claude Science alternative.**
+
+
+### Opt-in transactional local ledger v1
+
+The default remains JSONL. An integrator can explicitly call
+`osd_core::ledger::migrate_v1(workspace)` while the workspace is quiescent and
+all writers use the current core. There is deliberately no automatic upgrade,
+CLI activation command, or desktop toggle yet. Stage or disable direct JSONL
+consumers and older app versions before invoking this API. This is an opt-in
+incompatible storage switch, not a transparent JSONL projection.
+
+Migration holds the existing cross-process workspace ledger lock, strictly
+parses both local JSONL files (UTF-8, complete lines, typed records), rejects
+duplicate run IDs/provenance versions and successful runs missing output links,
+and imports runs, provenance, original source bytes and schema version in one
+SQLite transaction into `.openscience/ledger-v1.sqlite`. Original JSONL files
+are never rewritten or appended after activation; existing direct consumers
+can still read the exact pre-migration history, but cannot see new records.
+The traceability-review skill explicitly reports Check 3 unavailable in this
+mode instead of consulting frozen history. Remote skill writers still append
+`remote-runs.jsonl`; remote provenance is outside the local transaction contract.
+
+The DB is authoritative and must be backed up as data; it is **not** the
+rebuildable `.openscience/runs.db` index. Built-in artifact History, list-runs,
+and index ingestion read committed DB records after activation. Local run
+recording commits the immutable run snapshot and every successful output link
+in one transaction. Authored provenance writes use the same DB and workspace
+lock. Retries reuse the original run and existing links. Standalone link APIs
+are rejected in this mode; use run recording. Independent UI requests can span
+a commit and therefore are not a shared multi-request snapshot. The legacy
+`read_runs` Vec helper returns empty on storage failure; built-in list and
+index APIs propagate errors through their Result interfaces.
+
+An existing DB of unknown version, malformed DB, changed/missing legacy source,
+or incomplete migration causes readers and writers to fail closed, with no
+JSONL fallback. After an interrupted migration, rerun `migrate_v1`: SQLite
+recovers its rollback journal, and only a version-zero database with no schema
+objects can restart import. Unknown/nonempty partial states require operator
+review. Do not delete an activated DB to roll back: that would hide post-switch
+records. A downgrade/export utility is not implemented. Stop legacy/external
+writers before activation; source-byte checks detect later changes but cannot
+serialize uncooperative writers. Remote JSONL keeps its prior tolerant parsing.
+
+Durability contract: connections request SQLite `synchronous=FULL`; migration
+selects rollback journaling (`journal_mode=DELETE`), and acknowledged writes
+require a successful SQLite commit. Tests exercise process exit without Rust
+destructors during migration and a run write, then journal recovery on reopen.
+This establishes logical transaction visibility and process-crash recovery in
+local macOS tests, **not verified physical power-loss durability**. No storage
+fault injection, hardware cache/flush proof, directory-fsync proof, or macOS
+fullfsync evidence is supplied. Logs, environment lockfiles, and output artifact
+bytes are outside the transaction and retain their existing best-effort storage
+behavior; a committed provenance record is not proof those files are durable.
+Source-byte verification and DB reads currently scan the whole local history;
+this bounded implementation favors safety over large-ledger performance.

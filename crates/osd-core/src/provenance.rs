@@ -491,7 +491,7 @@ fn first_token(s: &str) -> String {
 
 /// Normalize an artifact path (absolute or relative, from tool input) to a
 /// workspace-relative `/`-separated key. Paths escaping the workspace are rejected.
-fn normalize_rel(root: &Path, path: &str) -> Result<String, String> {
+pub(crate) fn normalize_rel(root: &Path, path: &str) -> Result<String, String> {
     let p = Path::new(path);
     let rel: PathBuf = if p.is_absolute() {
         let stripped = match (p.canonicalize(), root.canonicalize()) {
@@ -531,6 +531,11 @@ fn read_all(file: &Path) -> Vec<ProvenanceRecord> {
         .collect()
 }
 
+fn read_records(root: &Path) -> Result<Vec<ProvenanceRecord>, String> {
+    if crate::ledger::enabled(root) { crate::ledger::provenance(root) }
+    else { Ok(read_all(&store_file(root))) }
+}
+
 fn cap_content(mut c: String) -> String {
     if c.len() > CONTENT_CAP {
         let mut end = CONTENT_CAP;
@@ -561,16 +566,20 @@ pub fn append_record(
 ) -> Result<ProvenanceRecord, String> {
     let rel = normalize_rel(root, path)?;
     let _ledger_guard = lock_ledger(root)?;
+    if crate::ledger::enabled(root) && (tool == "run" || run_id.is_some()) {
+        return Err("transactional ledger requires record_run_inner for atomic links".into());
+    }
     let file = store_file(root);
     validate_jsonl_tail(&file, "provenance")?;
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("provenance dir failed: {e}"))?;
     }
-    let existing: Vec<ProvenanceRecord> = read_all(&file).into_iter().filter(|r| r.path == rel).collect();
+    let existing: Vec<ProvenanceRecord> = read_records(root)?.into_iter().filter(|r| r.path == rel).collect();
     if let Some(done) = existing.iter().find(|r| call_id.is_some() && r.call_id == call_id) {
         return Ok(done.clone());
     }
-    let version = existing.iter().map(|r| r.version).max().unwrap_or(0) + 1;
+    let version = existing.iter().map(|r| r.version).max().unwrap_or(0)
+        .checked_add(1).ok_or("provenance version overflow")?;
     let record = ProvenanceRecord {
         path: rel,
         version,
@@ -588,6 +597,10 @@ pub fn append_record(
         run_id,
         call_id,
     };
+    if crate::ledger::enabled(root) {
+        crate::ledger::append(root, &record)?;
+        return Ok(record);
+    }
     let line = serde_json::to_string(&record).map_err(|e| e.to_string())?;
     append_jsonl(&file, format!("{line}\n").as_bytes(), "provenance")?;
     Ok(record)
@@ -626,6 +639,9 @@ pub(crate) fn link_run_outputs_locked(
     env: Option<EnvInfo>,
     run_id: String,
 ) -> Result<(), String> {
+    if crate::ledger::enabled(root) {
+        return Err("transactional ledger requires record_run_inner for atomic links".into());
+    }
     let file = store_file(root);
     validate_jsonl_tail(&file, "provenance")?;
     if let Some(dir) = file.parent() {
@@ -680,7 +696,7 @@ pub(crate) fn link_run_outputs_locked(
 /// All recorded versions of one artifact, oldest first.
 pub fn versions_for(root: &Path, path: &str) -> Result<Vec<ProvenanceRecord>, String> {
     let rel = normalize_rel(root, path)?;
-    let mut v: Vec<ProvenanceRecord> = read_all(&store_file(root))
+    let mut v: Vec<ProvenanceRecord> = read_records(root)?
         .into_iter()
         .filter(|r| r.path == rel)
         .collect();

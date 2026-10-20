@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-20 19:09 · Added explicit ledger-v1 SQLite migration with atomic local run/output links, strict preserved-JSONL import, process-crash recovery tests, transactional built-in readers, and a frozen-JSONL compatibility gate; macOS osd-core 277 passed (1 existing ignored), CLI check passed, and physical power-loss durability remains unverified.
+
 2026-10-20 18:42 · Workspace ledger writes now use a cross-process file lock for run deduplication and provenance versions; unfinished JSONL tails fail closed before retry success, with 270 osd-core tests passing on macOS. The two ledgers remain non-atomic and native Windows/Linux validation is pending.
 
 2026-10-20 10:30 · Specialists (#144): Skills page gains a Specialists section and editor — name, color, when to use, instructions, skills (all / only selected) and per-connector switches — saved as OpenCode subagent files in the app profile (`agent/<id>.md`, JSON frontmatter + marker; hand-written agent files are listed but never rewritten). Verified on the bundled 1.18.32: skill allow/deny order, `<server>_*` connector deny and empty prompt all load; one invalid agent file 400s every request, so Rust validates before writing. Screenshot-checked light/dark/phone; vitest 1771, osd-core 261 green.

@@ -4,7 +4,9 @@
 // watermark — and serves fast, keyset-paginated, faceted, searched queries that
 // scale to hundreds of thousands of runs without loading the whole log into
 // memory. Only the app writes the DB (never the skills/helper), so there is no
-// migration and no cross-process write contention.
+// migration and no cross-process write contention. Explicit ledger-v1 opt-in
+// replaces the local JSONL input with committed SQLite ledger records; the
+// index remains disposable and remote JSONL ingestion stays unchanged.
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
@@ -214,7 +216,20 @@ fn sync_index_with_active(conn: &Connection, base: &Path, active: Option<&Path>)
         conn.execute("DELETE FROM meta WHERE key LIKE 'wm:%'", []).map_err(|e| e.to_string())?;
     }
     for p in &files {
-        ingest_source(conn, p, &wm_key(p))?;
+        let root = p.parent().and_then(Path::parent).ok_or("invalid ledger source")?;
+        if p.file_name().is_some_and(|name| name == RUNS_FILE) && crate::ledger::enabled(root) {
+            // Never ingest the frozen local JSONL after explicit activation.
+            // Validation errors abort the query instead of serving a stale index.
+            let records = crate::ledger::runs(root)?;
+            let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            for rec in records {
+                let json = serde_json::to_string(&rec).map_err(|e| e.to_string())?;
+                tx.execute("INSERT OR IGNORE INTO runs(run_id,ts,status,surface,session_id,command,json) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![rec.run_id, rec.ts as i64, rec.status, rec.surface.unwrap_or_else(|| "local".into()), rec.session_id, rec.command, json]).map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())?;
+        } else {
+            ingest_source(conn, p, &wm_key(p))?;
+        }
     }
     Ok(())
 }
