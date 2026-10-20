@@ -1,6 +1,6 @@
 # Progress
 
-2026-10-20 19:09 · Added explicit ledger-v1 SQLite migration with atomic local run/output links, strict preserved-JSONL import, process-crash recovery tests, transactional built-in readers, and a frozen-JSONL compatibility gate; macOS osd-core 277 passed (1 existing ignored), CLI check passed, and physical power-loss durability remains unverified.
+2026-10-20 19:09 · Added explicit ledger-v1 SQLite migration with atomic local run/output links, strict preserved-JSONL import, process-crash recovery tests, transactional built-in readers, and a frozen-JSONL compatibility gate; macOS osd-core 280 passed (1 existing ignored), CLI check passed, and physical power-loss durability remains unverified.
 
 2026-10-20 18:42 · Workspace ledger writes now use a cross-process file lock for run deduplication and provenance versions; unfinished JSONL tails fail closed before retry success, with 270 osd-core tests passing on macOS. The two ledgers remain non-atomic and native Windows/Linux validation is pending.
 

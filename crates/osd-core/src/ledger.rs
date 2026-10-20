@@ -335,6 +335,7 @@ mod tests {
         assert!(crate::runs::read_runs_checked(&root).is_err());
         assert!(crate::provenance::versions_for(&root, "authored.py").is_err());
         assert!(crate::runs_index::sync_index(&conn, &root).is_err());
+        drop(conn);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -380,6 +381,148 @@ mod tests {
                 1
             );
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sqlite_insert_failure_rolls_back_public_run_and_links() {
+        let root = root("sql-failure");
+        migrate_v1(&root).unwrap();
+        std::fs::write(root.join("one.csv"), b"one").unwrap();
+        std::fs::write(root.join("two.csv"), b"two").unwrap();
+        let conn = Connection::open(db_path(&root)).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_second_link BEFORE INSERT ON provenance
+             WHEN NEW.json LIKE '%two.csv%'
+             BEGIN SELECT RAISE(FAIL, 'injected second link failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+        let end = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 1_000;
+        let record = || {
+            crate::runs::record_run_inner(
+                &root,
+                "echo outputs",
+                None,
+                Some(1),
+                Some(end),
+                "ok",
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        let error = match record() {
+            Ok(_) => panic!("injected insert failure must reject the whole run"),
+            Err(error) => error,
+        };
+        assert!(error.contains("injected second link failure"));
+        assert!(runs(&root).unwrap().is_empty());
+        assert!(provenance(&root).unwrap().is_empty());
+        let conn = Connection::open(db_path(&root)).unwrap();
+        conn.execute_batch("DROP TRIGGER reject_second_link").unwrap();
+        drop(conn);
+        let saved = record().unwrap();
+        assert_eq!(saved.outputs.len(), 2);
+        assert_eq!(runs(&root).unwrap().len(), 1);
+        assert_eq!(provenance(&root).unwrap().len(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preexisting_index_transitions_to_committed_runs_and_remote_log() {
+        let root = root("index-transition");
+        record(&root, 1_000);
+        let conn = crate::runs_index::open_index(&root).unwrap();
+        crate::runs_index::sync_index(&conn, &root).unwrap();
+        assert_eq!(crate::runs_index::query_runs(&conn, &Default::default()).unwrap().total, 1);
+        migrate_v1(&root).unwrap();
+        record(&root, 2_000);
+        let remote = serde_json::json!({
+            "runId": "remote-test", "ts": 3, "command": "remote",
+            "status": "ok", "outputs": []
+        });
+        std::fs::write(root.join(".openscience/remote-runs.jsonl"), format!("{remote}\n")).unwrap();
+        for _ in 0..2 {
+            crate::runs_index::sync_index(&conn, &root).unwrap();
+            assert_eq!(crate::runs_index::query_runs(&conn, &Default::default()).unwrap().total, 3);
+        }
+        drop(conn);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn migrated_writers_in_separate_processes_keep_one_run_and_contiguous_versions() {
+        use std::time::{Duration, Instant};
+
+        let root = root("process-writers");
+        std::fs::write(root.join("output.csv"), b"value\n1\n").unwrap();
+        migrate_v1(&root).unwrap();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let guard = crate::provenance::lock_ledger(&root).unwrap();
+        let mut children: Vec<_> = (0..2)
+            .map(|i| {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .arg("--exact")
+                    .arg("runs::tests::child_records_same_run_under_workspace_lock")
+                    .env("OSD_RUN_LEDGER_TEST_ROOT", &root)
+                    .env("OSD_RUN_LEDGER_TEST_CHILD", i.to_string())
+                    .env("OSD_RUN_LEDGER_TEST_NOW", now_ms.to_string())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        children.push(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("provenance::tests::child_append_waits_for_workspace_lock")
+                .env("OSD_LEDGER_TEST_ROOT", &root)
+                .env("OSD_LEDGER_TEST_PATH", "output.csv")
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !(root.join(".openscience/child-0-ready").exists()
+            && root.join(".openscience/child-1-ready").exists()
+            && root.join(".openscience/child-ready").exists())
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(guard);
+        for child in &mut children {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("migrated writer did not finish");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let runs = runs(&root).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outputs.len(), 1);
+        assert_eq!(runs[0].outputs[0].path, "output.csv");
+        let mut versions = crate::provenance::versions_for(&root, "output.csv").unwrap();
+        versions.sort_by_key(|record| record.version);
+        assert_eq!(versions.len(), 2);
+        assert_eq!((versions[0].version, versions[1].version), (1, 2));
+        assert!(versions.iter().any(|record| record.tool == "write"));
+        assert!(versions.iter().any(|record| record.tool == "run"));
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

@@ -75,7 +75,7 @@ implementation does not redesign remote lineage or run-ID generation.
 Executed on macOS/Darwin, without desktop launch, providers, installed-app
 changes, pushes, or PRs:
 
-- `cargo test -p osd-core --offline`: exit 0; **277 passed, 0 failed, 1 ignored**;
+- `cargo test -p osd-core --offline`: initial worker run 277 passed; coordinator follow-up run **280 passed, 0 failed, 1 ignored**;
   doc tests 0. The existing ignored test is
   `system_proxy::tests::live_system_proxy_matches_expectation`.
 - New ledger tests cover preserved preexisting JSONL import, imported run links,
@@ -85,6 +85,12 @@ changes, pushes, or PRs:
   standalone-link rejection, corrupt sources, unknown partial migration, missing
   legacy links, interrupted migration recovery, and a real child-process exit
   before commit while a separate reader sees no uncommitted run.
+- Coordinator follow-up added a migrated three-process same-run/authored-writer
+  regression, rollback after an injected SQLite failure on the second output
+  link through `record_run_inner`, and index transition from a preexisting
+  `runs.db` with later local and remote runs. It also closes the index connection
+  before fixture cleanup on Windows. All three new tests passed on macOS;
+  native Windows/Linux validation remains pending.
 - `cargo check -p osd-cli --offline`: exit 0. Build warning: desktop web `dist`
   is absent, so no web client is embedded; a deployable web bundle is untested.
 - `cargo run -p osd-cli --offline -- --help`: exit 0; help returns without
