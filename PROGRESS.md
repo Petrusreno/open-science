@@ -2,7 +2,7 @@
 
 2026-10-19 23:06 · A successful run now returns an error if linking its output provenance fails, including the already-stored run ID; regression test confirms the partial ledger state. On the PR candidate, `cargo test -p osd-core --offline`: 242 passed, 1 ignored; `cargo check -p osd-cli --offline` passed. Run and provenance JSONL writes remain non-atomic.
 
-2026-10-20 · The desktop now shows a toast when run/provenance recording fails, while keeping chat execution non-blocking. The gateway web regression test verifies the HTTP 500 detail is visible. `pnpm --filter @ai4s/desktop test -- src/lib/runs.test.ts src/lib/runs.web.test.ts`: 22 passed. `typecheck` remains unverified: the reused checkout dependencies lack `@agentclientprotocol/sdk` and produced errors in ACP tests; no changed file was named. `git diff --check` passed.
+2026-10-20 · The desktop now shows a toast when run/provenance recording fails, while keeping chat execution non-blocking. The gateway web regression test verifies the HTTP 500 detail is visible. `pnpm --filter @ai4s/desktop test -- src/lib/runs.test.ts src/lib/runs.web.test.ts`: 22 passed; `pnpm --filter @ai4s/desktop typecheck` and `git diff --check` passed.
 
 2026-10-13 23:58 · Custom endpoint probe retries `{base}/v1/models` when the entered root fails (#159): relay gateways like RunAPI serve an HTML console at `/models`, so model detection said "not JSON" and the saved base would have broken chat too; the probe now returns the corrected base and Settings rewrites the field. 2 new Rust tests, 1682 vitest green.
 
