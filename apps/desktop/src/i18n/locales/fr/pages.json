@@ -124,9 +124,8 @@
       "kind": "Spécialiste",
       "name": "Nom",
       "namePlaceholder": "ex. Stats reviewer",
-      "idHint": "Enregistré sous un identifiant court en lettres latines et chiffres.",
+      "idHint": "Enregistré sous un identifiant court tiré du nom.",
       "idPreview": "Enregistré sous {{id}}",
-      "idLatin": "Utilisez des lettres latines ou des chiffres dans le nom : il devient l’identifiant.",
       "idTaken": "Un agent nommé {{id}} existe déjà.",
       "color": "Couleur",
       "colors": {
@@ -160,12 +159,9 @@
       "skillMissing": "N’est plus installé",
       "connectors": "Connecteurs",
       "connectorsHint": "Les connecteurs ajoutés plus tard sont activés jusqu’à ce que vous les désactiviez ici.",
-      "noConnectors": "Aucun connecteur configuré.",
-      "openConnectors": "Ajouter des connecteurs",
+      "noConnectors": "Aucun connecteur configuré. Ajoutez-en dans Réglages › Connecteurs.",
       "connectorCollision": "Désactiver {{blocked}} désactiverait aussi {{other}}. Désactivez les deux, ou laissez {{blocked}} activé.",
-      "modelDefault": "Utilise le modèle par défaut.",
-      "modelPinned": "Utilise {{model}}.",
-      "modelLink": "Modifier dans Réglages › Modèles",
+      "modelDefault": "Modèle par défaut",
       "create": "Créer le spécialiste",
       "save": "Enregistrer",
       "saving": "Enregistrement et redémarrage du runtime…",
@@ -178,7 +174,11 @@
       "discard": "Abandonner",
       "created": "{{id}} créé. L’agent principal peut maintenant lui confier du travail.",
       "saved": "{{id}} enregistré.",
-      "deleted": "{{id}} supprimé."
+      "deleted": "{{id}} supprimé.",
+      "idEmpty": "Le nom doit contenir au moins une lettre ou un chiffre : il devient l’identifiant.",
+      "model": "Modèle",
+      "modelDefaultNamed": "Modèle par défaut ({{model}})",
+      "modelUnlisted": "{{model}} (absent du catalogue)"
     }
   },
   "notFound": {

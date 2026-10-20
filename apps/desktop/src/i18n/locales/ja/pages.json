@@ -123,10 +123,9 @@
       "untitled": "名前のないスペシャリスト",
       "kind": "スペシャリスト",
       "name": "名前",
-      "namePlaceholder": "例: Stats reviewer",
-      "idHint": "英字と数字の短い ID として保存されます。",
+      "namePlaceholder": "例：統計レビュー",
+      "idHint": "名前から短い ID を作って保存します。",
       "idPreview": "{{id}} として保存",
-      "idLatin": "名前に英字か数字を含めてください。ID になります。",
       "idTaken": "{{id}} という名前のエージェントがすでにあります。",
       "color": "色",
       "colors": {
@@ -160,12 +159,9 @@
       "skillMissing": "インストールされていません",
       "connectors": "コネクタ",
       "connectorsHint": "後から追加したコネクタは、ここでオフにするまでオンです。",
-      "noConnectors": "コネクタが設定されていません。",
-      "openConnectors": "コネクタを追加",
+      "noConnectors": "コネクタが設定されていません。設定 › コネクタ で追加できます。",
       "connectorCollision": "{{blocked}} をオフにすると {{other}} もオフになります。両方オフにするか、{{blocked}} をオンのままにしてください。",
-      "modelDefault": "既定のモデルで動きます。",
-      "modelPinned": "{{model}} で動きます。",
-      "modelLink": "設定 › モデル で変更",
+      "modelDefault": "デフォルトのモデル",
       "create": "スペシャリストを作成",
       "save": "保存",
       "saving": "保存してランタイムを再起動しています…",
@@ -178,7 +174,11 @@
       "discard": "破棄",
       "created": "{{id}} を作成しました。メインエージェントが作業を任せられます。",
       "saved": "{{id}} を保存しました。",
-      "deleted": "{{id}} を削除しました。"
+      "deleted": "{{id}} を削除しました。",
+      "idEmpty": "名前には文字か数字を 1 つ以上含めてください。ID になります。",
+      "model": "モデル",
+      "modelDefaultNamed": "デフォルトのモデル（{{model}}）",
+      "modelUnlisted": "{{model}}（カタログにありません）"
     }
   },
   "notFound": {

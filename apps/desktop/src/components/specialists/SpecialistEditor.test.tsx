@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { McpServer, SkillInfo } from "@ai4s/sdk";
+import type { McpServer, ProviderInfo, SkillInfo } from "@ai4s/sdk";
 import type { Specialist } from "@/lib/specialists";
 import { SpecialistEditor } from "./SpecialistEditor";
 
@@ -17,6 +17,16 @@ const connectors: McpServer[] = [
   { name: "pubmed_central", status: "connected" },
   { name: "arxiv", status: "disabled" },
 ];
+const providers = [
+  {
+    id: "openai",
+    name: "OpenAI",
+    models: [
+      { id: "gpt-5", name: "GPT-5" },
+      { id: "gpt-5-mini", name: "GPT-5 mini" },
+    ],
+  },
+] as unknown as ProviderInfo[];
 const onSave = vi.fn(async (_s: Specialist, _create: boolean) => {});
 const onDelete = vi.fn(async (_id: string) => {});
 const onClose = vi.fn();
@@ -29,6 +39,7 @@ function open(initial: Specialist | null = null) {
         takenIds={["build", "reviewer"]}
         skills={skills}
         connectors={connectors}
+        providers={providers}
         onSave={onSave}
         onDelete={onDelete}
         onClose={onClose}
@@ -44,6 +55,7 @@ const existing: Specialist = {
   instructions: "Be strict.",
   skills: ["r-stats"],
   blockedConnectors: ["arxiv"],
+  model: "",
 };
 
 beforeEach(() => {
@@ -68,9 +80,36 @@ describe("SpecialistEditor", () => {
         instructions: "",
         skills: null,
         blockedConnectors: [],
+        model: "",
       },
       true,
     );
+  });
+
+  it("takes a name in any script as its id", async () => {
+    const user = userEvent.setup();
+    open();
+    await user.type(screen.getByLabelText("Name"), "论文写作");
+    expect(screen.getByText("Saved as 论文写作")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("When to use"), "Writes papers");
+    await user.click(screen.getByRole("button", { name: "Create specialist" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ id: "论文写作" }), true);
+  });
+
+  it("picks its model in place, without leaving the draft", async () => {
+    const user = userEvent.setup();
+    open(existing);
+    const picker = screen.getByLabelText("Model");
+    expect(picker).toHaveValue("");
+    await user.selectOptions(picker, "openai/gpt-5-mini");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith({ ...existing, model: "openai/gpt-5-mini" }, false);
+  });
+
+  it("keeps a pinned model the catalog no longer lists", () => {
+    open({ ...existing, model: "gone/old-model" });
+    expect(screen.getByLabelText("Model")).toHaveValue("gone/old-model");
+    expect(screen.getByRole("option", { name: "gone/old-model (not in the catalog)" })).toBeInTheDocument();
   });
 
   it("says a name is taken or unusable as it is typed, and refuses to save", async () => {
@@ -79,8 +118,8 @@ describe("SpecialistEditor", () => {
     await user.type(screen.getByLabelText("Name"), "Reviewer");
     expect(screen.getByText("An agent called reviewer already exists.")).toBeInTheDocument();
     await user.clear(screen.getByLabelText("Name"));
-    await user.type(screen.getByLabelText("Name"), "统计");
-    expect(screen.getByText(/Use English letters or digits/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Name"), "！？");
+    expect(screen.getByText(/at least one letter or digit/)).toBeInTheDocument();
     await user.type(screen.getByLabelText("When to use"), "x");
     await user.click(screen.getByRole("button", { name: "Create specialist" }));
     expect(onSave).not.toHaveBeenCalled();

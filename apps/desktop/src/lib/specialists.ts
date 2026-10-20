@@ -18,6 +18,8 @@ export interface Specialist {
   skills: string[] | null;
   /** Connector tool-name prefixes it may not use (see `connectorPrefix`). */
   blockedConnectors: string[];
+  /** `provider/model` it runs on; "" follows the default model. */
+  model: string;
 }
 
 export const MAX_ID = 48;
@@ -41,18 +43,21 @@ export const SPECIALIST_COLORS = [
   { key: "magenta", hex: "#DB2777" },
 ] as const;
 
-/** A typed name → the id it is saved under: `Stats reviewer` → `stats-reviewer`.
- *  Accents fold to their letter; anything else outside `[a-z0-9]` becomes one
- *  hyphen. A name with no Latin letters or digits yields "" (the editor then
- *  asks for one). */
+/** A typed name → the id it is saved under: `Stats reviewer` → `stats-reviewer`,
+ *  `论文写作` → `论文写作`. Letters and digits of any script stay (the runtime
+ *  takes them as agent names), lower-cased; accents on Latin letters fold
+ *  (`Méthodes` → `methodes`); every other run of characters becomes one hyphen.
+ *  Same rule as `valid_id` on the Rust side (`is_alphanumeric`, not uppercase).
+ *  A name with no letters or digits at all yields "". */
 export function specialistId(name: string): string {
   const id = name
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
+    .normalize("NFKD")
+    .replace(/(\p{Script=Latin})\p{M}+/gu, "$1")
+    .normalize("NFC")
+    .replace(/[^\p{Alphabetic}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "");
-  return id.slice(0, MAX_ID).replace(/-+$/, "");
+  return Array.from(id).slice(0, MAX_ID).join("").replace(/-+$/, "");
 }
 
 /** The prefix the runtime gives a connector's tools (`<server>_<tool>`, with
@@ -80,5 +85,5 @@ export function connectorCollisions(blocked: string[], allowed: string[]): Array
 
 /** Initial for the avatar tile: the id's first character, upper-cased. */
 export function specialistInitial(id: string): string {
-  return (id.trim()[0] ?? "?").toUpperCase();
+  return (Array.from(id.trim())[0] ?? "?").toUpperCase();
 }

@@ -124,9 +124,8 @@
       "kind": "Especialista",
       "name": "Nombre",
       "namePlaceholder": "p. ej. Stats reviewer",
-      "idHint": "Se guarda como un ID corto con letras latinas y dígitos.",
+      "idHint": "Se guarda como un ID corto a partir del nombre.",
       "idPreview": "Se guarda como {{id}}",
-      "idLatin": "Usa letras latinas o dígitos en el nombre: se convierte en el ID.",
       "idTaken": "Ya existe un agente llamado {{id}}.",
       "color": "Color",
       "colors": {
@@ -160,12 +159,9 @@
       "skillMissing": "Ya no está instalada",
       "connectors": "Conectores",
       "connectorsHint": "Los conectores que añadas después estarán activados hasta que los desactives aquí.",
-      "noConnectors": "No hay conectores configurados.",
-      "openConnectors": "Añadir conectores",
+      "noConnectors": "No hay conectores configurados. Añádelos en Ajustes › Conectores.",
       "connectorCollision": "Desactivar {{blocked}} también desactivaría {{other}}. Desactiva ambos o deja {{blocked}} activado.",
-      "modelDefault": "Usa el modelo predeterminado.",
-      "modelPinned": "Usa {{model}}.",
-      "modelLink": "Cambiar en Ajustes › Modelos",
+      "modelDefault": "Modelo predeterminado",
       "create": "Crear especialista",
       "save": "Guardar",
       "saving": "Guardando y reiniciando el runtime…",
@@ -178,7 +174,11 @@
       "discard": "Descartar",
       "created": "{{id}} creado. El agente principal ya puede pasarle trabajo.",
       "saved": "{{id}} guardado.",
-      "deleted": "{{id}} eliminado."
+      "deleted": "{{id}} eliminado.",
+      "idEmpty": "El nombre necesita al menos una letra o un dígito: se convierte en el ID.",
+      "model": "Modelo",
+      "modelDefaultNamed": "Modelo predeterminado ({{model}})",
+      "modelUnlisted": "{{model}} (no está en el catálogo)"
     }
   },
   "notFound": {

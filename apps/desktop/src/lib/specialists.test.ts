@@ -9,15 +9,26 @@ describe("specialistId", () => {
     expect(specialistId("R2D2")).toBe("r2d2");
   });
 
-  it("yields nothing for a name without Latin letters or digits", () => {
-    expect(specialistId("统计审稿人")).toBe("");
+  it("keeps letters of any script, as the runtime does", () => {
+    expect(specialistId("论文写作")).toBe("论文写作");
+    expect(specialistId("论文 写作 v2")).toBe("论文-写作-v2");
+    expect(specialistId("データ解析")).toBe("データ解析");
+    expect(specialistId("ガイド")).toBe("ガイド"); // voiced marks survive the accent fold
+    expect(specialistId("논문 작성")).toBe("논문-작성");
+    expect(specialistId("İstatistik")).toBe("istatistik");
+  });
+
+  it("yields nothing for a name without letters or digits", () => {
     expect(specialistId("---")).toBe("");
+    expect(specialistId("！？")).toBe("");
   });
 
   it("caps the length without leaving a trailing hyphen", () => {
     const id = specialistId(`${"a".repeat(MAX_ID - 1)} b`);
     expect(id.length).toBeLessThanOrEqual(MAX_ID);
     expect(id.endsWith("-")).toBe(false);
+    // Counted in characters, like the Rust side.
+    expect(Array.from(specialistId("写".repeat(MAX_ID + 5)))).toHaveLength(MAX_ID);
   });
 });
 
