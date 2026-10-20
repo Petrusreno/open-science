@@ -534,9 +534,9 @@ pub fn append_record(
 /// Append a `run`-produced version record for each of `paths` in ONE pass:
 /// reads the store once to compute per-path next versions, then writes all
 /// lines together. Used by runs.rs to link a run's outputs — a single read +
-/// write instead of one full store re-read per output, and the caller holds the
-/// same `ProvenanceState` lock as `record_provenance` so the two never race the
-/// version-then-append on `provenance.jsonl`.
+/// write instead of one full store re-read per output. The desktop caller holds
+/// the same `ProvenanceState` lock as `record_provenance`; `record_run_inner`
+/// also serializes same-process retries across its gateway and desktop callers.
 pub fn link_run_outputs(
     root: &Path,
     paths: &[String],
@@ -553,9 +553,15 @@ pub fn link_run_outputs(
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("provenance dir failed: {e}"))?;
     }
-    // Read once; compute the current max version per path.
+    // Read once; compute current versions and skip links already committed for
+    // this run. If an earlier write partially succeeded, a retry completes only
+    // the missing paths instead of creating duplicate lineage entries.
     let mut max_ver: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut linked_paths = std::collections::HashSet::new();
     for r in read_all(&file) {
+        if r.run_id.as_deref() == Some(run_id.as_str()) {
+            linked_paths.insert(r.path.clone());
+        }
         let e = max_ver.entry(r.path).or_insert(0);
         *e = (*e).max(r.version);
     }
@@ -563,6 +569,10 @@ pub fn link_run_outputs(
     let mut buf = String::new();
     for p in paths {
         let rel = normalize_rel(root, p)?;
+        if linked_paths.contains(&rel) {
+            continue;
+        }
+        linked_paths.insert(rel.clone());
         let v = max_ver.entry(rel.clone()).or_insert(0);
         *v += 1;
         let record = ProvenanceRecord {
@@ -580,6 +590,9 @@ pub fn link_run_outputs(
         };
         buf.push_str(&serde_json::to_string(&record).map_err(|e| e.to_string())?);
         buf.push('\n');
+    }
+    if buf.is_empty() {
+        return Ok(());
     }
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
@@ -622,7 +635,9 @@ pub fn read_env_lockfile(env: &Env, hash: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_record, cap_content, normalize_rel, versions_for, CONTENT_CAP};
+    use super::{
+        append_record, cap_content, link_run_outputs, normalize_rel, versions_for, CONTENT_CAP,
+    };
 
     fn temp_root(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("ai4s-prov-{tag}-{}", std::process::id()));
@@ -682,6 +697,43 @@ mod tests {
         let pkgs = env.packages.as_ref().expect("packages recorded");
         assert_eq!((pkgs.count, pkgs.hash.as_str()), (2, "abc123"));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn linking_run_outputs_twice_is_idempotent() {
+        let root = temp_root("run-idempotency");
+        link_run_outputs(
+            &root,
+            &["figure.svg".to_string()],
+            None,
+            None,
+            None,
+            None,
+            "run_retry".into(),
+        )
+        .unwrap();
+        link_run_outputs(
+            &root,
+            &[
+                "figure.svg".to_string(),
+                "table.csv".to_string(),
+                "table.csv".to_string(),
+            ],
+            None,
+            None,
+            None,
+            None,
+            "run_retry".into(),
+        )
+        .unwrap();
+
+        let versions = versions_for(&root, "figure.svg").unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].run_id.as_deref(), Some("run_retry"));
+        let retried = versions_for(&root, "table.csv").unwrap();
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].run_id.as_deref(), Some("run_retry"));
         let _ = std::fs::remove_dir_all(root);
     }
 

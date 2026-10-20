@@ -308,48 +308,65 @@ pub fn record_run_inner(
     model: Option<String>,
     env: Option<EnvInfo>,
 ) -> Result<RunRecord, String> {
+    // Serialize the read/append/link sequence across the gateway and desktop
+    // callers. Both JSONL files are append-only, but retries of the same run
+    // must reuse its stored record and fill only missing provenance links.
+    static RECORD_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _record_guard = RECORD_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .map_err(|_| "run record lock poisoned")?;
+
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
     let start_ms = started_ms.unwrap_or(now_ms);
     let ts = start_ms / 1000;
     // Millisecond precision so two identical commands a second apart don't
     // collide on the same run id.
     let run_id = run_id(command, start_ms);
-
-    let code = parse_code_files(command, root);
-    // Outputs need a time window; without one we can't attribute files.
-    let code_paths: std::collections::HashSet<&str> = code.iter().map(|c| c.path.as_str()).collect();
-    let outputs: Vec<RunArtifact> = match (started_ms, ended_ms) {
-        (Some(s), Some(e)) => changed_outputs(root, s, e),
-        _ => Vec::new(),
-    }
-    .into_iter()
-    // The entry scripts are inputs, not outputs — even when freshly written.
-    .filter(|o| !code_paths.contains(o.path.as_str()))
-    .collect();
-    let wall_ms = match (started_ms, ended_ms) {
-        (Some(s), Some(e)) if e >= s => Some(e - s),
-        _ => None,
+    let record = if let Some(stored) = read_run_file(&runs_file(root))
+        .into_iter()
+        .find(|stored| stored.run_id == run_id)
+    {
+        // Reuse the original snapshot on retry. Do not re-scan changed files or
+        // replace its session/model/environment with values from a later call.
+        stored
+    } else {
+        let code = parse_code_files(command, root);
+        // Outputs need a time window; without one we can't attribute files.
+        let code_paths: std::collections::HashSet<&str> = code.iter().map(|c| c.path.as_str()).collect();
+        let outputs: Vec<RunArtifact> = match (started_ms, ended_ms) {
+            (Some(s), Some(e)) => changed_outputs(root, s, e),
+            _ => Vec::new(),
+        }
+        .into_iter()
+        // The entry scripts are inputs, not outputs — even when freshly written.
+        .filter(|o| !code_paths.contains(o.path.as_str()))
+        .collect();
+        let wall_ms = match (started_ms, ended_ms) {
+            (Some(s), Some(e)) if e >= s => Some(e - s),
+            _ => None,
+        };
+        let log_hash = log.filter(|l| !l.is_empty()).and_then(|l| write_log(root, l));
+        let record = RunRecord {
+            run_id: run_id.clone(),
+            ts,
+            session_id: session_id.clone(),
+            model: model.clone(),
+            command: command.to_string(),
+            surface,
+            host: None,
+            job_id: None,
+            remote_hardware: None,
+            status: status.to_string(),
+            wall_ms,
+            code,
+            outputs,
+            log_hash,
+            env: env.clone(),
+        };
+        append_run(root, &record)?;
+        record
     };
-    let log_hash = log.filter(|l| !l.is_empty()).and_then(|l| write_log(root, l));
-
-    let record = RunRecord {
-        run_id: run_id.clone(),
-        ts,
-        session_id: session_id.clone(),
-        model: model.clone(),
-        command: command.to_string(),
-        surface,
-        host: None,
-        job_id: None,
-        remote_hardware: None,
-        status: status.to_string(),
-        wall_ms,
-        code,
-        outputs: outputs.clone(),
-        log_hash,
-        env: env.clone(),
-    };
-    append_run(root, &record)?;
 
     // Link the produced files to this run in provenance (their lineage shows
     // "produced by run X" + the reproduce recipe) — but only for a run that
@@ -357,18 +374,18 @@ pub fn record_run_inner(
     // artifacts, so they don't get a "run"-produced version. A write failure
     // must reach the caller: the run was already stored, but its lineage is
     // incomplete and must not be reported as a successful record operation.
-    if status == "ok" && !outputs.is_empty() {
-        let paths: Vec<String> = outputs.iter().map(|o| o.path.clone()).collect();
+    if record.status == "ok" && !record.outputs.is_empty() {
+        let paths: Vec<String> = record.outputs.iter().map(|o| o.path.clone()).collect();
         crate::provenance::link_run_outputs(
             root,
             &paths,
-            session_id.clone(),
-            model.clone(),
-            Some(command.to_string()),
-            env.clone(),
-            run_id.clone(),
+            record.session_id.clone(),
+            record.model.clone(),
+            Some(record.command.clone()),
+            record.env.clone(),
+            record.run_id.clone(),
         )
-        .map_err(|e| format!("run {run_id} stored, but output provenance failed: {e}"))?;
+        .map_err(|e| format!("run {} stored, but output provenance failed: {e}", record.run_id))?;
     }
     Ok(record)
 }
@@ -516,6 +533,13 @@ mod tests {
         )
         .unwrap();
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let original_env = EnvInfo {
+            python: Some("3.12.1".into()),
+            platform: "synthetic-platform".into(),
+            app: "synthetic-app".into(),
+            packages: None,
+            hardware: None,
+        };
 
         let result = record_run_inner(
             &root,
@@ -526,8 +550,8 @@ mod tests {
             "ok",
             Some("local".into()),
             Some("ses_synthetic".into()),
-            None,
-            None,
+            Some("model-original".into()),
+            Some(original_env),
         );
         let error = match result {
             Ok(_) => panic!("a missing figure provenance record must not be reported as success"),
@@ -539,6 +563,46 @@ mod tests {
         // The first append already happened, so the caller needs to know that
         // the run ledger may contain a partial record after this error.
         assert_eq!(read_runs(&root).len(), 1);
+
+        // Retrying the same completed event reuses its run record and completes
+        // its missing provenance instead of duplicating the run JSONL line.
+        // A changed workspace and metadata must not rewrite the original run.
+        std::fs::remove_dir_all(store.join("provenance.jsonl")).unwrap();
+        std::fs::remove_file(root.join("figure.svg")).unwrap();
+        std::fs::write(root.join("later.svg"), "later output").unwrap();
+        let retry = record_run_inner(
+            &root,
+            "python analysis.py",
+            None,
+            Some((now - 5) * 1000),
+            Some((now + 5) * 1000),
+            "ok",
+            Some("local".into()),
+            Some("ses_retry".into()),
+            Some("model-retry".into()),
+            Some(EnvInfo {
+                python: Some("9.9.9".into()),
+                platform: "retry-platform".into(),
+                app: "retry-app".into(),
+                packages: None,
+                hardware: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(retry.run_id, read_runs(&root)[0].run_id);
+        assert_eq!(read_runs(&root).len(), 1);
+        assert_eq!(
+            retry.session_id.as_deref(),
+            Some("ses_synthetic")
+        );
+        assert_eq!(retry.model.as_deref(), Some("model-original"));
+        assert_eq!(retry.env.as_ref().unwrap().app, "synthetic-app");
+        assert_eq!(retry.outputs.iter().map(|o| o.path.as_str()).collect::<Vec<_>>(), vec!["figure.svg"]);
+        let links = crate::provenance::versions_for(&root, "figure.svg").unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].session_id.as_deref(), Some("ses_synthetic"));
+        assert_eq!(links[0].env.as_ref().unwrap().app, "synthetic-app");
+        assert!(crate::provenance::versions_for(&root, "later.svg").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 
