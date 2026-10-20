@@ -849,11 +849,7 @@ fn record_run(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     let env = crate::provenance::capture_env(
         &root, ctx.env.version().to_string(), Some(&input.command), None,
     );
-    static RUN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let lock = RUN_LOCK.get_or_init(|| Mutex::new(()));
-    let Ok(_guard) = lock.lock() else {
-        return respond_json(stream, 500, &err_json("run lock poisoned"));
-    };
+    // record_run_inner serializes itself (and provenance.jsonl) process-wide.
     match crate::runs::record_run_inner(
         &root, &input.command, input.log.as_deref(),
         Some(input.started_at), Some(input.ended_at), &input.status,
