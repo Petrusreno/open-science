@@ -37,8 +37,9 @@ pub fn record_run(
         crate::kernel::python_bin(&app).ok().map(|(bin, _)| bin),
     );
     // Now hold RunState (serializes runs.jsonl) AND ProvenanceState (serializes
-    // provenance.jsonl, shared with record_provenance) — record_run writes both
-    // stores. Only this path takes both, always in this order, so no deadlock.
+    // provenance commands in this app). Core's process-wide provenance file lock
+    // also serializes this write with the gateway and authored provenance writes.
+    // Only this path takes both app-state locks, always in this order.
     let _guard = state.0.lock().map_err(|_| "run lock poisoned")?;
     let _prov_guard = prov_state.0.lock().map_err(|_| "provenance lock poisoned")?;
     let record = record_run_inner(

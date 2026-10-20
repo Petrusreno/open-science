@@ -4,7 +4,7 @@
 // environment, and originating conversation, per version.
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::env::Env;
@@ -14,6 +14,16 @@ const STORE_DIR: &str = ".openscience";
 const STORE_FILE: &str = "provenance.jsonl";
 /// Per-record content cap: keeps the store bounded; larger writes are truncated.
 const CONTENT_CAP: usize = 100_000;
+
+/// Serializes in-process writes to provenance.jsonl from the desktop and gateway.
+static PROVENANCE_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn lock_provenance_file() -> Result<MutexGuard<'static, ()>, String> {
+    PROVENANCE_FILE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "provenance file lock poisoned".to_string())
+}
 
 /// Serializes appends so two tool events can't interleave lines or race versions.
 #[derive(Default)]
@@ -493,6 +503,7 @@ pub fn append_record(
     run_id: Option<String>,
 ) -> Result<ProvenanceRecord, String> {
     let rel = normalize_rel(root, path)?;
+    let _file_guard = lock_provenance_file()?;
     let file = store_file(root);
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("provenance dir failed: {e}"))?;
@@ -534,9 +545,8 @@ pub fn append_record(
 /// Append a `run`-produced version record for each of `paths` in ONE pass:
 /// reads the store once to compute per-path next versions, then writes all
 /// lines together. Used by runs.rs to link a run's outputs — a single read +
-/// write instead of one full store re-read per output. The desktop caller holds
-/// the same `ProvenanceState` lock as `record_provenance`; `record_run_inner`
-/// also serializes same-process retries across its gateway and desktop callers.
+/// write instead of one full store re-read per output. A process-wide file lock
+/// serializes this with authored writes and other run links.
 pub fn link_run_outputs(
     root: &Path,
     paths: &[String],
@@ -549,6 +559,7 @@ pub fn link_run_outputs(
     if paths.is_empty() {
         return Ok(());
     }
+    let _file_guard = lock_provenance_file()?;
     let file = store_file(root);
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("provenance dir failed: {e}"))?;
@@ -734,6 +745,39 @@ mod tests {
         let retried = versions_for(&root, "table.csv").unwrap();
         assert_eq!(retried.len(), 1);
         assert_eq!(retried[0].run_id.as_deref(), Some("run_retry"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_authored_appends_get_distinct_versions() {
+        let root = temp_root("concurrent-appends");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|i| {
+                let root = root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    append_record(
+                        &root,
+                        "figure.svg",
+                        "write",
+                        Some(format!("session-{i}")),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+        let mut versions: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap().version).collect();
+        versions.sort_unstable();
+
+        assert_eq!(versions, (1..=8).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(root);
     }
 
