@@ -558,6 +558,28 @@ mod tests {
             assert_eq!(source(&root, name).unwrap().unwrap(), original);
         }
         assert!(destination.join("complete.json").is_file());
+        let rollback_copy = root.with_extension("rollback-copy");
+        std::fs::create_dir_all(rollback_copy.join(".openscience")).unwrap();
+        for name in SOURCES {
+            std::fs::copy(
+                destination.join(name),
+                rollback_copy.join(".openscience").join(name),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            crate::runs::read_runs_checked(&rollback_copy)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            crate::provenance::versions_for(&rollback_copy, "later.txt")
+                .unwrap()
+                .len(),
+            1
+        );
+        std::fs::remove_dir_all(rollback_copy).unwrap();
         std::fs::remove_dir_all(destination).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
