@@ -15,6 +15,29 @@ fn workspace() -> PathBuf {
 }
 
 #[test]
+fn migrate_requires_apply_and_legacy_source() {
+    let root = workspace();
+    let invoke = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_osd"))
+            .args(["ledger", "migrate", "--workspace"])
+            .arg(&root)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    assert!(!invoke(&[]).status.success());
+    assert!(!invoke(&["--apply"]).status.success());
+    assert!(!root.join(".openscience/ledger-v1.sqlite").exists());
+    std::fs::create_dir_all(root.join(".openscience")).unwrap();
+    std::fs::write(root.join(".openscience/runs.jsonl"), b"").unwrap();
+    let result = invoke(&["--apply", "--json"]);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(root.join(".openscience/ledger-v1.sqlite").is_file());
+    assert!(!invoke(&["--apply", "--unexpected", "x"]).status.success());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn dump_reads_committed_migrated_provenance_and_fails_closed() {
     let root = workspace();
     osd_core::ledger::migrate_v1(&root).unwrap();

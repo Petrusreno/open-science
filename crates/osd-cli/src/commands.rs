@@ -26,6 +26,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         ("run", "log") => run_log(args),
         ("provenance", "dump") => provenance_dump(args),
         ("ledger", "export") => ledger_export(args),
+        ("ledger", "migrate") => ledger_migrate(args),
         ("fs", "ls") | ("fs", "list") => fs_ls(args),
         ("fs", "get") | ("fs", "read") => fs_get(args),
         ("model", "") | ("model", "show") => model_show(args),
@@ -76,6 +77,37 @@ fn ledger_export(args: &Args) -> Result<(), String> {
             "Exported {} runs and {} provenance records to {}",
             summary.runs, summary.provenance, output
         );
+    }
+    Ok(())
+}
+
+fn ledger_migrate(args: &Args) -> Result<(), String> {
+    const USAGE: &str = "usage: osd ledger migrate --workspace <directory> --apply [--json]";
+    if !args.positional.is_empty()
+        || !args.only_flags(&["workspace"], &["apply", "json"])
+        || !args.has("apply")
+    {
+        return Err(USAGE.into());
+    }
+    let root = args.value("workspace").ok_or(USAGE)?;
+    let root = std::path::Path::new(&root)
+        .canonicalize()
+        .map_err(|e| format!("workspace unavailable: {e}"))?;
+    if !root.is_dir() {
+        return Err(format!("workspace directory unavailable: {}", root.display()));
+    }
+    let source_dir = root.join(".openscience");
+    if !source_dir.join("runs.jsonl").is_file()
+        && !source_dir.join("provenance.jsonl").is_file()
+        && !source_dir.join("ledger-v1.sqlite").is_file()
+    {
+        return Err("no legacy ledger sources or active ledger in workspace".into());
+    }
+    osd_core::ledger::migrate_v1(&root)?;
+    if args.has("json") {
+        println!("{}", serde_json::json!({"format":"ledger-v1","workspace":root,"status":"active"}));
+    } else {
+        println!("Activated ledger v1 in {}", root.display());
     }
     Ok(())
 }

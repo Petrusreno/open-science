@@ -33,6 +33,7 @@ osd — Open Science Desktop without a window
   osd run log <hash>
   osd provenance dump --workspace DIR [--json]
   osd ledger export --workspace DIR --output NEW_DIR [--json]
+  osd ledger migrate --workspace DIR --apply [--json]
 
   osd fs ls [path]                  browse the workspace
   osd fs get <path> [--output F]    read one file

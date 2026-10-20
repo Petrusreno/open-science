@@ -525,9 +525,12 @@ layer, and provenance/reviewer as the real moat of an open-source Claude Science
 ### Opt-in transactional local ledger v1
 
 The default remains JSONL. An integrator can explicitly call
-`osd_core::ledger::migrate_v1(workspace)` while the workspace is quiescent and
-all writers use the current core. There is deliberately no automatic upgrade,
-CLI activation command, or desktop toggle yet. Stage or disable direct JSONL
+`osd_core::ledger::migrate_v1(workspace)` or run
+`osd ledger migrate --workspace DIR --apply` while the workspace is quiescent
+and all writers use the current core. The command requires an existing legacy
+source or active ledger and rejects unknown options. There is deliberately no
+automatic upgrade or desktop toggle. Back up the complete workspace, including
+`.openscience`, before activation. Stage or disable direct JSONL
 consumers and older app versions before invoking this API. This is an opt-in
 incompatible storage switch, not a transparent JSONL projection.
 

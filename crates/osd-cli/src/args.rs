@@ -9,7 +9,7 @@ use std::collections::HashMap;
 /// Flags that never take a value. Anything else spelled `--x` consumes the
 /// next argument, so an unknown flag fails loudly instead of eating a word of
 /// the prompt.
-const BOOLEANS: &[&str] = &["json", "lan", "wait", "help", "quiet", "all", "force"];
+const BOOLEANS: &[&str] = &["json", "lan", "wait", "help", "quiet", "all", "force", "apply"];
 
 pub struct Args {
     pub command: String,
@@ -77,6 +77,11 @@ impl Args {
 
     pub fn has(&self, name: &str) -> bool {
         self.switches.iter().any(|s| s == name)
+    }
+
+    pub fn only_flags(&self, values: &[&str], switches: &[&str]) -> bool {
+        self.flags.keys().all(|key| values.contains(&key.as_str()))
+            && self.switches.iter().all(|key| switches.contains(&key.as_str()))
     }
 
     /// A required positional, named for the error message.

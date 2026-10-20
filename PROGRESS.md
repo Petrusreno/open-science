@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-21 00:48 · Added explicit `osd ledger migrate --workspace DIR --apply` activation with argument and source guards; the CLI integration suite passed, and a full copy of the synthetic web provenance workspace migrated with two runs and four provenance records while the installed v0.6.0 app and live workspace remained untouched. Live activation still requires a compatible signed desktop release and a complete backup.
+
 2026-10-21 00:20 · Merging the refreshed #164 branch into the stacked ledger draft preserved upstream Specialists changes; the truncated-code reproduce prompt no longer points to frozen JSONL or promises missing content, with 284 core tests, 12 CLI tests, 9 focused UI tests and desktop typecheck passing locally.
 
 2026-10-20 22:01 · Exported snapshots now reopen through legacy readers in a staging copy and reject malformed committed rows before writing `complete.json`; macOS osd-core 284 passed (1 ignored).
