@@ -112,6 +112,23 @@ pub fn migrate_v1(root: &Path) -> Result<(), String> {
     let runs: Vec<RunRecord> = parse(originals[0].as_deref())?;
     let provenance: Vec<ProvenanceRecord> = parse(originals[1].as_deref())?;
     let mut ids = std::collections::HashSet::new();
+    let output_links: std::collections::HashSet<(&str, &str)> = provenance
+        .iter()
+        .filter_map(|p| {
+            (p.tool == "run")
+                .then(|| p.run_id.as_deref().map(|id| (id, p.path.as_str())))
+                .flatten()
+        })
+        .collect();
+    let run_outputs: std::collections::HashSet<(&str, &str)> = runs
+        .iter()
+        .filter(|run| run.status == "ok")
+        .flat_map(|run| {
+            run.outputs
+                .iter()
+                .map(move |output| (run.run_id.as_str(), output.path.as_str()))
+        })
+        .collect();
     for run in &runs {
         if run.run_id.is_empty() || !matches!(run.status.as_str(), "ok" | "failed") {
             return Err(err("invalid source run identity or status"));
@@ -126,11 +143,7 @@ pub fn migrate_v1(root: &Path) -> Result<(), String> {
         }
         if run.status == "ok" {
             for output in &run.outputs {
-                if !provenance.iter().any(|p| {
-                    p.tool == "run"
-                        && p.path == output.path
-                        && p.run_id.as_deref() == Some(&run.run_id)
-                }) {
+                if !output_links.contains(&(run.run_id.as_str(), output.path.as_str())) {
                     return Err(err(
                         "source run has incomplete output provenance; repair before migration",
                     ));
@@ -144,11 +157,10 @@ pub fn migrate_v1(root: &Path) -> Result<(), String> {
             return Err(err("noncanonical source provenance path"));
         }
         if p.tool == "run"
-            && !runs.iter().any(|run| {
-                p.run_id.as_deref() == Some(&run.run_id)
-                    && run.status == "ok"
-                    && run.outputs.iter().any(|output| output.path == p.path)
-            })
+            && !p
+                .run_id
+                .as_deref()
+                .is_some_and(|id| run_outputs.contains(&(id, p.path.as_str())))
         {
             return Err(err("orphan or inconsistent source run link"));
         }
@@ -192,7 +204,18 @@ pub(crate) fn append(root: &Path, p: &ProvenanceRecord) -> Result<(), String> {
 pub(crate) fn commit_run(root: &Path, run: &RunRecord) -> Result<(), String> {
     let mut conn = connect(root)?;
     let tx = conn.transaction().map_err(err)?;
-    let mut existing: Vec<ProvenanceRecord> = rows(&tx, "provenance")?;
+    let existing: Vec<ProvenanceRecord> = rows(&tx, "provenance")?;
+    let mut latest_version = std::collections::HashMap::<String, u32>::new();
+    let mut linked = std::collections::HashSet::<(String, String)>::new();
+    for record in &existing {
+        latest_version
+            .entry(record.path.clone())
+            .and_modify(|version| *version = (*version).max(record.version))
+            .or_insert(record.version);
+        if let Some(run_id) = &record.run_id {
+            linked.insert((record.path.clone(), run_id.clone()));
+        }
+    }
     if !rows::<RunRecord>(&tx, "runs")?
         .iter()
         .any(|r| r.run_id == run.run_id)
@@ -202,22 +225,17 @@ pub(crate) fn commit_run(root: &Path, run: &RunRecord) -> Result<(), String> {
     if run.status == "ok" {
         for output in &run.outputs {
             let path = crate::provenance::normalize_rel(root, &output.path)?;
-            if existing
-                .iter()
-                .any(|p| p.path == path && p.run_id.as_deref() == Some(&run.run_id))
-            {
+            if linked.contains(&(path.clone(), run.run_id.clone())) {
                 continue;
             }
-            let version = existing
-                .iter()
-                .filter(|p| p.path == path)
-                .map(|p| p.version)
-                .max()
+            let version = latest_version
+                .get(&path)
+                .copied()
                 .unwrap_or(0)
                 .checked_add(1)
                 .ok_or_else(|| err("version overflow"))?;
             let p = ProvenanceRecord {
-                path,
+                path: path.clone(),
                 version,
                 ts: run.ts,
                 tool: "run".into(),
@@ -231,7 +249,8 @@ pub(crate) fn commit_run(root: &Path, run: &RunRecord) -> Result<(), String> {
                 call_id: None,
             };
             insert(&tx, "provenance", &p)?;
-            existing.push(p);
+            latest_version.insert(path.clone(), version);
+            linked.insert((path, run.run_id.clone()));
         }
     }
     tx.commit().map_err(err)
@@ -269,6 +288,55 @@ mod tests {
     }
     fn sample() -> RunRecord {
         serde_json::from_str(r#"{"runId":"test","ts":42,"command":"test","status":"ok","outputs":[{"path":"one.csv","size":1},{"path":"two.csv","size":1}]}"#).unwrap()
+    }
+    #[test]
+    fn imports_many_linked_runs_without_changing_source_bytes() {
+        let root = root("many-links");
+        let dir = root.join(".openscience");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut run_lines = String::new();
+        let mut provenance_lines = String::new();
+        for i in 0..1_000 {
+            let mut run = sample();
+            run.run_id = format!("run-{i}");
+            run.outputs = vec![crate::runs::RunArtifact {
+                path: format!("output-{i}.csv"),
+                hash: None,
+                size: 1,
+            }];
+            run_lines.push_str(&serde_json::to_string(&run).unwrap());
+            run_lines.push('\n');
+            let link = ProvenanceRecord {
+                path: run.outputs[0].path.clone(),
+                version: 1,
+                ts: run.ts,
+                tool: "run".into(),
+                session_id: None,
+                model: None,
+                content: None,
+                diff: None,
+                log: None,
+                env: None,
+                run_id: Some(run.run_id),
+                call_id: None,
+            };
+            provenance_lines.push_str(&serde_json::to_string(&link).unwrap());
+            provenance_lines.push('\n');
+        }
+        std::fs::write(dir.join("runs.jsonl"), &run_lines).unwrap();
+        std::fs::write(dir.join("provenance.jsonl"), &provenance_lines).unwrap();
+        migrate_v1(&root).unwrap();
+        assert_eq!(runs(&root).unwrap().len(), 1_000);
+        assert_eq!(provenance(&root).unwrap().len(), 1_000);
+        assert_eq!(
+            std::fs::read(dir.join("runs.jsonl")).unwrap(),
+            run_lines.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(dir.join("provenance.jsonl")).unwrap(),
+            provenance_lines.as_bytes()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn imports_legacy_bytes_and_stages_jsonl_compatibility() {
@@ -425,7 +493,8 @@ mod tests {
         assert!(runs(&root).unwrap().is_empty());
         assert!(provenance(&root).unwrap().is_empty());
         let conn = Connection::open(db_path(&root)).unwrap();
-        conn.execute_batch("DROP TRIGGER reject_second_link").unwrap();
+        conn.execute_batch("DROP TRIGGER reject_second_link")
+            .unwrap();
         drop(conn);
         let saved = record().unwrap();
         assert_eq!(saved.outputs.len(), 2);
@@ -440,17 +509,31 @@ mod tests {
         record(&root, 1_000);
         let conn = crate::runs_index::open_index(&root).unwrap();
         crate::runs_index::sync_index(&conn, &root).unwrap();
-        assert_eq!(crate::runs_index::query_runs(&conn, &Default::default()).unwrap().total, 1);
+        assert_eq!(
+            crate::runs_index::query_runs(&conn, &Default::default())
+                .unwrap()
+                .total,
+            1
+        );
         migrate_v1(&root).unwrap();
         record(&root, 2_000);
         let remote = serde_json::json!({
             "runId": "remote-test", "ts": 3, "command": "remote",
             "status": "ok", "outputs": []
         });
-        std::fs::write(root.join(".openscience/remote-runs.jsonl"), format!("{remote}\n")).unwrap();
+        std::fs::write(
+            root.join(".openscience/remote-runs.jsonl"),
+            format!("{remote}\n"),
+        )
+        .unwrap();
         for _ in 0..2 {
             crate::runs_index::sync_index(&conn, &root).unwrap();
-            assert_eq!(crate::runs_index::query_runs(&conn, &Default::default()).unwrap().total, 3);
+            assert_eq!(
+                crate::runs_index::query_runs(&conn, &Default::default())
+                    .unwrap()
+                    .total,
+                3
+            );
         }
         drop(conn);
         std::fs::remove_dir_all(root).unwrap();
