@@ -1,0 +1,36 @@
+name: ledger CI
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/ledger-ci.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/osd-core/**
+      - crates/osd-cli/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+      - name: Test core including cross-process ledger tests
+        run: cargo test -p osd-core --locked
+      - name: Check CLI
+        run: cargo check -p osd-cli --locked
