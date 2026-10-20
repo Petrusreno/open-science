@@ -285,7 +285,13 @@ pub fn export_v1(root: &Path, destination: &Path) -> Result<ExportSummary, Strin
             .query_map([imported], |r| r.get::<_, String>(0))
             .map_err(err)?;
         for row in appended {
-            file.write_all(row.map_err(err)?.as_bytes()).map_err(err)?;
+            let row = row.map_err(err)?;
+            if table == "runs" {
+                serde_json::from_str::<RunRecord>(&row).map_err(err)?;
+            } else {
+                serde_json::from_str::<ProvenanceRecord>(&row).map_err(err)?;
+            }
+            file.write_all(row.as_bytes()).map_err(err)?;
             file.write_all(b"\n").map_err(err)?;
         }
         file.sync_all().map_err(err)?;
@@ -593,6 +599,20 @@ mod tests {
         let destination = root.with_extension("incomplete");
         assert!(export_v1(&root, &destination).is_err());
         assert!(destination.is_dir());
+        assert!(!destination.join("complete.json").exists());
+        std::fs::remove_dir_all(destination).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn malformed_committed_row_cannot_complete_export() {
+        let root = root("export-malformed");
+        migrate_v1(&root).unwrap();
+        let conn = Connection::open(db_path(&root)).unwrap();
+        conn.execute("INSERT INTO runs(json) VALUES('not-json')", [])
+            .unwrap();
+        drop(conn);
+        let destination = root.with_extension("malformed-snapshot");
+        assert!(export_v1(&root, &destination).is_err());
         assert!(!destination.join("complete.json").exists());
         std::fs::remove_dir_all(destination).unwrap();
         std::fs::remove_dir_all(root).unwrap();
