@@ -44,6 +44,7 @@ const MAX_ID: usize = 48;
 const MAX_DESCRIPTION: usize = 1_000;
 const MAX_INSTRUCTIONS: usize = 50_000;
 const MAX_SKILL_NAME: usize = 128;
+const MAX_MODEL: usize = 256;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +68,11 @@ pub struct Specialist {
     /// there is no pattern for "every connector but these".
     #[serde(default)]
     pub blocked_connectors: Vec<String>,
+    /// `provider/model` it runs on, or "" to follow the default model. Kept in
+    /// `opencode.json` under `agent.<id>.model` with the other per-agent models
+    /// (Settings › Models edits the same key), not in the agent file.
+    #[serde(default)]
+    pub model: String,
 }
 
 /// The prefix the runtime puts in front of a connector's tool names:
@@ -80,11 +86,15 @@ pub fn connector_prefix(server: &str) -> String {
         .collect()
 }
 
+/// Letters and digits of any script (`论文写作` is a valid agent name — verified
+/// on the bundled runtime), lowercase where the script has case, in groups
+/// joined by single hyphens. That also keeps it a safe file name: no `/`, `.`,
+/// spaces or anything else a path could trip on.
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
-        && id.len() <= MAX_ID
+        && id.chars().count() <= MAX_ID
         && id.split('-').all(|part| {
-            !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() && !c.is_uppercase())
         })
 }
 
@@ -106,7 +116,7 @@ fn valid_color(color: &str) -> bool {
 pub fn validate(s: &Specialist) -> Result<(), String> {
     if !valid_id(&s.id) {
         return Err(format!(
-            "invalid specialist id \"{}\": use lowercase letters, digits and single hyphens (at most {MAX_ID})",
+            "invalid specialist id \"{}\": use lowercase letters, digits and single hyphens (at most {MAX_ID} characters)",
             s.id
         ));
     }
@@ -132,6 +142,13 @@ pub fn validate(s: &Specialist) -> Result<(), String> {
     }
     if s.blocked_connectors.iter().any(|c| connector_prefix(c).is_empty()) {
         return Err("invalid connector name".into());
+    }
+    let model_ok = s.model.is_empty()
+        || (s.model.len() <= MAX_MODEL
+            && s.model.split_once('/').is_some_and(|(p, m)| !p.is_empty() && !m.is_empty())
+            && !s.model.chars().any(|c| c.is_control() || c.is_whitespace()));
+    if !model_ok {
+        return Err(format!("invalid model \"{}\": expected provider/model", s.model));
     }
     Ok(())
 }
@@ -233,6 +250,7 @@ pub fn parse(id: &str, text: &str) -> Option<Specialist> {
         instructions: body.trim().to_string(),
         skills,
         blocked_connectors,
+        model: String::new(),
     })
 }
 
@@ -267,6 +285,12 @@ pub fn list(env: &Env) -> Result<Vec<Specialist>, String> {
             parse(&id, &std::fs::read_to_string(&path).ok()?)
         })
         .collect();
+    let config = std::fs::read_to_string(effective_config_file(env)?).unwrap_or_default();
+    let models: std::collections::HashMap<String, String> =
+        crate::opencode_config::agent_models(&config).into_iter().collect();
+    for s in &mut out {
+        s.model = models.get(&s.id).cloned().unwrap_or_default();
+    }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
 }
@@ -289,6 +313,27 @@ pub fn save(env: &Env, specialist: Specialist, create: bool) -> Result<(), Strin
         ensure_managed(&path)?;
     }
     write_atomic(&path, &render(&specialist))?;
+    // The model, in the same restart. A pinned effort belongs to the model it
+    // was chosen for and may not exist on the new one, so it goes when the
+    // model changes (Settings › Models can set it again).
+    let config = effective_config_file(env)?;
+    let existing = std::fs::read_to_string(&config).unwrap_or_default();
+    let id = specialist.id.as_str();
+    let current = crate::opencode_config::agent_models(&existing)
+        .into_iter()
+        .find(|(agent, _)| agent == id)
+        .map(|(_, model)| model)
+        .unwrap_or_default();
+    if current != specialist.model {
+        let want = Some(specialist.model.as_str()).filter(|m| !m.is_empty());
+        let updated = crate::opencode_config::set_agent_variant(
+            &crate::opencode_config::set_agent_model(&existing, id, want),
+            id,
+            None,
+        );
+        write_atomic(&config, &updated)?;
+        tighten_private(&config);
+    }
     restart_sidecar_if_running(env)?;
     Ok(())
 }
@@ -338,6 +383,7 @@ mod tests {
             instructions: "  You review statistics.\n\nBe strict.  ".into(),
             skills: Some(vec!["r-stats".into(), "python-stats".into()]),
             blocked_connectors: vec!["pubmed".into(), "open-science-browser".into()],
+            model: String::new(),
         }
     }
 
@@ -399,6 +445,7 @@ mod tests {
             instructions: String::new(),
             skills: None,
             blocked_connectors: vec![],
+            model: String::new(),
         };
         let text = render(&s);
         assert_eq!(text, format!("---\n{MARKER}\n{{\"description\":\"Does a\",\"mode\":\"subagent\"}}\n---\n"));
@@ -424,10 +471,18 @@ mod tests {
     fn validate_rejects_what_would_break_the_runtime() {
         let ok = sample();
         assert!(validate(&ok).is_ok());
-        for id in ["", "Stats", "a--b", "-a", "a-", "a b", "a/b", "../x", "build", "explore"] {
+        for id in ["", "Stats", "a--b", "-a", "a-", "a b", "a/b", "../x", "a.b", "论文 写作", "build", "explore"] {
             assert!(validate(&Specialist { id: id.into(), ..ok.clone() }).is_err(), "{id}");
         }
+        for id in ["论文写作", "논문-작성", "méthodes", "r2-review"] {
+            assert!(validate(&Specialist { id: id.into(), ..ok.clone() }).is_ok(), "{id}");
+        }
         assert!(validate(&Specialist { id: "x".repeat(MAX_ID + 1), ..ok.clone() }).is_err());
+        assert!(validate(&Specialist { id: "写".repeat(MAX_ID), ..ok.clone() }).is_ok(), "counted in characters");
+        for model in ["gpt-5", "/x", "a/", "a/b c", "a/b\n"] {
+            assert!(validate(&Specialist { model: model.into(), ..ok.clone() }).is_err(), "{model}");
+        }
+        assert!(validate(&Specialist { model: "openai/gpt-5".into(), ..ok.clone() }).is_ok());
         assert!(validate(&Specialist { description: "  ".into(), ..ok.clone() }).is_err());
         for color in ["pink", "#12345", "#1234567", "#GGGGGG"] {
             assert!(validate(&Specialist { color: Some(color.into()), ..ok.clone() }).is_err(), "{color}");
@@ -460,9 +515,25 @@ mod tests {
         save(&env, updated, false).unwrap();
         assert_eq!(list(&env).unwrap()[0].description, "New");
 
-        // The model pinned to it goes with it.
+        // Its model is saved with it, and read back by `list`; an unchanged
+        // model keeps the effort pinned to it, a new one drops it.
         let config = effective_config_file(&env).unwrap();
         write_atomic(&config, r#"{"agent":{"stats-reviewer":{"model":"a/b","variant":"high"}}}"#).unwrap();
+        assert_eq!(list(&env).unwrap()[0].model, "a/b");
+        save(&env, Specialist { model: "a/b".into(), ..s.clone() }, false).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(v["agent"]["stats-reviewer"]["variant"], "high");
+        save(&env, Specialist { model: "c/d".into(), ..s.clone() }, false).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(v["agent"]["stats-reviewer"]["model"], "c/d");
+        assert!(v["agent"]["stats-reviewer"].get("variant").is_none());
+
+        // A non-Latin name is a file name like any other.
+        save(&env, Specialist { id: "论文写作".into(), ..s.clone() }, true).unwrap();
+        assert!(list(&env).unwrap().iter().any(|x| x.id == "论文写作"));
+        delete(&env, "论文写作").unwrap();
+
+        // The model pinned to it goes with it.
         delete(&env, &s.id).unwrap();
         assert!(list(&env).unwrap().is_empty());
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();

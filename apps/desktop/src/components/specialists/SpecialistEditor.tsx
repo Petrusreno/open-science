@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Check, Loader2, Search, X } from "lucide-react";
-import type { McpServer, SkillInfo } from "@ai4s/sdk";
+import type { McpServer, ProviderInfo, SkillInfo } from "@ai4s/sdk";
 import { Switch } from "@/components/settings/Section";
+import { flattenModelOptions, selectableModelOptions } from "@/components/settings/modelCatalog";
 import { inputCls } from "@/components/settings/inputCls";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
@@ -30,12 +30,16 @@ import { SpecialistAvatar } from "./SpecialistAvatar";
  *
  * Saving restarts the runtime (that is when it rebuilds its agents), so the
  * button says so while it waits rather than looking frozen.
+ *
+ * Nothing in it navigates away: leaving would throw the draft away, so every
+ * choice it needs (the model included) is made in place.
  */
 export function SpecialistEditor({
   initial,
   takenIds,
   skills,
   connectors,
+  providers,
   onSave,
   onDelete,
   onClose,
@@ -46,14 +50,15 @@ export function SpecialistEditor({
   takenIds: string[];
   skills: SkillInfo[];
   connectors: McpServer[];
+  /** The model catalog, for the model picker. */
+  providers: ProviderInfo[];
   onSave: (specialist: Specialist, create: boolean) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onClose: () => void;
 }) {
   const { t } = useTranslation(["pages", "common"]);
-  const navigate = useNavigate();
   const creating = initial === null;
-  const pinnedModel = useRuntimeStore((s) => (initial ? s.agentModels[initial.id] : undefined));
+  const defaultModel = useRuntimeStore((s) => s.defaultModel);
 
   const [name, setName] = useState(initial?.id ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
@@ -61,6 +66,7 @@ export function SpecialistEditor({
   const [instructions, setInstructions] = useState(initial?.instructions ?? "");
   const [skillScope, setSkillScope] = useState<string[] | null>(initial?.skills ?? null);
   const [blocked, setBlocked] = useState<string[]>(initial?.blockedConnectors ?? []);
+  const [model, setModel] = useState(initial?.model ?? "");
   const [busy, setBusy] = useState<"save" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<"delete" | "discard" | null>(null);
@@ -72,7 +78,7 @@ export function SpecialistEditor({
     : !name.trim()
       ? "required"
       : !id
-        ? "latin"
+        ? "empty"
         : NATIVE_AGENTS.includes(id) || takenIds.includes(id)
           ? "taken"
           : null;
@@ -92,10 +98,17 @@ export function SpecialistEditor({
     skills: skillScope,
     // Only blocks for connectors that still exist: one removed since keeps no rule.
     blockedConnectors: blocked.filter((p) => connectorPrefixes.includes(p)),
+    model,
   };
   const dirty = creating
     ? Boolean(
-        name.trim() || description.trim() || instructions.trim() || color || skillScope || blocked.length,
+        name.trim() ||
+        description.trim() ||
+        instructions.trim() ||
+        color ||
+        skillScope ||
+        blocked.length ||
+        model,
       )
     : JSON.stringify(draft) !== JSON.stringify(normalized(initial));
   const canSave = !idProblem && !descriptionMissing && collisions.length === 0 && (creating || dirty);
@@ -145,6 +158,22 @@ export function SpecialistEditor({
   };
 
   const displayName = id || name.trim() || t("skills.specialists.untitled");
+
+  // The catalog grouped by provider, as Settings › Models lists it.
+  const modelOptions = useMemo(() => flattenModelOptions(providers), [providers]);
+  const modelGroups = useMemo(() => {
+    const map = new Map<string, { name: string; models: { key: string; name: string }[] }>();
+    for (const o of selectableModelOptions(modelOptions)) {
+      const group = map.get(o.providerID) ?? { name: o.providerName, models: [] };
+      group.models.push({ key: o.key, name: o.modelName });
+      map.set(o.providerID, group);
+    }
+    return [...map.values()];
+  }, [modelOptions]);
+  const defaultModelName = modelOptions.find((o) => o.key === defaultModel)?.modelName;
+  // A pinned model the catalog no longer serves stays selectable, so the picker
+  // never claims "default" while the config still pins something else.
+  const unlisted = model && !modelGroups.some((g) => g.models.some((m) => m.key === model)) ? model : null;
 
   return (
     <div
@@ -197,15 +226,15 @@ export function SpecialistEditor({
                 // only once Create was pressed.
                 className={cn(
                   "mt-1.5 text-[12px]",
-                  idProblem === "taken" || idProblem === "latin" || (touched && idProblem === "required")
+                  idProblem === "taken" || idProblem === "empty" || (touched && idProblem === "required")
                     ? "text-error"
                     : "text-muted",
                 )}
               >
                 {idProblem === "taken"
                   ? t("skills.specialists.idTaken", { id })
-                  : idProblem === "latin"
-                    ? t("skills.specialists.idLatin")
+                  : idProblem === "empty"
+                    ? t("skills.specialists.idEmpty")
                     : idProblem === "required"
                       ? t("skills.specialists.idHint")
                       : t("skills.specialists.idPreview", { id })}
@@ -275,6 +304,33 @@ export function SpecialistEditor({
             />
           </Field>
 
+          <Field label={t("skills.specialists.model")} htmlFor="specialist-model">
+            <select
+              id="specialist-model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className={inputCls("w-full")}
+            >
+              <option value="">
+                {defaultModelName
+                  ? t("skills.specialists.modelDefaultNamed", { model: defaultModelName })
+                  : t("skills.specialists.modelDefault")}
+              </option>
+              {unlisted && (
+                <option value={unlisted}>{t("skills.specialists.modelUnlisted", { model: unlisted })}</option>
+              )}
+              {modelGroups.map((g) => (
+                <optgroup key={g.name} label={g.name}>
+                  {g.models.map((m) => (
+                    <option key={m.key} value={m.key}>
+                      {m.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </Field>
+
           {/* ---- What it may use ---- */}
           <div className="mt-7 border-t border-faint pt-5">
             <h3 className="text-[13px] font-semibold text-text">{t("skills.specialists.capabilities")}</h3>
@@ -287,15 +343,7 @@ export function SpecialistEditor({
 
           <Field label={t("skills.specialists.connectors")} hint={t("skills.specialists.connectorsHint")}>
             {connectors.length === 0 ? (
-              <p className="text-[13px] text-muted">
-                {t("skills.specialists.noConnectors")}{" "}
-                <button
-                  className="text-link hover:underline"
-                  onClick={() => navigate("/settings/connectors")}
-                >
-                  {t("skills.specialists.openConnectors")}
-                </button>
-              </p>
+              <p className="text-[13px] text-muted">{t("skills.specialists.noConnectors")}</p>
             ) : (
               <ul className="divide-y divide-[var(--border-faint)] rounded-input border border-border">
                 {connectors.map((c) => {
@@ -328,15 +376,6 @@ export function SpecialistEditor({
               </p>
             ))}
           </Field>
-
-          <p className="mt-6 text-[12px] text-muted">
-            {pinnedModel
-              ? t("skills.specialists.modelPinned", { model: pinnedModel })
-              : t("skills.specialists.modelDefault")}{" "}
-            <button className="text-link hover:underline" onClick={() => navigate("/settings/models")}>
-              {t("skills.specialists.modelLink")}
-            </button>
-          </p>
         </div>
 
         <footer className="border-t border-faint px-5 py-3">
@@ -374,7 +413,7 @@ export function SpecialistEditor({
                 (touched && !canSave) ||
                 (!creating && !dirty) ||
                 idProblem === "taken" ||
-                idProblem === "latin" ||
+                idProblem === "empty" ||
                 collisions.length > 0
               }
               className="inline-flex items-center gap-1.5 rounded-input bg-text px-3 py-1.5 text-[13px] font-medium text-bg hover:opacity-90 disabled:opacity-40"
@@ -422,6 +461,7 @@ function normalized(s: Specialist | null): Specialist | null {
     instructions: s.instructions.trim(),
     skills: s.skills,
     blockedConnectors: s.blockedConnectors,
+    model: s.model ?? "",
   };
 }
 

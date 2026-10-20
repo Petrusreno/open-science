@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Bot, Check, ChevronRight, Plus, Puzzle, Search, X } from "lucide-react";
-import type { McpServer } from "@ai4s/sdk";
+import type { McpServer, ProviderInfo } from "@ai4s/sdk";
 import { getClient, useRuntimeStore } from "@/lib/runtime";
 import { cn } from "@/lib/cn";
 import { isGatewayWeb } from "@/lib/webMode";
 import { deleteSpecialist, isTauri, listSpecialists, saveSpecialist } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
+import { listProvidersWithAvailability } from "@/lib/zenModels";
 import type { Specialist } from "@/lib/specialists";
 import { SpecialistAvatar } from "@/components/specialists/SpecialistAvatar";
 import { SpecialistEditor } from "@/components/specialists/SpecialistEditor";
@@ -41,6 +42,7 @@ export function SkillsPage() {
   const canEditSpecialists = isTauri && !isGatewayWeb;
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
   const [connectors, setConnectors] = useState<McpServer[]>([]);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [editing, setEditing] = useState<Specialist | "new" | null>(null);
   const reloadRuntimeConfig = useRuntimeStore((s) => s.reloadRuntimeConfig);
 
@@ -59,9 +61,15 @@ export function SkillsPage() {
   }, []);
 
   const openEditor = async (target: Specialist | "new") => {
-    // Connectors are read when the editor opens, not with the page: they are
-    // only needed there, and the list may have changed in Settings since.
-    setConnectors((await getClient()?.listMcpServers().catch(() => null)) ?? []);
+    // Connectors and models are read when the editor opens, not with the page:
+    // they are only needed there, and either may have changed in Settings since.
+    const client = getClient();
+    const [mcp, catalog] = await Promise.all([
+      client?.listMcpServers().catch(() => null),
+      client ? listProvidersWithAvailability(client).catch(() => null) : null,
+    ]);
+    setConnectors(mcp ?? []);
+    setProviders(catalog ?? []);
     setEditing(target);
   };
 
@@ -250,9 +258,7 @@ export function SkillsPage() {
                     </span>
                   ))}
                 </div>
-                <p className="mt-3 text-[13px] leading-relaxed text-muted">
-                  {t("skills.environment.note")}
-                </p>
+                <p className="mt-3 text-[13px] leading-relaxed text-muted">{t("skills.environment.note")}</p>
               </>
             )}
           </Section>
@@ -265,6 +271,7 @@ export function SkillsPage() {
           takenIds={agents.map((a) => a.name)}
           skills={skills}
           connectors={connectors}
+          providers={providers}
           onSave={onSaveSpecialist}
           onDelete={onDeleteSpecialist}
           onClose={() => setEditing(null)}
@@ -287,7 +294,10 @@ function SpecialistRow({ specialist, onOpen }: { specialist: Specialist; onOpen:
         <h3 className="truncate text-[15px] text-text">{specialist.id}</h3>
         <p className="mt-0.5 truncate text-[13px] text-muted">{specialist.description}</p>
       </div>
-      <ChevronRight size={16} className="shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100" />
+      <ChevronRight
+        size={16}
+        className="shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100"
+      />
     </button>
   );
 }
@@ -349,9 +359,7 @@ function EntryRow({ entry }: { entry: Entry }) {
             </span>
           )}
         </div>
-        {entry.description && (
-          <p className="mt-0.5 truncate text-[13px] text-muted">{entry.description}</p>
-        )}
+        {entry.description && <p className="mt-0.5 truncate text-[13px] text-muted">{entry.description}</p>}
       </div>
     </article>
   );
@@ -431,9 +439,7 @@ function InstallSkill({
         >
           {t("common:actions.cancel", "Cancel")}
         </button>
-        <span className="min-w-0 flex-1 text-[11px] text-muted">
-          {t("skills.install.hintConnected")}
-        </span>
+        <span className="min-w-0 flex-1 text-[11px] text-muted">{t("skills.install.hintConnected")}</span>
       </div>
     </div>
   );

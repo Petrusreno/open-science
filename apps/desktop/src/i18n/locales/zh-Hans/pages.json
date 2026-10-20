@@ -123,10 +123,9 @@
       "untitled": "未命名专家",
       "kind": "专家",
       "name": "名称",
-      "namePlaceholder": "例如 Stats reviewer",
-      "idHint": "会保存为由英文字母和数字组成的短 ID。",
+      "namePlaceholder": "例如 统计审稿",
+      "idHint": "会根据名称保存为一个简短的 ID。",
       "idPreview": "保存为 {{id}}",
-      "idLatin": "名称里需要有英文字母或数字，它会成为 ID。",
       "idTaken": "已经有一个叫 {{id}} 的代理。",
       "color": "颜色",
       "colors": {
@@ -160,12 +159,9 @@
       "skillMissing": "已不再安装",
       "connectors": "连接器",
       "connectorsHint": "之后新增的连接器默认开启，可以在这里关闭。",
-      "noConnectors": "还没有配置连接器。",
-      "openConnectors": "添加连接器",
+      "noConnectors": "还没有配置连接器，可在 设置 › 连接器 中添加。",
       "connectorCollision": "关闭 {{blocked}} 会连带关闭 {{other}}。请把两个都关掉，或保留 {{blocked}}。",
-      "modelDefault": "使用默认模型。",
-      "modelPinned": "使用 {{model}}。",
-      "modelLink": "在 设置 › 模型 中修改",
+      "modelDefault": "默认模型",
       "create": "创建专家",
       "save": "保存",
       "saving": "正在保存并重启运行时…",
@@ -178,7 +174,11 @@
       "discard": "放弃",
       "created": "已创建 {{id}}，主代理现在可以把任务交给它。",
       "saved": "已保存 {{id}}。",
-      "deleted": "已删除 {{id}}。"
+      "deleted": "已删除 {{id}}。",
+      "idEmpty": "名称里至少要有一个文字或数字，它会成为 ID。",
+      "model": "模型",
+      "modelDefaultNamed": "默认模型（{{model}}）",
+      "modelUnlisted": "{{model}}（不在模型目录中）"
     }
   },
   "notFound": {

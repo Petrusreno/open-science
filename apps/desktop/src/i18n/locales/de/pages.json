@@ -124,9 +124,8 @@
       "kind": "Spezialist",
       "name": "Name",
       "namePlaceholder": "z. B. Stats reviewer",
-      "idHint": "Wird als kurze ID aus lateinischen Buchstaben und Ziffern gespeichert.",
+      "idHint": "Wird als kurze ID aus dem Namen gespeichert.",
       "idPreview": "Gespeichert als {{id}}",
-      "idLatin": "Verwende lateinische Buchstaben oder Ziffern im Namen – daraus wird die ID.",
       "idTaken": "Es gibt bereits einen Agenten namens {{id}}.",
       "color": "Farbe",
       "colors": {
@@ -160,12 +159,9 @@
       "skillMissing": "Nicht mehr installiert",
       "connectors": "Konnektoren",
       "connectorsHint": "Später hinzugefügte Konnektoren sind an, bis du sie hier ausschaltest.",
-      "noConnectors": "Keine Konnektoren eingerichtet.",
-      "openConnectors": "Konnektoren hinzufügen",
+      "noConnectors": "Keine Connectoren eingerichtet. Unter Einstellungen › Connectoren hinzufügen.",
       "connectorCollision": "Wenn du {{blocked}} ausschaltest, wird auch {{other}} ausgeschaltet. Schalte beide aus oder lass {{blocked}} an.",
-      "modelDefault": "Nutzt das Standardmodell.",
-      "modelPinned": "Nutzt {{model}}.",
-      "modelLink": "Ändern unter Einstellungen › Modelle",
+      "modelDefault": "Standardmodell",
       "create": "Spezialist erstellen",
       "save": "Speichern",
       "saving": "Speichern und Laufzeit neu starten…",
@@ -178,7 +174,11 @@
       "discard": "Verwerfen",
       "created": "{{id}} erstellt. Der Hauptagent kann ihm jetzt Arbeit geben.",
       "saved": "{{id}} gespeichert.",
-      "deleted": "{{id}} gelöscht."
+      "deleted": "{{id}} gelöscht.",
+      "idEmpty": "Der Name braucht mindestens einen Buchstaben oder eine Ziffer – daraus wird die ID.",
+      "model": "Modell",
+      "modelDefaultNamed": "Standardmodell ({{model}})",
+      "modelUnlisted": "{{model}} (nicht im Katalog)"
     }
   },
   "notFound": {

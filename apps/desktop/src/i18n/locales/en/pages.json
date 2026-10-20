@@ -124,9 +124,8 @@
       "kind": "Specialist",
       "name": "Name",
       "namePlaceholder": "e.g. Stats reviewer",
-      "idHint": "Saved as a short ID in English letters and digits.",
+      "idHint": "Saved as a short ID made from the name.",
       "idPreview": "Saved as {{id}}",
-      "idLatin": "Use English letters or digits in the name — it becomes the ID.",
       "idTaken": "An agent called {{id}} already exists.",
       "color": "Color",
       "colors": {
@@ -160,12 +159,9 @@
       "skillMissing": "Not installed any more",
       "connectors": "Connectors",
       "connectorsHint": "Connectors added later are on until you turn them off here.",
-      "noConnectors": "No connectors configured.",
-      "openConnectors": "Add connectors",
+      "noConnectors": "No connectors configured. Add them in Settings › Connectors.",
       "connectorCollision": "Turning off {{blocked}} would also turn off {{other}}. Turn both off, or keep {{blocked}} on.",
-      "modelDefault": "Runs the default model.",
-      "modelPinned": "Runs {{model}}.",
-      "modelLink": "Change in Settings › Models",
+      "modelDefault": "Default model",
       "create": "Create specialist",
       "save": "Save",
       "saving": "Saving and restarting the runtime…",
@@ -178,7 +174,11 @@
       "discard": "Discard",
       "created": "Created {{id}}. The main agent can hand work to it now.",
       "saved": "Saved {{id}}.",
-      "deleted": "Deleted {{id}}."
+      "deleted": "Deleted {{id}}.",
+      "idEmpty": "The name needs at least one letter or digit — it becomes the ID.",
+      "model": "Model",
+      "modelDefaultNamed": "Default model ({{model}})",
+      "modelUnlisted": "{{model}} (not in the catalog)"
     }
   },
   "notFound": {

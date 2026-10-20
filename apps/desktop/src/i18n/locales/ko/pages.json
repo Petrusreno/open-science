@@ -123,10 +123,9 @@
       "untitled": "이름 없는 전문가",
       "kind": "전문가",
       "name": "이름",
-      "namePlaceholder": "예: Stats reviewer",
-      "idHint": "영문자와 숫자로 된 짧은 ID로 저장됩니다.",
+      "namePlaceholder": "예: 통계 검토",
+      "idHint": "이름으로 짧은 ID를 만들어 저장합니다.",
       "idPreview": "{{id}}(으)로 저장",
-      "idLatin": "이름에 영문자나 숫자를 넣어 주세요. ID가 됩니다.",
       "idTaken": "{{id}}라는 에이전트가 이미 있습니다.",
       "color": "색상",
       "colors": {
@@ -160,12 +159,9 @@
       "skillMissing": "더 이상 설치되어 있지 않음",
       "connectors": "커넥터",
       "connectorsHint": "나중에 추가한 커넥터는 여기서 끌 때까지 켜져 있습니다.",
-      "noConnectors": "설정된 커넥터가 없습니다.",
-      "openConnectors": "커넥터 추가",
+      "noConnectors": "설정된 커넥터가 없습니다. 설정 › 커넥터에서 추가하세요.",
       "connectorCollision": "{{blocked}}을(를) 끄면 {{other}}도 꺼집니다. 둘 다 끄거나 {{blocked}}을(를) 켜 두세요.",
-      "modelDefault": "기본 모델을 사용합니다.",
-      "modelPinned": "{{model}}을(를) 사용합니다.",
-      "modelLink": "설정 › 모델에서 변경",
+      "modelDefault": "기본 모델",
       "create": "전문가 만들기",
       "save": "저장",
       "saving": "저장하고 런타임을 다시 시작하는 중…",
@@ -178,7 +174,11 @@
       "discard": "버리기",
       "created": "{{id}}을(를) 만들었습니다. 이제 메인 에이전트가 작업을 넘길 수 있습니다.",
       "saved": "{{id}}을(를) 저장했습니다.",
-      "deleted": "{{id}}을(를) 삭제했습니다."
+      "deleted": "{{id}}을(를) 삭제했습니다.",
+      "idEmpty": "이름에 글자나 숫자가 하나 이상 있어야 합니다. 이름이 ID가 됩니다.",
+      "model": "모델",
+      "modelDefaultNamed": "기본 모델 ({{model}})",
+      "modelUnlisted": "{{model}} (카탈로그에 없음)"
     }
   },
   "notFound": {
