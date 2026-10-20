@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-21 00:20 · Merging the refreshed #164 branch into the stacked ledger draft preserved upstream Specialists changes; the truncated-code reproduce prompt no longer points to frozen JSONL or promises missing content, with 284 core tests, 12 CLI tests, 9 focused UI tests and desktop typecheck passing locally.
+
 2026-10-20 22:01 · Exported snapshots now reopen through legacy readers in a staging copy and reject malformed committed rows before writing `complete.json`; macOS osd-core 284 passed (1 ignored).
 
 2026-10-20 21:55 · Added a streaming offline ledger-v1 export to a new directory with a final completion marker, a bounded manual downgrade procedure, and a reproducible 100,000-row synthetic probe; macOS osd-core 283 passed (1 ignored) and CLI 12 passed, with no live workspace activated.
