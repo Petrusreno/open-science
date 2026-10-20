@@ -477,7 +477,8 @@ mod tests {
         let entry = crate::project::link_folder(&env, &project.id, &dated, "ses_a", "Spike sorting: v2").unwrap();
         // One entry, named after the session, pointing at the folder where it is.
         let link = PathBuf::from(&entry.link);
-        assert_eq!(link, project_dir.canonicalize().unwrap().join("Spike sorting v2"));
+        assert_eq!(link.parent().unwrap().canonicalize().unwrap(), project_dir.canonicalize().unwrap());
+        assert_eq!(link.file_name().unwrap(), "Spike sorting v2");
         assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
         assert!(link.join("figures").join("fig1.png").is_file());
         // Linking it again does not add a second one.
@@ -497,7 +498,9 @@ mod tests {
         let (root, env, project, dated) = move_fixture("finder");
         let entry = crate::project::link_folder(&env, &project.id, &dated, "ses_a", "probe").unwrap();
         // The user deletes the link in Finder: the project no longer lists it.
-        std::fs::remove_file(&entry.link).unwrap();
+        std::fs::remove_file(&entry.link)
+            .or_else(|_| std::fs::remove_dir(&entry.link))
+            .unwrap();
         assert!(crate::project::list_projects(&env).unwrap().iter().find(|p| p.id == project.id).unwrap().linked.is_empty());
 
         // Something real now sits where the link was: unlinking must refuse to

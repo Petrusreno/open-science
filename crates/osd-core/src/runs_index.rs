@@ -427,6 +427,7 @@ mod tests {
         let page = query_runs(&conn, &RunQuery::default()).unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.rows[0].run_id, "outside");
+        drop(conn); // Windows keeps the SQLite files open until the connection closes.
         std::fs::remove_dir_all(base).unwrap();
         std::fs::remove_dir_all(active).unwrap();
     }
