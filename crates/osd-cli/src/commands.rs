@@ -24,6 +24,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         ("project", "new") | ("project", "create") => new_project(args),
         ("run", "ls") | ("run", "list") => runs(args),
         ("run", "log") => run_log(args),
+        ("provenance", "dump") => provenance_dump(args),
         ("fs", "ls") | ("fs", "list") => fs_ls(args),
         ("fs", "get") | ("fs", "read") => fs_get(args),
         ("model", "") | ("model", "show") => model_show(args),
@@ -38,6 +39,25 @@ pub fn run(args: &Args) -> Result<(), String> {
         (cmd, "") => Err(format!("unknown command {cmd:?} — try `osd help`")),
         (cmd, sub) => Err(format!("unknown command {cmd} {sub:?} — try `osd help`")),
     }
+}
+
+fn provenance_dump(args: &Args) -> Result<(), String> {
+    let root = args
+        .value("workspace")
+        .ok_or("usage: osd provenance dump --workspace <directory> [--json]")?;
+    let root = std::path::Path::new(&root);
+    if !root.is_dir() {
+        return Err(format!("workspace directory unavailable: {}", root.display()));
+    }
+    let records = osd_core::provenance::all_records_for(root)?;
+    if args.has("json") {
+        println!("{}", serde_json::to_string(&records).map_err(|e| e.to_string())?);
+    } else {
+        for record in records {
+            println!("{}", serde_json::to_string(&record).map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(())
 }
 
 // ---- connection -------------------------------------------------------------

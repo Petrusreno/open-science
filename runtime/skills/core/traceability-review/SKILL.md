@@ -54,10 +54,11 @@ and fall back to whatever text you can read — do not fabricate identifiers.
 
 1. First check for `.openscience/ledger-v1.sqlite` (including an incomplete
    migration). If present, JSONL is a frozen legacy snapshot: do not read it or
-   fall back to mtimes for this check. Emit a `warn` finding that transactional
-   provenance requires the app's artifact History reader and Check 3 could not
-   be completed by this JSONL-based skill. Continue Checks 1 and 2 only.
-   Otherwise, read `.openscience/provenance.jsonl` in the workspace — one JSON record per
+   fall back to mtimes for this check. Use the bundled CLI locally:
+   `osd provenance dump --workspace "$PWD"` returns the committed records as
+   JSONL without contacting a gateway or provider. If that command is absent
+   or fails, emit a `warn` finding that Check 3 could not be completed; do not
+   use frozen JSONL as a substitute. Otherwise, read `.openscience/provenance.jsonl` in the workspace — one JSON record per
    line: `{path, version, ts, tool, content, …}`; `ts` is epoch seconds. It
    records every file version the agent wrote. The directory is hidden: read
    the file directly (`cat .openscience/provenance.jsonl`) instead of relying

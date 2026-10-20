@@ -538,8 +538,9 @@ and imports runs, provenance, original source bytes and schema version in one
 SQLite transaction into `.openscience/ledger-v1.sqlite`. Original JSONL files
 are never rewritten or appended after activation; existing direct consumers
 can still read the exact pre-migration history, but cannot see new records.
-The traceability-review skill explicitly reports Check 3 unavailable in this
-mode instead of consulting frozen history. Remote skill writers still append
+The traceability-review skill uses `osd provenance dump --workspace <dir>` to
+read committed records in this mode; if the CLI is unavailable it reports Check
+3 unavailable instead of consulting frozen history. Remote skill writers still append
 `remote-runs.jsonl`; remote provenance is outside the local transaction contract.
 
 The DB is authoritative and must be backed up as data; it is **not** the

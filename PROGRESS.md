@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-20 19:18 · The traceability skill can read migrated provenance through the local `osd provenance dump --workspace` CLI instead of frozen JSONL; its CLI integration test passed, while ledger-v1 activation remains explicit and disabled by default.
+
 2026-10-20 19:09 · Added explicit ledger-v1 SQLite migration with atomic local run/output links, strict preserved-JSONL import, process-crash recovery tests, transactional built-in readers, and a frozen-JSONL compatibility gate; macOS osd-core 280 passed (1 existing ignored), CLI check passed, and physical power-loss durability remains unverified.
 
 2026-10-20 18:42 · Workspace ledger writes now use a cross-process file lock for run deduplication and provenance versions; unfinished JSONL tails fail closed before retry success, with 270 osd-core tests passing on macOS. The two ledgers remain non-atomic and native Windows/Linux validation is pending.

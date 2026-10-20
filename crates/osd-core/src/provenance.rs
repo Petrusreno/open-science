@@ -536,6 +536,13 @@ fn read_records(root: &Path) -> Result<Vec<ProvenanceRecord>, String> {
     else { Ok(read_all(&store_file(root))) }
 }
 
+/// Export the active local provenance source for tools that cannot use the UI.
+/// A migrated workspace reads committed SQLite records; legacy workspaces read
+/// the existing JSONL. Transactional storage errors are never hidden.
+pub fn all_records_for(root: &Path) -> Result<Vec<ProvenanceRecord>, String> {
+    read_records(root)
+}
+
 fn cap_content(mut c: String) -> String {
     if c.len() > CONTENT_CAP {
         let mut end = CONTENT_CAP;
