@@ -25,6 +25,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         ("run", "ls") | ("run", "list") => runs(args),
         ("run", "log") => run_log(args),
         ("provenance", "dump") => provenance_dump(args),
+        ("ledger", "export") => ledger_export(args),
         ("fs", "ls") | ("fs", "list") => fs_ls(args),
         ("fs", "get") | ("fs", "read") => fs_get(args),
         ("model", "") | ("model", "show") => model_show(args),
@@ -56,6 +57,25 @@ fn provenance_dump(args: &Args) -> Result<(), String> {
         for record in records {
             println!("{}", serde_json::to_string(&record).map_err(|e| e.to_string())?);
         }
+    }
+    Ok(())
+}
+
+fn ledger_export(args: &Args) -> Result<(), String> {
+    const USAGE: &str = "usage: osd ledger export --workspace <directory> --output <new-directory> [--json]";
+    let root = args.value("workspace").ok_or(USAGE)?;
+    let output = args.value("output").ok_or(USAGE)?;
+    let summary = osd_core::ledger::export_v1(
+        std::path::Path::new(&root),
+        std::path::Path::new(&output),
+    )?;
+    if args.has("json") {
+        println!("{}", serde_json::to_string(&summary).map_err(|e| e.to_string())?);
+    } else {
+        println!(
+            "Exported {} runs and {} provenance records to {}",
+            summary.runs, summary.provenance, output
+        );
     }
     Ok(())
 }

@@ -2,6 +2,7 @@
 use crate::{provenance::ProvenanceRecord, runs::RunRecord};
 use rusqlite::{params, Connection, OpenFlags};
 use serde::{de::DeserializeOwned, Serialize};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const SOURCES: [&str; 2] = ["runs.jsonl", "provenance.jsonl"];
@@ -48,18 +49,53 @@ fn connect(root: &Path) -> Result<Connection, String> {
         ));
     }
     for name in SOURCES {
-        let original: Option<Vec<u8>> = conn
-            .query_row("SELECT bytes FROM sources WHERE name=?1", [name], |r| {
-                r.get(0)
-            })
-            .map_err(err)?;
-        if source(root, name)? != original {
+        if !source_matches(&conn, root, name)? {
             return Err(err(
                 "legacy source changed after activation; operator review required",
             ));
         }
     }
     Ok(conn)
+}
+
+fn source_matches(conn: &Connection, root: &Path, name: &str) -> Result<bool, String> {
+    let stored_len: Option<i64> = conn
+        .query_row(
+            "SELECT length(bytes) FROM sources WHERE name=?1",
+            [name],
+            |r| r.get(0),
+        )
+        .map_err(err)?;
+    let path = root.join(".openscience").join(name);
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(stored_len.is_none()),
+        Err(e) => return Err(err(e)),
+    };
+    let Some(len) = stored_len else {
+        return Ok(false);
+    };
+    if len < 0 || file.metadata().map_err(err)?.len() != len as u64 {
+        return Ok(false);
+    }
+    let mut offset = 0_i64;
+    let mut buffer = [0_u8; 64 * 1024];
+    while offset < len {
+        let size = ((len - offset) as usize).min(buffer.len());
+        file.read_exact(&mut buffer[..size]).map_err(err)?;
+        let stored: Vec<u8> = conn
+            .query_row(
+                "SELECT substr(bytes, ?2, ?3) FROM sources WHERE name=?1",
+                params![name, offset + 1, size as i64],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        if stored != buffer[..size] {
+            return Ok(false);
+        }
+        offset += size as i64;
+    }
+    Ok(file.read(&mut buffer[..1]).map_err(err)? == 0)
 }
 fn rows<T: DeserializeOwned>(conn: &Connection, table: &str) -> Result<Vec<T>, String> {
     let mut stmt = conn
@@ -189,6 +225,121 @@ pub fn migrate_v1(root: &Path) -> Result<(), String> {
     tx.commit().map_err(err)
 }
 
+/// Export a consistent local snapshot for an offline rollback. The destination
+/// must be a new directory outside the workspace; a completion marker is
+/// written only after both JSONL files have been flushed and synced. This does
+/// not change the active ledger or remove its database.
+pub fn export_v1(root: &Path, destination: &Path) -> Result<ExportSummary, String> {
+    let root = root.canonicalize().map_err(err)?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| err("export destination needs a parent directory"))?
+        .canonicalize()
+        .map_err(err)?;
+    if parent.starts_with(&root) {
+        return Err(err("export destination must be outside the workspace"));
+    }
+    let _guard = crate::provenance::lock_ledger(&root)?;
+    let mut conn = connect(&root)?;
+    let tx = conn.transaction().map_err(err)?;
+    let mut summary = ExportSummary {
+        format: "ledger-v1",
+        runs: 0,
+        provenance: 0,
+    };
+    std::fs::create_dir(destination).map_err(err)?;
+    for (name, table) in SOURCES.into_iter().zip(["runs", "provenance"]) {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination.join(name))
+            .map_err(err)?;
+        let mut imported = 0_i64;
+        match std::fs::File::open(root.join(".openscience").join(name)) {
+            Ok(mut original) => {
+                let mut buffer = [0_u8; 64 * 1024];
+                loop {
+                    let size = original.read(&mut buffer).map_err(err)?;
+                    if size == 0 {
+                        break;
+                    }
+                    imported += buffer[..size].iter().filter(|&&byte| byte == b'\n').count() as i64;
+                    file.write_all(&buffer[..size]).map_err(err)?;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(err(e)),
+        }
+        let total: i64 = tx
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .map_err(err)?;
+        if total < imported {
+            return Err(err("ledger has fewer rows than its imported source"));
+        }
+        let mut stmt = tx
+            .prepare(&format!(
+                "SELECT json FROM {table} ORDER BY rowid LIMIT -1 OFFSET ?1"
+            ))
+            .map_err(err)?;
+        let appended = stmt
+            .query_map([imported], |r| r.get::<_, String>(0))
+            .map_err(err)?;
+        for row in appended {
+            file.write_all(row.map_err(err)?.as_bytes()).map_err(err)?;
+            file.write_all(b"\n").map_err(err)?;
+        }
+        file.sync_all().map_err(err)?;
+        if table == "runs" {
+            summary.runs = total as u64;
+        } else {
+            summary.provenance = total as u64;
+        }
+    }
+    for name in SOURCES {
+        if !source_matches(&tx, &root, name)? {
+            return Err(err(
+                "legacy source changed during export; discard incomplete export",
+            ));
+        }
+    }
+    tx.commit().map_err(err)?;
+    sync_export_dir(destination)?;
+    let mut marker = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination.join("complete.json"))
+        .map_err(err)?;
+    marker
+        .write_all(serde_json::to_string(&summary).map_err(err)?.as_bytes())
+        .map_err(err)?;
+    marker.sync_all().map_err(err)?;
+    sync_export_dir(destination)?;
+    sync_export_dir(&parent)?;
+    Ok(summary)
+}
+
+#[cfg(unix)]
+fn sync_export_dir(path: &Path) -> Result<(), String> {
+    std::fs::File::open(path)
+        .map_err(err)?
+        .sync_all()
+        .map_err(err)
+}
+
+#[cfg(not(unix))]
+fn sync_export_dir(_path: &Path) -> Result<(), String> {
+    // The exported files are synced, but directory entry durability on Windows
+    // needs a platform-specific handle and remains outside this contract.
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub struct ExportSummary {
+    pub format: &'static str,
+    pub runs: u64,
+    pub provenance: u64,
+}
+
 pub(crate) fn runs(root: &Path) -> Result<Vec<RunRecord>, String> {
     rows(&connect(root)?, "runs")
 }
@@ -294,9 +445,12 @@ mod tests {
         let root = root("many-links");
         let dir = root.join(".openscience");
         std::fs::create_dir_all(&dir).unwrap();
+        let count = std::env::var("OSD_LEDGER_IMPORT_ROWS")
+            .map(|value| value.parse::<usize>().expect("positive row count"))
+            .unwrap_or(1_000);
         let mut run_lines = String::new();
         let mut provenance_lines = String::new();
-        for i in 0..1_000 {
+        for i in 0..count {
             let mut run = sample();
             run.run_id = format!("run-{i}");
             run.outputs = vec![crate::runs::RunArtifact {
@@ -325,9 +479,24 @@ mod tests {
         }
         std::fs::write(dir.join("runs.jsonl"), &run_lines).unwrap();
         std::fs::write(dir.join("provenance.jsonl"), &provenance_lines).unwrap();
+        let start = std::time::Instant::now();
         migrate_v1(&root).unwrap();
-        assert_eq!(runs(&root).unwrap().len(), 1_000);
-        assert_eq!(provenance(&root).unwrap().len(), 1_000);
+        if std::env::var_os("OSD_LEDGER_IMPORT_ROWS").is_some() {
+            eprintln!("imported {count} linked runs in {:?}", start.elapsed());
+        }
+        let mut new_run = sample();
+        new_run.run_id = "after-import".into();
+        let _guard = crate::provenance::lock_ledger(&root).unwrap();
+        let append_start = std::time::Instant::now();
+        commit_run(&root, &new_run).unwrap();
+        if std::env::var_os("OSD_LEDGER_IMPORT_ROWS").is_some() {
+            eprintln!(
+                "committed one run after {count} rows in {:?}",
+                append_start.elapsed()
+            );
+        }
+        assert_eq!(runs(&root).unwrap().len(), count + 1);
+        assert_eq!(provenance(&root).unwrap().len(), count + 2);
         assert_eq!(
             std::fs::read(dir.join("runs.jsonl")).unwrap(),
             run_lines.as_bytes()
@@ -336,6 +505,74 @@ mod tests {
             std::fs::read(dir.join("provenance.jsonl")).unwrap(),
             provenance_lines.as_bytes()
         );
+        drop(_guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn export_keeps_original_lines_and_includes_committed_rows() {
+        let root = root("export");
+        record(&root, 1000);
+        crate::provenance::append_record(
+            &root,
+            "original.txt",
+            "write",
+            None,
+            None,
+            Some("before".into()),
+            None,
+            None,
+            None,
+            None,
+            Some("original-call".into()),
+        )
+        .unwrap();
+        let originals = SOURCES.map(|name| source(&root, name).unwrap().unwrap());
+        migrate_v1(&root).unwrap();
+        record(&root, 2000);
+        crate::provenance::append_record(
+            &root,
+            "later.txt",
+            "write",
+            None,
+            None,
+            Some("after".into()),
+            None,
+            None,
+            None,
+            None,
+            Some("later-call".into()),
+        )
+        .unwrap();
+        let destination = root.with_extension("snapshot");
+        let summary = export_v1(&root, &destination).unwrap();
+        assert_eq!((summary.runs, summary.provenance), (2, 2));
+        for (name, original) in SOURCES.into_iter().zip(originals) {
+            let exported = std::fs::read(destination.join(name)).unwrap();
+            assert!(exported.starts_with(&original));
+            assert_eq!(exported.iter().filter(|&&b| b == b'\n').count(), 2);
+            if name == "runs.jsonl" {
+                assert_eq!(parse::<RunRecord>(Some(&exported)).unwrap().len(), 2);
+            } else {
+                assert_eq!(parse::<ProvenanceRecord>(Some(&exported)).unwrap().len(), 2);
+            }
+            assert_eq!(source(&root, name).unwrap().unwrap(), original);
+        }
+        assert!(destination.join("complete.json").is_file());
+        std::fs::remove_dir_all(destination).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn failed_export_never_writes_completion_marker() {
+        let root = root("export-incomplete");
+        migrate_v1(&root).unwrap();
+        let conn = Connection::open(db_path(&root)).unwrap();
+        conn.execute_batch("DROP TABLE provenance").unwrap();
+        drop(conn);
+        let destination = root.with_extension("incomplete");
+        assert!(export_v1(&root, &destination).is_err());
+        assert!(destination.is_dir());
+        assert!(!destination.join("complete.json").exists());
+        std::fs::remove_dir_all(destination).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

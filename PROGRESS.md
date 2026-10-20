@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-20 21:55 · Added a streaming offline ledger-v1 export to a new directory with a final completion marker, a bounded manual downgrade procedure, and a reproducible 100,000-row synthetic probe; macOS osd-core 283 passed (1 ignored) and CLI 12 passed, with no live workspace activated.
+
 2026-10-20 19:24 · Ledger-v1 import validates run/provenance links through in-memory indexes; a synthetic 1,000-run import preserved both JSONL sources byte for byte, and macOS osd-core 281 passed (1 ignored) plus CLI 11 passed, without activating a live workspace.
 
 2026-10-20 19:18 · The traceability skill can read migrated provenance through the local `osd provenance dump --workspace` CLI instead of frozen JSONL; its CLI integration test passed, while ledger-v1 activation remains explicit and disabled by default.

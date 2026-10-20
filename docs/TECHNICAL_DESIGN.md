@@ -560,9 +560,30 @@ JSONL fallback. After an interrupted migration, rerun `migrate_v1`: SQLite
 recovers its rollback journal, and only a version-zero database with no schema
 objects can restart import. Unknown/nonempty partial states require operator
 review. Do not delete an activated DB to roll back: that would hide post-switch
-records. A downgrade/export utility is not implemented. Stop legacy/external
-writers before activation; source-byte checks detect later changes but cannot
-serialize uncooperative writers. Remote JSONL keeps its prior tolerant parsing.
+records. `osd ledger export --workspace <dir> --output <new-dir>` writes a
+consistent local runs/provenance JSONL snapshot to a new directory outside the
+workspace, with `complete.json` written last after file sync. On Unix, the
+export directory and its parent are also synced; Windows directory-entry
+durability under power loss remains unverified. It retains original imported
+JSONL bytes as the prefix and appends committed SQLite rows. Export does not
+alter or deactivate the DB. For an offline downgrade, stop every writer and
+reader first; archive the entire `.openscience` directory, export to a separate
+location, verify `complete.json` and parse both files, then stage the exported
+JSONL in a copy of the workspace with no `ledger-v1.sqlite`, rebuild the
+disposable `runs.db` index there, and test it with the older binary. Only then
+consider replacing a live workspace while all processes remain stopped. A
+process-interrupted export lacks `complete.json` and must be discarded; after
+power loss, verify every file even if the marker exists. This is a manual
+recovery procedure, not an automated
+rollback command. Stop legacy/external writers before activation; source-byte
+checks detect later changes but cannot serialize uncooperative writers. Remote
+JSONL keeps its prior tolerant parsing and must be preserved separately.
+
+A local synthetic probe on macOS imported 10,000 linked runs in 156 ms and
+100,000 in 1.66 s; committing one run after 100,000 rows took 851 ms. Run the
+`imports_many_linked_runs_without_changing_source_bytes` test with
+`OSD_LEDGER_IMPORT_ROWS=100000` to reproduce the probe. These are debug-build
+synthetic timings on one machine, not a real-workspace or release benchmark.
 
 Durability contract: connections request SQLite `synchronous=FULL`; migration
 selects rollback journaling (`journal_mode=DELETE`), and acknowledged writes
