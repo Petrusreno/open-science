@@ -31,14 +31,14 @@ const onSave = vi.fn(async (_s: Specialist, _create: boolean) => {});
 const onDelete = vi.fn(async (_id: string) => {});
 const onClose = vi.fn();
 
-function open(initial: Specialist | null = null) {
+function open(initial: Specialist | null = null, mcp: McpServer[] | null = connectors) {
   return render(
     <MemoryRouter>
       <SpecialistEditor
         initial={initial}
         takenIds={["build", "reviewer"]}
         skills={skills}
-        connectors={connectors}
+        connectors={mcp}
         providers={providers}
         onSave={onSave}
         onDelete={onDelete}
@@ -52,6 +52,7 @@ const existing: Specialist = {
   id: "stats-reviewer",
   description: "Reviews statistics",
   color: "#2563EB",
+  icon: null,
   instructions: "Be strict.",
   skills: ["r-stats"],
   blockedConnectors: ["arxiv"],
@@ -77,6 +78,7 @@ describe("SpecialistEditor", () => {
         id: "stats-reviewer",
         description: "Reviews statistics",
         color: null,
+        icon: null,
         instructions: "",
         skills: null,
         blockedConnectors: [],
@@ -112,6 +114,18 @@ describe("SpecialistEditor", () => {
     expect(screen.getByRole("option", { name: "gone/old-model (not in the catalog)" })).toBeInTheDocument();
   });
 
+  it("opens before connectors are read, keeping their blocks meanwhile", async () => {
+    const user = userEvent.setup();
+    open(existing, null);
+    expect(screen.getByText("Reading connectors…")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Instructions"), "!");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith(
+      { ...existing, instructions: "Be strict.!", blockedConnectors: ["arxiv"] },
+      false,
+    );
+  });
+
   it("says a name is taken or unusable as it is typed, and refuses to save", async () => {
     const user = userEvent.setup();
     open();
@@ -144,9 +158,15 @@ describe("SpecialistEditor", () => {
     await user.click(screen.getByRole("checkbox", { name: /python-stats/ }));
     await user.click(screen.getByRole("switch", { name: "arxiv" }));
     await user.click(screen.getByRole("radio", { name: "Violet" }));
+    await user.click(screen.getByRole("radio", { name: "pen-line" }));
     await user.click(screen.getByRole("button", { name: "Create specialist" }));
     expect(onSave).toHaveBeenCalledWith(
-      expect.objectContaining({ skills: ["python-stats"], blockedConnectors: ["arxiv"], color: "#7C3AED" }),
+      expect.objectContaining({
+        skills: ["python-stats"],
+        blockedConnectors: ["arxiv"],
+        color: "#7C3AED",
+        icon: "pen-line",
+      }),
       true,
     );
   });

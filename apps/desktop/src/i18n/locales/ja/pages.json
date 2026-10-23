@@ -159,6 +159,7 @@
       "skillMissing": "インストールされていません",
       "connectors": "コネクタ",
       "connectorsHint": "後から追加したコネクタは、ここでオフにするまでオンです。",
+      "connectorsLoading": "コネクタを読み込み中…",
       "noConnectors": "コネクタが設定されていません。設定 › コネクタ で追加できます。",
       "connectorCollision": "{{blocked}} をオフにすると {{other}} もオフになります。両方オフにするか、{{blocked}} をオンのままにしてください。",
       "modelDefault": "デフォルトのモデル",
@@ -178,7 +179,18 @@
       "idEmpty": "名前には文字か数字を 1 つ以上含めてください。ID になります。",
       "model": "モデル",
       "modelDefaultNamed": "デフォルトのモデル（{{model}}）",
-      "modelUnlisted": "{{model}}（カタログにありません）"
+      "modelUnlisted": "{{model}}（カタログにありません）",
+      "icon": "アイコン",
+      "iconLetter": "頭文字"
+    },
+    "showAll": "すべて表示（{{count}}）",
+    "showFewer": "折りたたむ",
+    "detail": {
+      "close": "閉じる",
+      "loading": "SKILL.md を読み込んでいます…",
+      "unreadable": "このスキルのファイルを読み込めませんでした。",
+      "empty": "この SKILL.md には説明以外の内容がありません。",
+      "reveal": "フォルダで表示"
     }
   },
   "notFound": {

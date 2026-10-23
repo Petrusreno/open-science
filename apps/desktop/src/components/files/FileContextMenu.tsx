@@ -9,6 +9,7 @@ import {
   type DirEntry,
 } from "@/lib/artifactFile";
 import { copyText } from "@/lib/clipboard";
+import { isTauri } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
@@ -66,19 +67,26 @@ export function FileContextMenu({
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content className="z-50 min-w-[190px] rounded-card border border-border bg-surface p-1 text-[13px] text-text shadow-pop">
-          <Item icon={<FolderOpen size={14} />} onSelect={() => void reveal()}>
-            {REVEAL_LABEL}
-          </Item>
-          <Item icon={<Copy size={14} />} onSelect={() => void copyAbsolute()}>
-            {t("files.contextMenu.copyPath")}
-          </Item>
+          {/* Finder, absolute paths and the default app all belong to the
+              desktop's own disk; in a browser only the relative path means
+              anything. */}
+          {isTauri && (
+            <>
+              <Item icon={<FolderOpen size={14} />} onSelect={() => void reveal()}>
+                {REVEAL_LABEL}
+              </Item>
+              <Item icon={<Copy size={14} />} onSelect={() => void copyAbsolute()}>
+                {t("files.contextMenu.copyPath")}
+              </Item>
+            </>
+          )}
           <Item
             icon={<Copy size={14} />}
             onSelect={() => void copy(entry.path, t("files.contextMenu.relativePathLabel"))}
           >
             {t("files.contextMenu.copyRelativePath")}
           </Item>
-          {!entry.isDir && (
+          {isTauri && !entry.isDir && (
             <Item icon={<ExternalLink size={14} />} onSelect={() => void openArtifactExternally(entry.path, root)}>
               {t("files.contextMenu.openInDefaultApp")}
             </Item>

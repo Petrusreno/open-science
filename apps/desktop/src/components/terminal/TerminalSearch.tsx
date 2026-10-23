@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CaseSensitive, ChevronDown, ChevronUp, Regex, X } from "lucide-react";
 import type { SearchAddon } from "@xterm/addon-search";
@@ -29,6 +29,14 @@ export function TerminalSearch({
   const [regex, setRegex] = useState(false);
   const [results, setResults] = useState<{ index: number; count: number } | null>(null);
   const usable = queryIsUsable(query);
+  const input = useRef<HTMLInputElement>(null);
+
+  // A frame later than autoFocus: opened from the context menu, the menu hands
+  // focus back to the terminal as it closes, and typing would go to the shell.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => input.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, []);
 
   // xterm reports what it found, so the bar can say "3 / 17" rather than leave
   // the reader pressing Enter to find out whether there are more.
@@ -75,13 +83,18 @@ export function TerminalSearch({
       // The terminal has the keyboard; every key here is the bar's own.
       onKeyDown={(e) => {
         e.stopPropagation();
-        if (e.key === "Escape") onClose();
+        if (e.key === "Escape") {
+          // Handled, or macOS takes an unclaimed Escape as "leave full screen".
+          e.preventDefault();
+          onClose();
+        }
         // eslint-disable-next-line i18next/no-literal-string -- step direction, not UI copy
         else if (e.key === "Enter") step(e.shiftKey ? "previous" : "next");
       }}
       className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded-card border border-border bg-surface/95 px-1.5 py-1 shadow-pop backdrop-blur"
     >
       <input
+        ref={input}
         autoFocus
         value={query}
         onChange={(e) => setQuery(e.target.value)}

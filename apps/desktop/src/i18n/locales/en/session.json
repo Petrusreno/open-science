@@ -27,6 +27,11 @@
     "runAgent": "Run an agent",
     "newNotebook": "New Notebook",
     "newMarkdown": "New Markdown",
+    "sourceMenu": "Which Screens to show",
+    "sourceDesktop": "Desktop's Screens",
+    "sourceDesktopHint": "The desktop window's own, live: changes here show there and back.",
+    "sourceOwn": "My own Screens",
+    "sourceOwnHint": "Kept in this browser. The desktop window is not affected.",
     "splitRightShort": "Split right",
     "splitDownShort": "Split down",
     "defaultProject": "Default",
@@ -277,7 +282,8 @@
         "default_one": "ran a step",
         "default_other": "ran {{count}} steps"
       },
-      "failedCount": "{{count}} failed"
+      "callCount_one": "{{count}} tool call",
+      "callCount_other": "{{count}} tool calls"
     },
     "process": {
       "thinking": "Analysis completed",
@@ -495,6 +501,7 @@
     "title": "Terminal",
     "exited": "[process exited]",
     "desktopOnly": "A terminal needs the desktop app.",
+    "webOff": "Terminals are off for web access. Turn them on in the desktop app: Settings › Remote access.",
     "new": "Terminal",
     "menu": {
       "label": "Terminal menu",

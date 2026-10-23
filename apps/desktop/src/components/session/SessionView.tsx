@@ -27,6 +27,7 @@ import { useLayoutStore } from "@/lib/layout";
 import { startPaneDrag } from "@/lib/dragPane";
 import { allowsNativeMenu } from "@/lib/nativeMenu";
 import { FindBar } from "@/components/ui/FindBar";
+import { isTauri } from "@/lib/tauri";
 import { isGatewayWeb } from "@/lib/webMode";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { queryRuns } from "@/lib/runs";
@@ -251,8 +252,8 @@ export function SessionView({
   const pinEphemeral = useLayoutStore((s) => s.pinEphemeral);
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  // Split buttons/drag only make sense where tiling works (desktop, not web).
-  const canSplit = !isGatewayWeb && !isMobile;
+  // Split buttons/drag only make sense where tiling works (not on a phone).
+  const canSplit = !isMobile;
 
   const connected = status === "ready" || switching;
   const connecting = status === "connecting" && !switching;
@@ -606,7 +607,8 @@ export function SessionView({
       <ContextMenuItem disabled={!eid} onSelect={() => setRenaming(true)}>
         {t("live.header.rename")}
       </ContextMenuItem>
-      {sessionDir && (
+      {/* The folder is on the desktop's disk: a browser has no Finder to show it in. */}
+      {sessionDir && isTauri && (
         <ContextMenuItem onSelect={() => void revealSessionFolder(sessionDir)}>
           {t("terminal.menu.revealCwd")}
         </ContextMenuItem>

@@ -15,7 +15,6 @@ import { useUiStore } from "@/lib/store";
 import { openDraftScreen, useRuntimeStore } from "@/lib/runtime";
 import { DEFAULT_PROJECT, useLayoutStore } from "@/lib/layout";
 import { useIsMobile } from "@/lib/useIsMobile";
-import { isGatewayWeb } from "@/lib/webMode";
 import { WORKFLOW_STARTERS } from "@/components/thread/WorkflowStarters";
 
 interface Action {
@@ -34,8 +33,8 @@ export function CommandPalette() {
   const setOpen = useUiStore((s) => s.setPaletteOpen);
   const toggleTheme = useUiStore((s) => s.toggleTheme);
   const navigate = useNavigate();
-  // Tiling is desktop-only: web/phone show one pane, so there is no Screen to open.
-  const newPaneAllowed = !useIsMobile() && !isGatewayWeb;
+  // A phone shows one pane, so there is no Screen to open.
+  const newPaneAllowed = !useIsMobile();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

@@ -7,6 +7,8 @@ import {
   FileText,
   Folder,
   FolderTree,
+  Monitor,
+  UserRound,
   NotebookPen,
   Pencil,
   Plus,
@@ -26,6 +28,9 @@ import {
 } from "@/lib/layout";
 import { createMarkdown, createNotebook } from "@/lib/newFile";
 import { toast } from "@/lib/toast";
+import { isTauri } from "@/lib/tauri";
+import { isGatewayWeb, layoutSource, type LayoutSource } from "@/lib/webMode";
+import { switchLayoutSource } from "@/lib/layoutSync";
 import { startSessionScreen, useRuntimeStore } from "@/lib/runtime";
 import { detectCliAgents, selectCliAgent, type CliAgent } from "@/lib/cliAgents";
 import { useOverlayTitlebar, useUiStore } from "@/lib/store";
@@ -139,22 +144,28 @@ function NewScreenButton({ onNewScreen }: { onNewScreen: () => void }) {
             <FolderTree size={13} className="shrink-0 text-muted" />
             {t("nav:items.files")}
           </DropdownMenu.Item>
-          <DropdownMenu.Item
-            // eslint-disable-next-line i18next/no-literal-string -- PaneContent kind, not UI copy
-            onSelect={() => void newFilePane(createNotebook, "notebook")}
-            className="flex cursor-pointer items-center gap-2 rounded-input px-2 py-1.5 outline-none data-[highlighted]:bg-surface-2"
-          >
-            <NotebookPen size={13} className="shrink-0 text-muted" />
-            {t("group.newNotebook")}
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            // eslint-disable-next-line i18next/no-literal-string -- PaneContent kind, not UI copy
-            onSelect={() => void newFilePane(createMarkdown, "editor")}
-            className="flex cursor-pointer items-center gap-2 rounded-input px-2 py-1.5 outline-none data-[highlighted]:bg-surface-2"
-          >
-            <FileText size={13} className="shrink-0 text-muted" />
-            {t("group.newMarkdown")}
-          </DropdownMenu.Item>
+          {/* A new file is written to the desktop's disk, and a notebook runs on
+              its kernel — neither is reachable from a browser. */}
+          {isTauri && (
+            <>
+              <DropdownMenu.Item
+                // eslint-disable-next-line i18next/no-literal-string -- PaneContent kind, not UI copy
+                onSelect={() => void newFilePane(createNotebook, "notebook")}
+                className="flex cursor-pointer items-center gap-2 rounded-input px-2 py-1.5 outline-none data-[highlighted]:bg-surface-2"
+              >
+                <NotebookPen size={13} className="shrink-0 text-muted" />
+                {t("group.newNotebook")}
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                // eslint-disable-next-line i18next/no-literal-string -- PaneContent kind, not UI copy
+                onSelect={() => void newFilePane(createMarkdown, "editor")}
+                className="flex cursor-pointer items-center gap-2 rounded-input px-2 py-1.5 outline-none data-[highlighted]:bg-surface-2"
+              >
+                <FileText size={13} className="shrink-0 text-muted" />
+                {t("group.newMarkdown")}
+              </DropdownMenu.Item>
+            </>
+          )}
           {agents.length > 0 && (
             <>
               <DropdownMenu.Separator className="my-1 h-px bg-faint" />
@@ -239,6 +250,71 @@ function ProjectSwitcher() {
             >
               <Check size={13} className={cn("shrink-0", c.id === projectId ? "text-accent" : "invisible")} />
               <span className="truncate">{c.name}</span>
+            </DropdownMenu.Item>
+          ))}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
+/**
+ * Which Screens a browser signed in with the TOKEN is showing: the desktop
+ * window's own, followed live, or a set of its own kept in this browser.
+ * Absent everywhere else — the window has only its own, and an account only
+ * ever has its own.
+ */
+function LayoutSourceSwitcher() {
+  const { t } = useTranslation("session");
+  const webUser = useRuntimeStore((s) => s.webUser);
+  const [source, setSource] = useState<LayoutSource>(layoutSource);
+  const [busy, setBusy] = useState(false);
+  if (!isGatewayWeb || webUser) return null;
+  const choose = async (next: LayoutSource) => {
+    if (next === source || busy) return;
+    setBusy(true);
+    try {
+      await switchLayoutSource(next);
+      setSource(next);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const choices: { id: LayoutSource; label: string; hint: string }[] = [
+    { id: "desktop", label: t("group.sourceDesktop"), hint: t("group.sourceDesktopHint") },
+    { id: "own", label: t("group.sourceOwn"), hint: t("group.sourceOwnHint") },
+  ];
+  const Icon = source === "desktop" ? Monitor : UserRound;
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          aria-label={t("group.sourceMenu")}
+          title={t("group.sourceMenu")}
+          className="mr-1 flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-muted hover:bg-surface-2 hover:text-text"
+        >
+          <Icon size={13} className="shrink-0" />
+          <span className="truncate">{source === "desktop" ? t("group.sourceDesktop") : t("group.sourceOwn")}</span>
+          <ChevronDown size={12} className="shrink-0" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="start"
+          sideOffset={6}
+          className="z-50 w-[280px] rounded-card border border-border bg-surface p-1 text-[13px] text-text shadow-pop"
+        >
+          {choices.map((c) => (
+            <DropdownMenu.Item
+              key={c.id}
+              onSelect={() => void choose(c.id)}
+              className="flex cursor-pointer items-start gap-2 rounded-input px-2 py-1.5 outline-none data-[highlighted]:bg-surface-2"
+            >
+              <Check size={13} className={cn("mt-0.5 shrink-0", c.id === source ? "text-accent" : "invisible")} />
+              <span className="min-w-0">
+                <span className="block">{c.label}</span>
+                <span className="block text-[12px] leading-snug text-muted">{c.hint}</span>
+              </span>
             </DropdownMenu.Item>
           ))}
         </DropdownMenu.Content>
@@ -342,6 +418,7 @@ export function GroupTabs() {
             and the + button stay undraggable: a tab is never the drag element
             itself, and Tauri treats <button> as clickable, which blocks drag. */}
         <ProjectSwitcher />
+        <LayoutSourceSwitcher />
         <div
           data-tauri-drag-region={overlayTitlebar || undefined}
           className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"

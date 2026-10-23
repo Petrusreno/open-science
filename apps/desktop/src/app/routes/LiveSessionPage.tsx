@@ -4,7 +4,6 @@ import { useRuntimeStore } from "@/lib/runtime";
 import { findLeaf, leaves, recentScreens, useLayoutStore } from "@/lib/layout";
 import { projectIdForGroup } from "@/lib/projectScope";
 import { useIsMobile } from "@/lib/useIsMobile";
-import { isGatewayWeb } from "@/lib/webMode";
 import { cn } from "@/lib/cn";
 import { SessionView } from "@/components/session/SessionView";
 import { PaneTree } from "@/components/session/PaneTree";
@@ -89,18 +88,18 @@ export function LiveSessionPage() {
   const sessionDir = sessions.find((s) => s.id === focusedSid)?.directory;
 
   const isMobile = useIsMobile();
-  // Tiling can't work on a phone or the narrow web client — show the focused
-  // pane alone (the tree is kept, so it returns when there's room again). On
-  // desktop we ALWAYS render the tree, even for a lone pane, so it stays a
-  // drop target for docking the first dragged-in session.
-  const webOrMobile = isMobile || isGatewayWeb;
+  // Tiling can't work on a phone — show the focused pane alone (the tree is
+  // kept, so it returns when there's room again). Wider than that, desktop or
+  // web, we ALWAYS render the tree, even for a lone pane, so it stays a drop
+  // target for docking the first dragged-in session.
+  const singlePane = isMobile;
 
   // Every DISTINCT folder shown across the panes — background streams keep the
   // non-foreground ones live so different projects stream concurrently. In the
   // single-pane fallback only the focused pane renders, so no background streams
   // are wanted (the foreground stream covers it).
   const paneDirs = useMemo(() => {
-    if (webOrMobile || !tree) return [];
+    if (singlePane || !tree) return [];
     const dirs = new Set<string>();
     for (const l of leaves(tree)) {
       if (!l.sessionId) continue;
@@ -108,7 +107,7 @@ export function LiveSessionPage() {
       if (d) dirs.add(d);
     }
     return [...dirs];
-  }, [webOrMobile, tree, sessions]);
+  }, [singlePane, tree, sessions]);
   const paneDirsKey = paneDirs.join("|");
   useEffect(() => {
     syncPaneStreams(paneDirs);
@@ -173,11 +172,11 @@ export function LiveSessionPage() {
   // openSession). Without this a restored/tiled background pane shows a skeleton
   // until clicked. loadHistory no-ops when already loaded, so this is cheap.
   useEffect(() => {
-    if (!connected || webOrMobile || !tree) return;
+    if (!connected || singlePane || !tree) return;
     for (const l of leaves(tree)) {
       if (l.sessionId && l.sessionId !== focusedSid) void loadHistory(l.sessionId);
     }
-  }, [tree, connected, webOrMobile, focusedSid, loadHistory]);
+  }, [tree, connected, singlePane, focusedSid, loadHistory]);
 
   // focus → runtime: bind the single directory-scoped stream to the focused
   // session (cross-folder opens restart the sidecar). A draft focus resets to a
@@ -245,7 +244,7 @@ export function LiveSessionPage() {
   const warm = useMemo(() => new Set(live.slice(0, WARM_SCREENS)), [live]);
   // Web / phone: no tiling — show the focused pane alone (its own titlebar), or
   // the onboarding if the group is somehow empty.
-  if (webOrMobile) {
+  if (singlePane) {
     return focusedLeaf ? (
       focusedLeaf.artifact && focusedLeaf.sessionId ? (
         <PresentedArtifactPane

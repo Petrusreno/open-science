@@ -27,6 +27,11 @@
     "runAgent": "エージェントを起動",
     "newNotebook": "新規 Notebook",
     "newMarkdown": "新規 Markdown",
+    "sourceMenu": "表示するスクリーン",
+    "sourceDesktop": "デスクトップのスクリーン",
+    "sourceDesktopHint": "デスクトップのウィンドウと同じものをライブで。ここでの変更は向こうにも反映され、その逆も同じです。",
+    "sourceOwn": "自分のスクリーン",
+    "sourceOwnHint": "このブラウザに保存されます。デスクトップのウィンドウには影響しません。",
     "splitRightShort": "右に分割",
     "splitDownShort": "下に分割",
     "defaultProject": "デフォルト",
@@ -270,7 +275,7 @@
         "fetched_other": "{{count}} ページを取得",
         "default_other": "{{count}} ステップを実行"
       },
-      "failedCount": "{{count}} 件失敗"
+      "callCount_other": "ツール呼び出し {{count}} 回"
     },
     "process": {
       "thinking": "分析完了",
@@ -484,6 +489,7 @@
     "title": "ターミナル",
     "exited": "[プロセスは終了しました]",
     "desktopOnly": "ターミナルはデスクトップアプリでのみ使えます。",
+    "webOff": "Web アクセスではターミナルがオフです。デスクトップアプリの「設定 › リモートアクセス」でオンにしてください。",
     "new": "ターミナル",
     "menu": {
       "label": "ターミナルメニュー",

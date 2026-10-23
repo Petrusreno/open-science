@@ -36,6 +36,41 @@ export function clearGatewayToken(): void {
   }
 }
 
+/** The account this browser signed in as (from /v1/whoami), or null when it
+ *  used the token. The token shares the desktop window's Screens and shells;
+ *  an account keeps its own. */
+let account: string | null = null;
+
+export function signedInAccount(): string | null {
+  return account;
+}
+
+export function setSignedInAccount(name: string | null): void {
+  account = name;
+}
+
+/** Which Screens a TOKEN client shows: the desktop window's, live, or its
+ *  own, kept in this browser. A per-browser choice; an account always has its
+ *  own (kept on the desktop) and never sees the window's. */
+export type LayoutSource = "desktop" | "own";
+const SOURCE_KEY = "os_layout_source";
+
+export function layoutSource(): LayoutSource {
+  try {
+    return localStorage.getItem(SOURCE_KEY) === "own" ? "own" : "desktop";
+  } catch {
+    return "desktop";
+  }
+}
+
+export function setLayoutSource(source: LayoutSource): void {
+  try {
+    localStorage.setItem(SOURCE_KEY, source);
+  } catch {
+    /* the choice just won't survive a reload */
+  }
+}
+
 /** Same-origin gateway base (the page was served by it). */
 export function gatewayOrigin(): string {
   return typeof window !== "undefined" ? window.location.origin : "";

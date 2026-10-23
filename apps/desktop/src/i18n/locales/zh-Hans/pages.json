@@ -159,6 +159,7 @@
       "skillMissing": "已不再安装",
       "connectors": "连接器",
       "connectorsHint": "之后新增的连接器默认开启，可以在这里关闭。",
+      "connectorsLoading": "正在读取连接器…",
       "noConnectors": "还没有配置连接器，可在 设置 › 连接器 中添加。",
       "connectorCollision": "关闭 {{blocked}} 会连带关闭 {{other}}。请把两个都关掉，或保留 {{blocked}}。",
       "modelDefault": "默认模型",
@@ -178,7 +179,18 @@
       "idEmpty": "名称里至少要有一个文字或数字，它会成为 ID。",
       "model": "模型",
       "modelDefaultNamed": "默认模型（{{model}}）",
-      "modelUnlisted": "{{model}}（不在模型目录中）"
+      "modelUnlisted": "{{model}}（不在模型目录中）",
+      "icon": "图标",
+      "iconLetter": "首字"
+    },
+    "showAll": "显示全部 {{count}} 个",
+    "showFewer": "收起",
+    "detail": {
+      "close": "关闭",
+      "loading": "正在读取 SKILL.md…",
+      "unreadable": "无法读取这个技能的文件。",
+      "empty": "这个 SKILL.md 除了描述之外没有其他内容。",
+      "reveal": "在文件夹中显示"
     }
   },
   "notFound": {

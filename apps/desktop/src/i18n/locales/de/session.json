@@ -27,6 +27,11 @@
     "runAgent": "Agent starten",
     "newNotebook": "Neues Notebook",
     "newMarkdown": "Neues Markdown",
+    "sourceMenu": "Welche Screens",
+    "sourceDesktop": "Screens des Desktops",
+    "sourceDesktopHint": "Die des Desktop-Fensters, live: Änderungen hier erscheinen dort und umgekehrt.",
+    "sourceOwn": "Meine eigenen Screens",
+    "sourceOwnHint": "In diesem Browser gespeichert. Das Desktop-Fenster bleibt unberührt.",
     "splitRightShort": "Rechts teilen",
     "splitDownShort": "Unten teilen",
     "defaultProject": "Standard",
@@ -277,7 +282,8 @@
         "default_one": "führte einen Schritt aus",
         "default_other": "führte {{count}} Schritte aus"
       },
-      "failedCount": "{{count}} fehlgeschlagen"
+      "callCount_one": "{{count}} Werkzeugaufruf",
+      "callCount_other": "{{count}} Werkzeugaufrufe"
     },
     "process": {
       "thinking": "Analyse abgeschlossen",
@@ -495,6 +501,7 @@
     "title": "Terminal",
     "exited": "[Prozess beendet]",
     "desktopOnly": "Ein Terminal braucht die Desktop-App.",
+    "webOff": "Terminals sind für den Webzugriff aus. Schalten Sie sie in der Desktop-App ein: Einstellungen › Fernzugriff.",
     "new": "Terminal",
     "menu": {
       "label": "Terminal-Menü",

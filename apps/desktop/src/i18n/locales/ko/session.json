@@ -27,6 +27,11 @@
     "runAgent": "에이전트 실행",
     "newNotebook": "새 Notebook",
     "newMarkdown": "새 Markdown",
+    "sourceMenu": "표시할 화면",
+    "sourceDesktop": "데스크톱의 화면",
+    "sourceDesktopHint": "데스크톱 창과 같은 화면을 실시간으로: 여기서 바꾸면 그쪽도 바뀌고, 반대도 같습니다.",
+    "sourceOwn": "내 화면",
+    "sourceOwnHint": "이 브라우저에 저장됩니다. 데스크톱 창에는 영향이 없습니다.",
     "splitRightShort": "오른쪽으로 분할",
     "splitDownShort": "아래로 분할",
     "defaultProject": "기본",
@@ -270,7 +275,7 @@
         "fetched_other": "페이지 {{count}}개 가져옴",
         "default_other": "단계 {{count}}개 실행"
       },
-      "failedCount": "{{count}}개 실패"
+      "callCount_other": "도구 호출 {{count}}회"
     },
     "process": {
       "thinking": "분석 완료",
@@ -484,6 +489,7 @@
     "title": "터미널",
     "exited": "[프로세스 종료됨]",
     "desktopOnly": "터미널은 데스크톱 앱에서만 사용할 수 있습니다.",
+    "webOff": "웹 접속에서는 터미널이 꺼져 있습니다. 데스크톱 앱의 설정 › 원격 접속에서 켜세요.",
     "new": "터미널",
     "menu": {
       "label": "터미널 메뉴",

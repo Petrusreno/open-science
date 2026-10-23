@@ -13,6 +13,8 @@ import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SearchAddon } from "@xterm/addon-search";
 import type { TerminalProbe } from "./layout";
+import { isTauri } from "./tauri";
+import { terminalTransport } from "./terminalTransport";
 
 interface LiveTerminal {
   term: Terminal;
@@ -63,7 +65,8 @@ let probing = false;
 /** Start following every live terminal's folder and coding agent into the
  *  layout (`recordTerminal`). Once per app, from the first terminal on. */
 function ensureTerminalProbe(): void {
-  if (probing || typeof window === "undefined") return;
+  // The probe reads the desktop's own processes; a web client has no view of them.
+  if (probing || !isTauri || typeof window === "undefined") return;
   probing = true;
   window.setInterval(() => void probeOnce(), PROBE_INTERVAL_MS);
 }
@@ -107,8 +110,7 @@ export function destroyTerminal(leafId: string): void {
 
 async function closePty(leafId: string): Promise<void> {
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("terminal_close", { id: leafId });
+    await terminalTransport.close(leafId);
   } catch {
     // The window is going away; the Rust side kills every shell on exit.
   }
@@ -122,6 +124,7 @@ async function closePty(leafId: string): Promise<void> {
  * unrelated new pane. Later is too late — that new pane is then "open".
  */
 export async function pruneTerminalEnv(openLeafIds: string[]): Promise<void> {
+  if (!isTauri) return;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("terminal_env_prune", { open: openLeafIds });

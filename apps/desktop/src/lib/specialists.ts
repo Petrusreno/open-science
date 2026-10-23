@@ -12,6 +12,8 @@ export interface Specialist {
   description: string;
   /** `#rrggbb`, or null for the default ink. */
   color: string | null;
+  /** Avatar icon key (see `SPECIALIST_ICONS`), or null for the first letter. */
+  icon: string | null;
   /** Replaces the default system prompt; empty keeps it. */
   instructions: string;
   /** null: every skill. A list: only these. */

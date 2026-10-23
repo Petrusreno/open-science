@@ -431,7 +431,6 @@ export function ToolGroup({
   // open→shut→open flap between steps would be pure jank. A click overrides.
   const tools = blocks.filter((b): b is ToolCallBlock => b.kind === "tool-call");
   const active = tools.some((b) => b.status === "running" || b.status === "pending");
-  const failed = tools.filter((b) => b.status === "failed" || b.status === "warning").length;
   // What the ONE folded line says while the run is live: the command actually
   // running, not a count of the ones that finished. Folding the list is what was
   // asked for; going silent with it was not, and "ran 4 commands" beside a
@@ -480,9 +479,12 @@ export function ToolGroup({
         ) : (
           <span className={css.label}>{summarizeGroup(blocks)}</span>
         )}
-        {failed > 0 && (
-          <span className="shrink-0 text-error">· {t("tool.group.failedCount", { count: failed })}</span>
-        )}
+        {/* How much the agent has done here, counting up while it works. A
+            failed step is not flagged: the agent reads its own errors and
+            recovers, and the reader cannot act on it — the row says why. */}
+        <span className="shrink-0 tabular-nums text-muted">
+          · {t("tool.group.callCount", { count: tools.length })}
+        </span>
       </button>
       <Collapse open={open}>
         <div className={cn(css.body, "pl-[22px]")}>{rows}</div>

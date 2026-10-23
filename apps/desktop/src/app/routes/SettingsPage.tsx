@@ -64,6 +64,7 @@ import { isGatewayWeb } from "@/lib/webMode";
 import { customProviderId } from "@/lib/customProviderId";
 import { listProvidersWithAvailability } from "@/lib/zenModels";
 import { RemoteComputeCard } from "@/components/settings/RemoteComputeCard";
+import { WebSignedIn } from "@/components/web/WebSignedIn";
 import { RemoteAccessCard } from "@/components/settings/RemoteAccessCard";
 import { TerminalCliCard } from "@/components/settings/TerminalCliCard";
 import { ConversationSyncCard } from "@/components/settings/ConversationSyncCard";
@@ -1852,6 +1853,8 @@ export function SettingsPage() {
           )}
         </Section>
         )}
+
+        {section === "general" && isGatewayWeb && <WebSignedIn />}
 
         {/* ---- Workspace ---- */}
         {section === "general" && (

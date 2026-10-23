@@ -27,6 +27,11 @@
     "runAgent": "运行一个 Agent",
     "newNotebook": "新建 Notebook",
     "newMarkdown": "新建 Markdown",
+    "sourceMenu": "显示哪套屏幕",
+    "sourceDesktop": "桌面端的屏幕",
+    "sourceDesktopHint": "与桌面窗口同一套，实时同步：这里改了那边也变，反之亦然。",
+    "sourceOwn": "我自己的屏幕",
+    "sourceOwnHint": "存在这个浏览器里，不影响桌面窗口。",
     "splitRightShort": "向右分屏",
     "splitDownShort": "向下分屏",
     "defaultProject": "默认",
@@ -270,7 +275,7 @@
         "fetched_other": "获取了 {{count}} 个页面",
         "default_other": "执行了 {{count}} 个步骤"
       },
-      "failedCount": "{{count}} 个失败"
+      "callCount_other": "{{count}} 次工具调用"
     },
     "process": {
       "thinking": "已完成分析",
@@ -484,6 +489,7 @@
     "title": "终端",
     "exited": "[进程已退出]",
     "desktopOnly": "终端只能在桌面应用中使用。",
+    "webOff": "网页端的终端未开启。请在桌面端「设置 › 远程访问」里打开。",
     "new": "终端",
     "menu": {
       "label": "终端菜单",

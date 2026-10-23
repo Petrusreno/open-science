@@ -159,6 +159,7 @@
       "skillMissing": "Not installed any more",
       "connectors": "Connectors",
       "connectorsHint": "Connectors added later are on until you turn them off here.",
+      "connectorsLoading": "Reading connectors…",
       "noConnectors": "No connectors configured. Add them in Settings › Connectors.",
       "connectorCollision": "Turning off {{blocked}} would also turn off {{other}}. Turn both off, or keep {{blocked}} on.",
       "modelDefault": "Default model",
@@ -178,7 +179,18 @@
       "idEmpty": "The name needs at least one letter or digit — it becomes the ID.",
       "model": "Model",
       "modelDefaultNamed": "Default model ({{model}})",
-      "modelUnlisted": "{{model}} (not in the catalog)"
+      "modelUnlisted": "{{model}} (not in the catalog)",
+      "icon": "Icon",
+      "iconLetter": "First letter"
+    },
+    "showAll": "Show all {{count}}",
+    "showFewer": "Show fewer",
+    "detail": {
+      "close": "Close",
+      "loading": "Reading SKILL.md…",
+      "unreadable": "Couldn't read this skill's file.",
+      "empty": "This SKILL.md has no instructions beyond its description.",
+      "reveal": "Show in folder"
     }
   },
   "notFound": {
