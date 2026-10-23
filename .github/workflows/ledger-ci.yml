@@ -34,3 +34,5 @@ jobs:
         run: cargo test -p osd-core --locked
       - name: Check CLI
         run: cargo check -p osd-cli --locked
+      - name: Test CLI transactional provenance export
+        run: cargo test -p osd-cli --locked

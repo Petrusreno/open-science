@@ -12,9 +12,23 @@
 
 2026-10-21 19:40 · Preview tab works on a file opened for editing: the pane's edit draft used to short-circuit to the source editor before the Preview/Code toggle was consulted, so Preview did nothing on Markdown/HTML opened via "open file". Preview now renders the draft (autosave continues), Code returns to editing, and the pencil switches to Code.
 
+2026-10-21 00:48 · Added explicit `osd ledger migrate --workspace DIR --apply` activation with argument and source guards; the CLI integration suite passed, and a full copy of the synthetic web provenance workspace migrated with two runs and four provenance records while the installed v0.6.0 app and live workspace remained untouched. Live activation still requires a compatible signed desktop release and a complete backup.
+
+2026-10-21 00:20 · Merging the refreshed #164 branch into the stacked ledger draft preserved upstream Specialists changes; the truncated-code reproduce prompt no longer points to frozen JSONL or promises missing content, with 284 core tests, 12 CLI tests, 9 focused UI tests and desktop typecheck passing locally.
+
 2026-10-20 23:10 · Tool-group header drops the red "N failed" badge (the agent reads and recovers from its own errors; the reader can't act on it, and each failed row still shows its error line) for a muted tool-call count that counts up while the agent works.
 
 2026-10-20 22:55 · Opening a specialist no longer waits ~1 s on the Zen serving list (fetched from opencode.ai before the dialog showed): the editor opens at once with models from the page's loaded catalog, and connectors fill in as they arrive (blocks kept untouched until then). The Skills page stays put while a save/delete restarts the runtime instead of blinking to "disconnected"; Delete shows a spinner. Typing itself measured fine (WebKit, 15–25 ms incl. two frames).
+
+2026-10-20 22:01 · Exported snapshots now reopen through legacy readers in a staging copy and reject malformed committed rows before writing `complete.json`; macOS osd-core 284 passed (1 ignored).
+
+2026-10-20 21:55 · Added a streaming offline ledger-v1 export to a new directory with a final completion marker, a bounded manual downgrade procedure, and a reproducible 100,000-row synthetic probe; macOS osd-core 283 passed (1 ignored) and CLI 12 passed, with no live workspace activated.
+
+2026-10-20 19:24 · Ledger-v1 import validates run/provenance links through in-memory indexes; a synthetic 1,000-run import preserved both JSONL sources byte for byte, and macOS osd-core 281 passed (1 ignored) plus CLI 11 passed, without activating a live workspace.
+
+2026-10-20 19:18 · The traceability skill can read migrated provenance through the local `osd provenance dump --workspace` CLI instead of frozen JSONL; its CLI integration test passed, while ledger-v1 activation remains explicit and disabled by default.
+
+2026-10-20 19:09 · Added explicit ledger-v1 SQLite migration with atomic local run/output links, strict preserved-JSONL import, process-crash recovery tests, transactional built-in readers, and a frozen-JSONL compatibility gate; macOS osd-core 280 passed (1 existing ignored), CLI check passed, and physical power-loss durability remains unverified.
 
 2026-10-20 19:05 · Skills page reworked: Specialists first, then skills and agents as a three-column card grid (skills fold to three rows with "Show all"), and every skill/agent card opens a detail view with its SKILL.md rendered and "Show in folder". Specialist avatars gain an icon picker (27 research icons + first letter) in a colored tile; the icon lives in a frontmatter comment line, since the runtime would pass an unknown key to the provider (verified it loads with empty options). vitest 1778, osd-core 261 green.
 
