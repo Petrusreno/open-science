@@ -5,6 +5,7 @@
 // client of that gateway — or of the desktop app's, when one is running here.
 mod args;
 mod assets;
+mod account;
 mod auth;
 mod client;
 mod commands;
@@ -52,6 +53,10 @@ osd — Open Science Desktop without a window
                                     only loads when it lists its models)
   osd auth ls
 
+  osd account ls                    who can sign in to the web client
+  OSD_PASSWORD=… osd account add <name>   add one, or set a new password
+  osd account rm <name>
+
 Server options
   --port N          bind this exact port (default 4098, then any free port)
   --lan             also accept connections from the network (default: loopback)
@@ -82,6 +87,7 @@ fn main() {
     let result = match args.command.as_str() {
         "server" | "serve" => server::run(&args),
         "auth" => auth::run(&args),
+        "account" => account::run(&args),
         "version" | "--version" => {
             println!("osd {}", env!("CARGO_PKG_VERSION"));
             Ok(())

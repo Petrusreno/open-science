@@ -22,3 +22,12 @@ export const chipCls = (extra = "") =>
     "cursor-pointer transition-colors hover:bg-surface-2 focus:bg-surface-2 focus:border-accent/45 select-chrome",
     extra,
   );
+
+/** A plain action button on a settings Row: the same soft well as an input,
+ *  no chevron (that is what tells a dropdown apart). */
+export const buttonCls = (extra = "") =>
+  cn(
+    "inline-flex h-8 shrink-0 items-center rounded-input bg-surface-2 px-3 text-[13px] text-text",
+    "transition-colors hover:bg-border/50 disabled:cursor-default disabled:text-muted disabled:hover:bg-surface-2",
+    extra,
+  );

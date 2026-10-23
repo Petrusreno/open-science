@@ -440,7 +440,7 @@ export function SessionFilesPane({
     }
     rememberDirectory(GLOBAL_FILES_LOCATION, pathKey(target).slice(pathKey(base).length + 1));
     // eslint-disable-next-line i18next/no-literal-string -- PaneContent kind, not UI copy
-    if (!isMobile && !isGatewayWeb) useLayoutStore.getState().openContentPane({ kind: "files" });
+    if (!isMobile) useLayoutStore.getState().openContentPane({ kind: "files" });
     else navigate("/files");
   };
 

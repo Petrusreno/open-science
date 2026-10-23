@@ -78,14 +78,15 @@ describe("groupToolBlocks", () => {
     expect(items.map((i) => i.kind)).toEqual(["group", "block", "group"]);
   });
 
-  it("shows a failure count on the collapsed summary", () => {
+  it("counts tool calls on the collapsed summary, without flagging failures", () => {
     render(
       <ToolGroup
         blocks={[tool({}), tool({ status: "failed", output: "404 not found" })]}
       />,
     );
     expect(screen.getByText("Ran commands")).toBeInTheDocument();
-    expect(screen.getByText(/1 failed/)).toBeInTheDocument();
+    expect(screen.getByText(/2 tool calls/)).toBeInTheDocument();
+    expect(screen.queryByText(/failed/)).not.toBeInTheDocument();
   });
 });
 

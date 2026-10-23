@@ -342,6 +342,8 @@ export interface GatewayStatus {
   lanUrl: string | null;
   /** The bearer token clients authenticate with (blank until first enabled). */
   token: string;
+  /** Web clients may open a shell here (full-access tokens only). */
+  terminal: boolean;
 }
 
 /** Current gateway status (desktop only; null in browser). */
@@ -437,11 +439,12 @@ export async function setGatewayConfig(
   enabled: boolean,
   lan: boolean,
   mode: GatewayMode,
-  port?: number | null,
+  port: number | null,
+  terminal: boolean,
 ): Promise<GatewayStatus | null> {
   if (!isTauri) return null;
   const { invoke } = await import("@tauri-apps/api/core");
-  return await invoke<GatewayStatus>("set_gateway_config", { enabled, lan, mode, port: port ?? null });
+  return await invoke<GatewayStatus>("set_gateway_config", { enabled, lan, mode, port, terminal });
 }
 
 /** Rotate the bearer token (old clients must re-enter the new one). */
@@ -449,6 +452,33 @@ export async function regenerateGatewayToken(): Promise<GatewayStatus | null> {
   if (!isTauri) return null;
   const { invoke } = await import("@tauri-apps/api/core");
   return await invoke<GatewayStatus>("regenerate_gateway_token");
+}
+
+/** Web accounts: names a browser can sign in with (Settings › Remote access). */
+export async function listWebAccounts(): Promise<string[]> {
+  if (!isTauri) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await invoke<string[]>("web_accounts_list");
+}
+
+/** Create an account, or give it a new password — which signs it out everywhere. */
+export async function setWebAccount(name: string, password: string): Promise<void> {
+  if (!isTauri) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("web_account_set", { name, password });
+}
+
+export async function deleteWebAccount(name: string): Promise<void> {
+  if (!isTauri) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("web_account_delete", { name });
+}
+
+/** Hand the window's Screens to the gateway, for a web client to copy. */
+export async function publishDesktopLayout(layout: string): Promise<void> {
+  if (!isTauri) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("publish_desktop_layout", { layout });
 }
 
 /** uv download mirrors used only when provisioning Python tools (empty ⇒ default). */

@@ -484,7 +484,7 @@ function bumpSeqs(groups: LayoutGroup[]): void {
   }
 }
 
-interface Persisted {
+export interface Persisted {
   groups: LayoutGroup[];
   activeGroupId: string;
 }
@@ -507,9 +507,18 @@ function loadPersisted(): Persisted | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(LAYOUT_KEY);
-    if (!raw) return null;
-    const p = JSON.parse(raw) as Persisted;
-    if (!Array.isArray(p.groups) || p.groups.length === 0) return null;
+    return raw ? parseLayout(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A saved layout, checked: from this browser's storage, a web account's copy
+ *  on the desktop, or the desktop window's own. Null when it is not one. */
+export function parseLayout(value: unknown): Persisted | null {
+  try {
+    const p = value as Persisted;
+    if (!p || !Array.isArray(p.groups) || p.groups.length === 0) return null;
     if (typeof p.activeGroupId !== "string") return null;
     for (const g of p.groups) {
       if (typeof g.id !== "string" || typeof g.name !== "string") return null;
@@ -545,12 +554,42 @@ function reapClosedPanes(groups: LayoutGroup[]): void {
 
 function persist(groups: LayoutGroup[], activeGroupId: string): void {
   if (typeof window === "undefined") return;
+  const json = JSON.stringify({ groups, activeGroupId });
   try {
-    window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ groups, activeGroupId }));
+    window.localStorage.setItem(LAYOUT_KEY, json);
     reapClosedPanes(groups);
   } catch {
     /* storage full/unavailable never blocks layout changes */
   }
+  // The desktop publishes its Screens; a signed-in web account keeps its own
+  // on the desktop (see layoutSync.ts).
+  void import("./layoutSync").then(({ layoutChanged }) => layoutChanged(json));
+}
+
+/** A copy of a whole layout under fresh ids: where a token client's own
+ *  Screens start, the first time it leaves the desktop window's. */
+export function cloneLayout(layout: Persisted): Persisted {
+  const groups = layout.groups.map((g) => {
+    const tree = g.tree && cloneForImport(g.tree);
+    return { ...g, id: genGroupId(), tree, focusedLeafId: tree ? leaves(tree)[0].id : null, zoomedLeafId: null };
+  });
+  const active = layout.groups.findIndex((g) => g.id === layout.activeGroupId);
+  return { groups, activeGroupId: groups[Math.max(0, active)].id };
+}
+
+/** A copy of `node` under fresh ids. A terminal is copied as a NEW shell in the
+ *  same folder: the original's shell is not this client's to type into, and
+ *  re-running its startup command or agent resume would start a second copy of
+ *  whatever the original is running. */
+function cloneForImport(node: PaneNode): PaneNode {
+  if (node.kind === "split") {
+    return { ...node, id: genId(), children: node.children.map(cloneForImport), sizes: [...node.sizes] };
+  }
+  const leaf: PaneLeaf = { ...node, id: genId() };
+  if (leaf.content?.kind === "terminal") {
+    leaf.content = { kind: "terminal", cwd: leaf.content.cwd, name: leaf.content.name };
+  }
+  return leaf;
 }
 
 function sameAgent(a: TerminalAgent | undefined, b: TerminalAgent | undefined): boolean {
@@ -692,6 +731,9 @@ interface LayoutState {
   toggleZoom: (leafId?: string) => void;
   /** Collapse to a single pane bound to `sessionId`. */
   reset: (sessionId: string | null) => void;
+  /** Replace every Screen with `layout` — a signed-in web account's own,
+   *  kept on the desktop. */
+  adoptLayout: (layout: Persisted) => void;
   /** Drop leaves whose session vanished (deleted / not in `valid`), collapsing
    *  toward a single pane. A null-session (draft) leaf is always kept. */
   pruneSessions: (valid: Set<string>) => void;
@@ -707,6 +749,9 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
   const initActiveId = restored ? restored.activeGroupId : initGroups[0].id;
   const initActive = initGroups.find((g) => g.id === initActiveId)!;
   const restoredLeafIds = initGroups.flatMap((g) => (g.tree ? leaves(g.tree).map((l) => l.id) : []));
+  void import("./layoutSync").then(({ layoutChanged }) =>
+    layoutChanged(JSON.stringify({ groups: initGroups, activeGroupId: initActiveId })),
+  );
   void import("./terminalSessions").then(({ pruneTerminalEnv }) => pruneTerminalEnv(restoredLeafIds));
 
   /** Write a patch into the ACTIVE group and re-mirror the top-level fields. */
@@ -750,6 +795,21 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     focusedLeafId: initActive.focusedLeafId,
     zoomedLeafId: null,
     ephemeralGroupId: null,
+
+    adoptLayout: (layout) =>
+      set(() => {
+        bumpSeqs(layout.groups);
+        const active = layout.groups.find((g) => g.id === layout.activeGroupId) ?? layout.groups[0];
+        persist(layout.groups, active.id);
+        return {
+          groups: layout.groups,
+          activeGroupId: active.id,
+          tree: active.tree,
+          focusedLeafId: active.focusedLeafId,
+          zoomedLeafId: null,
+          ephemeralGroupId: null,
+        };
+      }),
 
     openSessionEphemeral: (sessionId, projectId) =>
       set((s) => {

@@ -45,6 +45,10 @@ const MAX_DESCRIPTION: usize = 1_000;
 const MAX_INSTRUCTIONS: usize = 50_000;
 const MAX_SKILL_NAME: usize = 128;
 const MAX_MODEL: usize = 256;
+const MAX_ICON: usize = 32;
+
+/// Frontmatter comment line carrying the avatar icon, after `MARKER`.
+const ICON_PREFIX: &str = "# icon: ";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +60,12 @@ pub struct Specialist {
     /// `#rrggbb`, or None for the default ink.
     #[serde(default)]
     pub color: Option<String>,
+    /// The avatar's icon, by the app's key for it (`pen-line`), or None for
+    /// the name's first letter. The runtime has no such field — an unknown
+    /// frontmatter key would be passed to the model provider as an option — so
+    /// it is kept in a YAML comment line (`ICON_PREFIX`) the runtime skips.
+    #[serde(default)]
+    pub icon: Option<String>,
     /// Replaces the runtime's default system prompt; empty keeps the default.
     #[serde(default)]
     pub instructions: String,
@@ -132,6 +142,14 @@ pub fn validate(s: &Specialist) -> Result<(), String> {
     if s.instructions.chars().count() > MAX_INSTRUCTIONS {
         return Err(format!("the instructions are longer than {MAX_INSTRUCTIONS} characters"));
     }
+    if let Some(icon) = &s.icon {
+        let ok = !icon.is_empty()
+            && icon.len() <= MAX_ICON
+            && icon.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !ok {
+            return Err(format!("invalid icon \"{icon}\""));
+        }
+    }
     if let Some(color) = &s.color {
         if !valid_color(color) {
             return Err(format!("invalid color \"{color}\": expected #rrggbb"));
@@ -187,8 +205,9 @@ pub fn render(s: &Specialist) -> String {
         front.insert("permission".into(), Value::Object(permission));
     }
     let instructions = s.instructions.trim();
+    let icon = s.icon.as_ref().map(|i| format!("{ICON_PREFIX}{i}\n")).unwrap_or_default();
     format!(
-        "---\n{MARKER}\n{}\n---\n{}{}",
+        "---\n{MARKER}\n{icon}{}\n---\n{}{}",
         Value::Object(front),
         instructions,
         if instructions.is_empty() { "" } else { "\n" }
@@ -247,6 +266,7 @@ pub fn parse(id: &str, text: &str) -> Option<Specialist> {
         id: id.to_string(),
         description: front.get("description")?.as_str()?.to_string(),
         color: front.get("color").and_then(Value::as_str).map(str::to_owned),
+        icon: lines[1..].iter().find_map(|l| l.strip_prefix(ICON_PREFIX)).map(|i| i.trim().to_string()),
         instructions: body.trim().to_string(),
         skills,
         blocked_connectors,
@@ -380,6 +400,7 @@ mod tests {
             id: "stats-reviewer".into(),
             description: "Reviews statistics: tests, \"assumptions\", 多重比较\nsecond line".into(),
             color: Some("#2563EB".into()),
+            icon: Some("chart-column".into()),
             instructions: "  You review statistics.\n\nBe strict.  ".into(),
             skills: Some(vec!["r-stats".into(), "python-stats".into()]),
             blocked_connectors: vec!["pubmed".into(), "open-science-browser".into()],
@@ -393,12 +414,13 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "---");
         assert_eq!(lines[1], MARKER);
-        let front: Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(lines[2], "# icon: chart-column");
+        let front: Value = serde_json::from_str(lines[3]).unwrap();
         assert_eq!(front["mode"], "subagent");
         assert_eq!(front["color"], "#2563EB");
         assert_eq!(front["permission"]["pubmed_*"], "deny");
         assert_eq!(front["permission"]["open-science-browser_*"], "deny");
-        assert_eq!(lines[3], "---");
+        assert_eq!(lines[4], "---");
         assert!(text.ends_with("---\nYou review statistics.\n\nBe strict.\n"));
     }
 
@@ -442,6 +464,7 @@ mod tests {
             id: "a".into(),
             description: "Does a".into(),
             color: None,
+            icon: None,
             instructions: String::new(),
             skills: None,
             blocked_connectors: vec![],
@@ -479,6 +502,9 @@ mod tests {
         }
         assert!(validate(&Specialist { id: "x".repeat(MAX_ID + 1), ..ok.clone() }).is_err());
         assert!(validate(&Specialist { id: "写".repeat(MAX_ID), ..ok.clone() }).is_ok(), "counted in characters");
+        for icon in ["", "Pen", "a b", "../x", "x\n"] {
+            assert!(validate(&Specialist { icon: Some(icon.into()), ..ok.clone() }).is_err(), "{icon}");
+        }
         for model in ["gpt-5", "/x", "a/", "a/b c", "a/b\n"] {
             assert!(validate(&Specialist { model: model.into(), ..ok.clone() }).is_err(), "{model}");
         }

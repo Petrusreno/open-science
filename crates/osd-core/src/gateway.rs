@@ -9,11 +9,12 @@
 // The ONLY thing that ever binds off-loopback is this gateway, and it is the only
 // thing that understands the external bearer token — the sidecar stays
 // 127.0.0.1-only always. See docs/rfc/remote-access-gateway.md.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -48,6 +49,10 @@ pub struct Persisted {
     /// preference would silently turn "4098 when it is free" into "4098 or
     /// refuse to start".
     pub preferred_port: Option<u16>,
+    /// Whether a web client may open a shell on this machine. Its own switch,
+    /// off by default: a full-access token is otherwise a token to run agent
+    /// turns, and a shell is a step past that the user has to take on purpose.
+    pub terminal: bool,
 }
 
 impl Default for Persisted {
@@ -59,6 +64,7 @@ impl Default for Persisted {
             token: String::new(),
             port: None,
             preferred_port: None,
+            terminal: false,
         }
     }
 }
@@ -80,6 +86,7 @@ pub fn read_persisted(env: &Env) -> Persisted {
                         "token" => p.token = v.to_string(),
                         "port" => p.port = v.parse().ok(),
                         "preferredPort" => p.preferred_port = v.parse().ok(),
+                        "terminal" => p.terminal = v == "1",
                         _ => {}
                     }
                 }
@@ -95,13 +102,14 @@ fn write_persisted(env: &Env, p: &Persisted) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let body = format!(
-        "enabled {}\nlan {}\nmode {}\ntoken {}\nport {}\npreferredPort {}\n",
+        "enabled {}\nlan {}\nmode {}\ntoken {}\nport {}\npreferredPort {}\nterminal {}\n",
         if p.enabled { 1 } else { 0 },
         if p.lan { 1 } else { 0 },
         p.mode,
         p.token,
         p.port.map(|v| v.to_string()).unwrap_or_default(),
-        p.preferred_port.map(|v| v.to_string()).unwrap_or_default()
+        p.preferred_port.map(|v| v.to_string()).unwrap_or_default(),
+        if p.terminal { 1 } else { 0 }
     );
     std::fs::write(&f, body).map_err(|e| e.to_string())?;
     tighten_private(&f); // token is a secret — owner-only, never in git
@@ -139,6 +147,12 @@ fn normalize_mode(m: &str) -> String {
 struct Shared {
     token: Mutex<String>,
     read_only: AtomicBool,
+    /// The user's "allow terminal" switch, read per request like the mode.
+    terminal: AtomicBool,
+    /// Shells this gateway opened. A web client reaches only these — never a
+    /// terminal of the desktop window — and they are killed when access to
+    /// them is withdrawn (see `close_remote_terminals`).
+    remote_terminals: Mutex<HashSet<String>>,
     /// Live file tickets: id → (issued, resolved absolute path). See `issue_ticket`.
     tickets: Mutex<HashMap<String, (Instant, PathBuf)>>,
 }
@@ -217,6 +231,24 @@ pub trait Assets: Send + Sync {
     fn get(&self, path: &str) -> Option<(Vec<u8>, String)>;
 }
 
+/// Shells for web clients, supplied by a host that has them (the desktop app;
+/// `osd server` has none, and its gateway answers terminal requests with 404).
+///
+/// `id` is the client's own handle — its pane's id — so a page reload reattaches
+/// to the same shell instead of starting another.
+pub trait Terminals: Send + Sync {
+    /// Start a shell, or do nothing if `id` is already running. True when a
+    /// new shell was started — only then may the caller type a startup
+    /// command into it.
+    fn open(&self, id: &str, cwd: Option<String>, cols: u16, rows: u16) -> Result<bool, String>;
+    fn write(&self, id: &str, data: &str) -> Result<(), String>;
+    fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String>;
+    fn close(&self, id: &str) -> Result<(), String>;
+    /// Recent output, then everything after it. The channel closes when the
+    /// shell exits. None for a terminal that is not running.
+    fn subscribe(&self, id: &str) -> Option<Receiver<String>>;
+}
+
 /// A build with no web client bundled. Serving still works — `/v1` is a
 /// complete API on its own — but `/` says so instead of returning nothing.
 pub struct NoAssets;
@@ -230,6 +262,10 @@ impl Assets for NoAssets {
 pub struct GatewayState {
     running: Mutex<Option<Running>>,
     assets: Arc<dyn Assets>,
+    terminals: Option<Arc<dyn Terminals>>,
+    /// Called with a layout a token client wrote, so the desktop window shows
+    /// it at once (the window and token clients share one set of Screens).
+    on_desktop_layout: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     /// Called when a client created or deleted a session, so a desktop window
     /// showing the same workspace refreshes instead of going stale.
     on_sessions_changed: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -240,7 +276,19 @@ impl GatewayState {
         assets: Arc<dyn Assets>,
         on_sessions_changed: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
-        GatewayState { running: Mutex::new(None), assets, on_sessions_changed }
+        GatewayState { running: Mutex::new(None), assets, terminals: None, on_desktop_layout: None, on_sessions_changed }
+    }
+
+    /// Tell the window when a token client changes the shared Screens.
+    pub fn with_desktop_layout_listener(mut self, f: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+        self.on_desktop_layout = Some(f);
+        self
+    }
+
+    /// Offer this host's shells to web clients (still behind the user's switch).
+    pub fn with_terminals(mut self, terminals: Arc<dyn Terminals>) -> Self {
+        self.terminals = Some(terminals);
+        self
     }
 }
 
@@ -254,6 +302,8 @@ struct Ctx {
     env: Env,
     shared: Arc<Shared>,
     assets: Arc<dyn Assets>,
+    terminals: Option<Arc<dyn Terminals>>,
+    on_desktop_layout: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     on_sessions_changed: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -269,6 +319,24 @@ impl Ctx {
     }
     fn read_only(&self) -> bool {
         self.shared.read_only.load(Ordering::Relaxed)
+    }
+    /// The shells, if this client may use them right now: a host that has
+    /// them, the user's switch on, and a full-access token.
+    fn terminals(&self) -> Option<&Arc<dyn Terminals>> {
+        let allowed = self.shared.terminal.load(Ordering::Relaxed) && !self.read_only();
+        self.terminals.as_ref().filter(|_| allowed)
+    }
+}
+
+/// Kill every shell a web client opened. Called whenever the access that let
+/// it be opened goes away — gateway stopped, switch off, read-only, token
+/// rotated — so a revoked client leaves nothing running behind it.
+fn close_remote_terminals(shared: &Shared, terminals: Option<&Arc<dyn Terminals>>) {
+    let ids: Vec<String> = shared.remote_terminals.lock().unwrap().drain().collect();
+    if let Some(t) = terminals {
+        for id in ids {
+            let _ = t.close(&id);
+        }
     }
 }
 
@@ -318,12 +386,16 @@ pub fn start_at(
     let shared = Arc::new(Shared {
         token: Mutex::new(p.token.clone()),
         read_only: AtomicBool::new(p.mode == "read-only"),
+        terminal: AtomicBool::new(p.terminal),
+        remote_terminals: Mutex::new(HashSet::new()),
         tickets: Mutex::new(HashMap::new()),
     });
     let ctx = Arc::new(Ctx {
         env: env.clone(),
         shared: shared.clone(),
         assets: state.assets.clone(),
+        terminals: state.terminals.clone(),
+        on_desktop_layout: state.on_desktop_layout.clone(),
         on_sessions_changed: state.on_sessions_changed.clone(),
     });
     let sf = stop_flag.clone();
@@ -391,6 +463,7 @@ pub fn stop(env: &Env, state: &GatewayState) {
         return; // nothing of ours was listening; the record is not ours to touch
     };
     r.stop.store(true, Ordering::Relaxed);
+    close_remote_terminals(&r.shared, state.terminals.as_ref());
     // A recorded port that nothing is listening on would send `osd` to a dead
     // address, so clear it — but ONLY if it is still ours. The desktop app and
     // an `osd server` share this file: whichever bound last owns the record, and
@@ -529,17 +602,26 @@ fn route(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
         }
     }
 
+    // Signing in is how a web account gets its credential, so it is the one
+    // write that comes before the gate.
+    if req.method == "POST" && path == "/v1/login" {
+        return login_route(stream, req, ctx);
+    }
+
     // ---- /v1 contract API (CLI / curl / the SPA's file browser) ----
     if let Some(rest) = path.strip_prefix("/v1/") {
-        if !authed(req, &ctx.token()) {
+        let Some(who) = principal(req, ctx) else {
             respond_json(stream, 401, "{\"error\":\"unauthorized\"}");
             return;
-        }
-        if ctx.read_only() && req.method != "GET" {
+        };
+        // Read-only stops changes to the workspace, not an account keeping
+        // its own Screens or signing itself out.
+        let own_state = (req.method == "PUT" && rest == "me/layout") || (req.method == "POST" && rest == "logout");
+        if ctx.read_only() && req.method != "GET" && !own_state {
             respond_json(stream, 403, "{\"error\":\"token is read-only\"}");
             return;
         }
-        v1(stream, req, ctx, rest);
+        v1(stream, req, ctx, rest, &who);
         return;
     }
 
@@ -571,7 +653,7 @@ fn route(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     }
 
     // ---- transparent OpenCode proxy (the SPA's OpenCodeClient talks here) ----
-    if !authed(req, &ctx.token()) {
+    if principal(req, ctx).is_none() {
         respond_json(stream, 401, "{\"error\":\"unauthorized\"}");
         return;
     }
@@ -607,12 +689,21 @@ fn route(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
 
 /// The versioned contract surface (CLI / curl / the SPA's file browser).
 /// `rest` is the path after `/v1/`.
-fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str) {
+fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str, who: &Principal) {
     let segs: Vec<&str> = rest.trim_matches('/').split('/').collect();
     match (req.method.as_str(), segs.as_slice()) {
         ("GET", ["whoami"]) => {
             let mode = if ctx.read_only() { "read-only" } else { "full" };
-            let payload = serde_json::json!({ "mode": mode, "directory": ws_dir(ctx) });
+            let user = match who {
+                Principal::User { name, .. } => Some(name.as_str()),
+                Principal::Token => None,
+            };
+            let payload = serde_json::json!({
+                "mode": mode,
+                "directory": ws_dir(ctx),
+                "terminal": ctx.terminals().is_some(),
+                "user": user,
+            });
             respond_json(stream, 200, &payload.to_string());
         }
         ("GET", ["sessions"]) => {
@@ -782,6 +873,60 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str) {
         // opencode.ai itself (no CORS headers), so the web client asks us and
         // gets the identical list the desktop picker filters by. Carries no
         // credentials in either direction.
+        (_, ["terminals", id, ..]) => terminal_route(stream, req, ctx, id, &segs[2..], who),
+        ("POST", ["logout"]) => match who {
+            Principal::User { session, .. } => match crate::web_accounts::logout(&ctx.env, session) {
+                Ok(()) => respond_json(stream, 200, "{\"ok\":true}"),
+                Err(e) => respond_json(stream, 500, &err_json(&e)),
+            },
+            Principal::Token => respond_json(stream, 400, "{\"error\":\"not signed in with an account\"}"),
+        },
+        ("GET", ["me", "layout"]) => match who {
+            Principal::User { name, .. } => match crate::web_accounts::read_layout(&ctx.env, name) {
+                Some(json) => respond_json(stream, 200, &json),
+                None => respond_json(stream, 200, "null"),
+            },
+            Principal::Token => respond_json(stream, 400, "{\"error\":\"not signed in with an account\"}"),
+        },
+        ("PUT", ["me", "layout"]) => match who {
+            Principal::User { name, .. } => {
+                let body = String::from_utf8_lossy(&req.body);
+                match crate::web_accounts::write_layout(&ctx.env, name, &body) {
+                    Ok(()) => respond_json(stream, 200, "{\"ok\":true}"),
+                    Err(e) => respond_json(stream, 400, &err_json(&e)),
+                }
+            }
+            Principal::Token => respond_json(stream, 400, "{\"error\":\"not signed in with an account\"}"),
+        },
+        // The desktop window's Screens, which a token client mirrors (polling
+        // with `since`, answered 204 while nothing changed). An account has its
+        // own Screens and no view of the window's.
+        ("GET", ["layout", "desktop"]) if matches!(who, Principal::User { .. }) => {
+            respond_json(stream, 403, "{\"error\":\"an account keeps its own layout\"}")
+        }
+        ("GET", ["layout", "desktop"]) => match crate::web_accounts::read_desktop_layout(&ctx.env) {
+            Some((rev, _)) if req.query_get("since").and_then(|v| v.parse::<u64>().ok()) == Some(rev) => {
+                respond(stream, 204, "application/json", b"")
+            }
+            Some((rev, json)) => respond_json(stream, 200, &format!("{{\"rev\":{rev},\"layout\":{json}}}")),
+            None => respond_json(stream, 200, "{\"rev\":0,\"layout\":null}"),
+        },
+        // Only the token shares the window's Screens; an account has its own.
+        ("PUT", ["layout", "desktop"]) => match who {
+            Principal::Token => {
+                let body = String::from_utf8_lossy(&req.body);
+                match crate::web_accounts::write_desktop_layout(&ctx.env, &body) {
+                    Ok(rev) => {
+                        if let Some(f) = &ctx.on_desktop_layout {
+                            f(&body);
+                        }
+                        respond_json(stream, 200, &format!("{{\"rev\":{rev}}}"))
+                    }
+                    Err(e) => respond_json(stream, 400, &err_json(&e)),
+                }
+            }
+            Principal::User { .. } => respond_json(stream, 403, "{\"error\":\"an account keeps its own layout\"}"),
+        },
         ("GET", ["zen-models"]) => match crate::model_probe::fetch_zen_models() {
             Ok(ids) => {
                 let payload = serde_json::json!({ "models": ids });
@@ -1244,6 +1389,152 @@ fn send_file(stream: &mut TcpStream, full: &Path) {
     }
 }
 
+// ---- web accounts -------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct LoginBody {
+    name: String,
+    password: String,
+}
+
+fn login_route(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
+    use crate::web_accounts::{login, LoginError};
+    let Ok(body) = serde_json::from_slice::<LoginBody>(&req.body) else {
+        return respond_json(stream, 400, "{\"error\":\"bad body\"}");
+    };
+    match login(&ctx.env, &body.name, &body.password) {
+        Ok((token, expires, user)) => respond_json(
+            stream,
+            200,
+            &serde_json::json!({ "token": token, "user": user, "expires": expires }).to_string(),
+        ),
+        Err(LoginError::Invalid) => respond_json(stream, 401, "{\"error\":\"invalid\"}"),
+        Err(LoginError::Locked(left)) => respond_json(
+            stream,
+            429,
+            &serde_json::json!({ "error": "locked", "retryAfter": left.as_secs().max(1) }).to_string(),
+        ),
+        Err(LoginError::Other(e)) => respond_json(stream, 500, &err_json(&e)),
+    }
+}
+
+// ---- terminals --------------------------------------------------------------
+
+/// A pane id from the web client: short, and nothing a path or a shell could
+/// read as syntax.
+fn valid_terminal_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+#[derive(serde::Deserialize)]
+struct TerminalOpen {
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(serde::Deserialize)]
+struct TerminalInput {
+    data: String,
+}
+
+#[derive(serde::Deserialize)]
+struct TerminalSize {
+    cols: u16,
+    rows: u16,
+}
+
+/// `/v1/terminals/{id}[/input|/resize|/output]`. The read-only gate has already
+/// refused every write; `ctx.terminals()` refuses the rest unless the user
+/// turned terminals on.
+/// The token is the desktop's own owner and shares its Screens, so it reaches
+/// the window's shells and the shells it opens belong to the desktop (they
+/// outlive a revoked token, which simply loses access). An account reaches
+/// only the shells it opened, and those die with its access.
+fn terminal_route(stream: &mut TcpStream, req: &Request, ctx: &Ctx, id: &str, rest: &[&str], who: &Principal) {
+    let Some(terminals) = ctx.terminals() else {
+        return respond_json(stream, 403, "{\"error\":\"terminals are off on the desktop\"}");
+    };
+    if !valid_terminal_id(id) {
+        return respond_json(stream, 400, "{\"error\":\"bad terminal id\"}");
+    }
+    let owner = matches!(who, Principal::Token);
+    let ours = owner || ctx.shared.remote_terminals.lock().unwrap().contains(id);
+    let done = |stream: &mut TcpStream, r: Result<(), String>| match r {
+        Ok(()) => respond_json(stream, 200, "{\"ok\":true}"),
+        Err(e) => respond_json(stream, 400, &err_json(&e)),
+    };
+    match (req.method.as_str(), rest) {
+        ("POST", []) => {
+            let Ok(o) = serde_json::from_slice::<TerminalOpen>(&req.body) else {
+                return respond_json(stream, 400, "{\"error\":\"bad body\"}");
+            };
+            // Only ids this gateway owns, or new ones: an id the desktop window
+            // is using must not be adopted from the web.
+            if !ours && terminals.subscribe(id).is_some() {
+                return respond_json(stream, 409, "{\"error\":\"terminal id in use\"}");
+            }
+            match terminals.open(id, o.cwd.filter(|d| !d.trim().is_empty()), o.cols, o.rows) {
+                Ok(created) => {
+                    if !owner {
+                        ctx.shared.remote_terminals.lock().unwrap().insert(id.to_string());
+                    }
+                    respond_json(stream, 200, &format!("{{\"created\":{created}}}"))
+                }
+                Err(e) => respond_json(stream, 400, &err_json(&e)),
+            }
+        }
+        _ if !ours => respond_json(stream, 404, "{\"error\":\"no such terminal\"}"),
+        ("POST", ["input"]) => match serde_json::from_slice::<TerminalInput>(&req.body) {
+            Ok(i) => done(stream, terminals.write(id, &i.data)),
+            Err(_) => respond_json(stream, 400, "{\"error\":\"bad body\"}"),
+        },
+        ("POST", ["resize"]) => match serde_json::from_slice::<TerminalSize>(&req.body) {
+            Ok(z) => done(stream, terminals.resize(id, z.cols, z.rows)),
+            Err(_) => respond_json(stream, 400, "{\"error\":\"bad body\"}"),
+        },
+        ("DELETE", []) => {
+            ctx.shared.remote_terminals.lock().unwrap().remove(id);
+            done(stream, terminals.close(id))
+        }
+        ("GET", ["output"]) => match terminals.subscribe(id) {
+            Some(rx) => terminal_output(stream, ctx, rx),
+            None => respond_json(stream, 404, "{\"error\":\"no such terminal\"}"),
+        },
+        _ => respond_json(stream, 404, "{\"error\":\"not found\"}"),
+    }
+}
+
+/// A shell's output as server-sent events: `data:` carries a JSON string per
+/// chunk, `event: exit` ends it. Holds this connection's thread until the shell
+/// exits, the client goes away, or access is withdrawn.
+fn terminal_output(stream: &mut TcpStream, ctx: &Ctx, rx: Receiver<String>) {
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+    if stream.write_all(head.as_bytes()).is_err() {
+        return;
+    }
+    let _ = stream.flush();
+    loop {
+        let frame = match rx.recv_timeout(Duration::from_secs(15)) {
+            Ok(chunk) => format!("data: {}\n\n", serde_json::Value::String(chunk)),
+            // A comment line: proves the client is still there (a write to a
+            // closed socket fails) without putting anything on its screen.
+            Err(RecvTimeoutError::Timeout) => ": keepalive\n\n".to_string(),
+            Err(RecvTimeoutError::Disconnected) => {
+                let _ = stream.write_all(b"event: exit\ndata: null\n\n");
+                let _ = stream.flush();
+                return;
+            }
+        };
+        if ctx.terminals().is_none() || stream.write_all(frame.as_bytes()).is_err() {
+            return;
+        }
+        let _ = stream.flush();
+    }
+}
+
 /// Proxy the sidecar's SSE event stream verbatim (workspace-wide). Holds this
 /// connection thread until the sidecar closes or the client disconnects.
 fn events(stream: &mut TcpStream, ctx: &Ctx, directory: &str) {
@@ -1410,6 +1701,65 @@ fn authed(req: &Request, token: &str) -> bool {
     false
 }
 
+/// Who a request is: the gateway token, or a signed-in web account (see
+/// `web_accounts`). Both carry the same rights; the account also has a layout.
+enum Principal {
+    Token,
+    User { name: String, session: String },
+}
+
+fn principal(req: &Request, ctx: &Ctx) -> Option<Principal> {
+    if authed(req, &ctx.token()) {
+        return Some(Principal::Token);
+    }
+    // A session token arrives every way the gateway token does, since the SPA
+    // simply uses it in the token's place.
+    let mut presented: Vec<String> = Vec::new();
+    if let Some(h) = req.header("authorization") {
+        if let Some(t) = h.strip_prefix("Bearer ") {
+            presented.push(t.trim().to_string());
+        }
+        if let Some(b) = h.strip_prefix("Basic ") {
+            presented.extend(basic_password(b.trim()));
+        }
+    }
+    presented.extend(req.query_get("token"));
+    presented.extend(req.query_get("auth_token").and_then(|b| basic_password(&b)));
+    presented.into_iter().find_map(|session| {
+        crate::web_accounts::session_user(&ctx.env, &session).map(|name| Principal::User { name, session })
+    })
+}
+
+/// The password half of a Basic credential `base64("opencode:<password>")`.
+fn basic_password(b64: &str) -> Option<String> {
+    let raw = base64_decode(b64)?;
+    String::from_utf8(raw).ok()?.strip_prefix("opencode:").map(str::to_string)
+}
+
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut acc = 0u32;
+    let mut bits = 0;
+    for c in input.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' => break,
+            _ => return None,
+        };
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// The `Authorization: Basic` value OpenCodeClient sends when the gateway token
 /// is used as its password: base64("opencode:<token>").
 fn expected_basic(token: &str) -> String {
@@ -1554,6 +1904,7 @@ pub struct GatewayStatus {
     pub loopback_url: Option<String>,
     pub lan_url: Option<String>,
     pub token: String,
+    pub terminal: bool,
 }
 
 /// The LAN IP the machine would use to reach the internet — found without
@@ -1586,6 +1937,7 @@ pub fn status_of(env: &Env, state: &GatewayState) -> GatewayStatus {
         loopback_url,
         lan_url,
         token: p.token,
+        terminal: p.terminal,
     }
 }
 
@@ -1613,12 +1965,14 @@ pub fn set_gateway_config(
     lan: bool,
     mode: String,
     port: Option<u16>,
+    terminal: bool,
 ) -> Result<GatewayStatus, String> {
     let mut p = read_persisted(env);
     p.enabled = enabled;
     p.lan = lan;
     p.mode = normalize_mode(&mode);
     p.preferred_port = port.filter(|&n| n > 0);
+    p.terminal = terminal;
     if p.enabled && p.token.is_empty() {
         p.token = random_hex(24);
     }
@@ -1639,6 +1993,10 @@ pub fn set_gateway_config(
             Some(r) if r.lan == p.lan && p.preferred_port.is_none_or(|want| r.port == want) => {
                 *r.shared.token.lock().unwrap() = p.token.clone();
                 r.shared.read_only.store(p.mode == "read-only", Ordering::Relaxed);
+                r.shared.terminal.store(p.terminal, Ordering::Relaxed);
+                if !p.terminal || p.mode == "read-only" {
+                    close_remote_terminals(&r.shared, state.terminals.as_ref());
+                }
                 true
             }
             _ => false,
@@ -1662,6 +2020,9 @@ pub fn regenerate_gateway_token(env: &Env, state: &GatewayState) -> Result<Gatew
     // port (no rebind), so the URL a client bookmarked stays valid.
     if let Some(r) = state.running.lock().unwrap().as_ref() {
         *r.shared.token.lock().unwrap() = p.token.clone();
+        // A new token is how a leaked one is revoked; the shells opened with
+        // the old one go with it.
+        close_remote_terminals(&r.shared, state.terminals.as_ref());
     }
     Ok(status_of(env, state))
 }
@@ -1970,6 +2331,215 @@ mod tests {
         assert_eq!(body_len, expected, "body truncated: got {body_len} of {expected}");
     }
 
+    /// A host's shells, faked: echoes input back as output, records what was
+    /// closed. `desktop` stands in for a terminal the desktop window owns.
+    #[derive(Default)]
+    struct FakeTerminals {
+        live: Mutex<HashMap<String, Vec<std::sync::mpsc::Sender<String>>>>,
+        closed: Mutex<Vec<String>>,
+    }
+
+    impl Terminals for FakeTerminals {
+        fn open(&self, id: &str, _cwd: Option<String>, _cols: u16, _rows: u16) -> Result<bool, String> {
+            let mut live = self.live.lock().unwrap();
+            let created = !live.contains_key(id);
+            live.entry(id.to_string()).or_default();
+            Ok(created)
+        }
+        fn write(&self, id: &str, data: &str) -> Result<(), String> {
+            let mut live = self.live.lock().unwrap();
+            let subs = live.get_mut(id).ok_or("no such terminal")?;
+            subs.retain(|tx| tx.send(format!("echo:{data}")).is_ok());
+            Ok(())
+        }
+        fn resize(&self, _id: &str, _cols: u16, _rows: u16) -> Result<(), String> {
+            Ok(())
+        }
+        fn close(&self, id: &str) -> Result<(), String> {
+            self.live.lock().unwrap().remove(id); // drops the senders: streams end
+            self.closed.lock().unwrap().push(id.to_string());
+            Ok(())
+        }
+        fn subscribe(&self, id: &str) -> Option<Receiver<String>> {
+            let mut live = self.live.lock().unwrap();
+            let subs = live.get_mut(id)?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            subs.push(tx);
+            Some(rx)
+        }
+    }
+
+    /// One request against a running gateway; returns (status, body).
+    fn call(port: u16, method: &str, path: &str, body: &str) -> (u16, String) {
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer t\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        c.write_all(req.as_bytes()).unwrap();
+        let mut buf = String::new();
+        c.read_to_string(&mut buf).unwrap();
+        let status = buf[9..12].parse().unwrap();
+        let body = buf.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+        (status, body)
+    }
+
+    #[test]
+    fn web_terminals_need_the_switch_and_full_access() {
+        let (env, dir) = env_with_recorded_port("terminals", None);
+        crate::web_accounts::set_password(&env, "erin", "a long password").unwrap();
+        let fake = Arc::new(FakeTerminals::default());
+        fake.open("desktop-pane", None, 80, 24).unwrap();
+        let state = GatewayState::default().with_terminals(fake.clone());
+        let mut p = read_persisted(&env);
+        p.enabled = true;
+        write_persisted(&env, &p).unwrap();
+        let port = start_at(&env, &state, &p, None).unwrap();
+        let open = r#"{"cwd":null,"cols":80,"rows":24}"#;
+        let (_, login) = call_as(port, "POST", "/v1/login", None, r#"{"name":"erin","password":"a long password"}"#);
+        let session = serde_json::from_str::<serde_json::Value>(&login).unwrap()["token"].as_str().unwrap().to_string();
+        let account = format!("Bearer {session}");
+        let token = Some("Bearer t");
+
+        // Off by default: neither the token nor an account opens a shell.
+        assert_eq!(call(port, "POST", "/v1/terminals/web1", open).0, 403);
+        assert_eq!(call_as(port, "POST", "/v1/terminals/web1", Some(&account), open).0, 403);
+        assert!(call(port, "GET", "/v1/whoami", "").1.contains("\"terminal\":false"));
+
+        set_gateway_config(&env, &state, true, false, "full".into(), None, true).unwrap();
+        assert!(call(port, "GET", "/v1/whoami", "").1.contains("\"terminal\":true"));
+        assert_eq!(call(port, "POST", "/v1/terminals/bad$id", open).0, 400);
+
+        // The token shares the window's Screens, so it attaches to the window's
+        // shells — and says it did not start one, so no startup is retyped.
+        let (status, body) = call_as(port, "POST", "/v1/terminals/desktop-pane", token, open);
+        assert_eq!((status, body.as_str()), (200, r#"{"created":false}"#));
+        assert_eq!(call_as(port, "POST", "/v1/terminals/desktop-pane/input", token, r#"{"data":"x"}"#).0, 200);
+        // An account reaches only what it opened.
+        assert_eq!(call_as(port, "POST", "/v1/terminals/desktop-pane", Some(&account), open).0, 409);
+        assert_eq!(call_as(port, "POST", "/v1/terminals/desktop-pane/input", Some(&account), r#"{"data":"x"}"#).0, 404);
+        let (status, body) = call_as(port, "POST", "/v1/terminals/acct1", Some(&account), open);
+        assert_eq!((status, body.as_str()), (200, r#"{"created":true}"#));
+        assert_eq!(call_as(port, "POST", "/v1/terminals/tok1", token, open).0, 200);
+
+        // Output streams as SSE; typing comes back through it.
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .write_all(format!("GET /v1/terminals/acct1/output HTTP/1.1\r\nAuthorization: {account}\r\n\r\n").as_bytes())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(call_as(port, "POST", "/v1/terminals/acct1/input", Some(&account), r#"{"data":"ls\n"}"#).0, 200);
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Read-only: no more shells; the account's are killed, the desktop's
+        // (including the one the token opened) are not.
+        set_gateway_config(&env, &state, true, false, "read-only".into(), None, true).unwrap();
+        let mut out = String::new();
+        stream.read_to_string(&mut out).unwrap();
+        assert!(out.contains("text/event-stream"), "{out}");
+        assert!(out.contains(r#"data: "echo:ls\n""#), "{out}");
+        assert!(out.contains("event: exit"), "the stream ends when the shell is killed: {out}");
+        assert_eq!(call(port, "POST", "/v1/terminals/web2", open).0, 403);
+        assert_eq!(*fake.closed.lock().unwrap(), vec!["acct1".to_string()]);
+        let live = fake.live.lock().unwrap();
+        assert!(live.contains_key("desktop-pane") && live.contains_key("tok1"));
+        drop(live);
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_token_shares_the_desktop_layout_and_an_account_does_not() {
+        let (env, dir) = env_with_recorded_port("desklayout", None);
+        crate::web_accounts::set_password(&env, "finn", "a long password").unwrap();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = seen.clone();
+        let state = GatewayState::default()
+            .with_desktop_layout_listener(Arc::new(move |json: &str| sink.lock().unwrap().push(json.to_string())));
+        let p = read_persisted(&env);
+        let port = start_at(&env, &state, &p, None).unwrap();
+        let token = Some("Bearer t");
+
+        assert_eq!(call_as(port, "GET", "/v1/layout/desktop", token, "").1, r#"{"rev":0,"layout":null}"#);
+        let rev0 = crate::web_accounts::write_desktop_layout(&env, r#"{"groups":[1]}"#).unwrap();
+        let (_, body) = call_as(port, "GET", "/v1/layout/desktop", token, "");
+        assert_eq!(body, format!(r#"{{"rev":{rev0},"layout":{{"groups":[1]}}}}"#));
+        // Nothing newer: an empty answer, so a mirroring client polls cheaply.
+        assert_eq!(call_as(port, "GET", &format!("/v1/layout/desktop?since={rev0}"), token, "").0, 204);
+
+        // A token client's change reaches the window, and raises the revision.
+        let (status, body) = call_as(port, "PUT", "/v1/layout/desktop", token, r#"{"groups":[2]}"#);
+        assert_eq!(status, 200);
+        let rev1: u64 = serde_json::from_str::<serde_json::Value>(&body).unwrap()["rev"].as_u64().unwrap();
+        assert!(rev1 > rev0);
+        assert_eq!(*seen.lock().unwrap(), vec![r#"{"groups":[2]}"#.to_string()]);
+
+        // An account neither sees nor writes the window's Screens.
+        let (_, login) = call_as(port, "POST", "/v1/login", None, r#"{"name":"finn","password":"a long password"}"#);
+        let session = serde_json::from_str::<serde_json::Value>(&login).unwrap()["token"].as_str().unwrap().to_string();
+        let account = format!("Bearer {session}");
+        assert_eq!(call_as(port, "GET", "/v1/layout/desktop", Some(&account), "").0, 403);
+        assert_eq!(call_as(port, "PUT", "/v1/layout/desktop", Some(&account), r#"{"groups":[3]}"#).0, 403);
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `call`, with a chosen credential header (or none).
+    fn call_as(port: u16, method: &str, path: &str, auth: Option<&str>, body: &str) -> (u16, String) {
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let auth = auth.map(|a| format!("Authorization: {a}\r\n")).unwrap_or_default();
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: x\r\n{auth}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        c.write_all(req.as_bytes()).unwrap();
+        let mut buf = String::new();
+        c.read_to_string(&mut buf).unwrap();
+        let status = buf[9..12].parse().unwrap();
+        let body = buf.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+        (status, body)
+    }
+
+    #[test]
+    fn a_web_account_signs_in_and_keeps_its_own_layout() {
+        let (env, dir) = env_with_recorded_port("accounts", None);
+        crate::web_accounts::set_password(&env, "dana", "a long password").unwrap();
+        let state = GatewayState::default();
+        let p = read_persisted(&env);
+        let port = start_at(&env, &state, &p, None).unwrap();
+
+        let bad = call_as(port, "POST", "/v1/login", None, r#"{"name":"dana","password":"nope nope"}"#);
+        assert_eq!(bad.0, 401);
+        let (status, body) = call_as(port, "POST", "/v1/login", None, r#"{"name":"Dana","password":"a long password"}"#);
+        assert_eq!(status, 200, "{body}");
+        let session = serde_json::from_str::<serde_json::Value>(&body).unwrap()["token"].as_str().unwrap().to_string();
+
+        // The session stands in for the token everywhere the SPA sends one.
+        let bearer = format!("Bearer {session}");
+        let who = call_as(port, "GET", "/v1/whoami", Some(&bearer), "").1;
+        assert!(who.contains(r#""user":"dana""#), "{who}");
+        let basic = format!("Basic {}", base64_encode(format!("opencode:{session}").as_bytes()));
+        assert_eq!(call_as(port, "GET", "/v1/whoami", Some(&basic), "").0, 200);
+        assert_eq!(call_as(port, "GET", "/v1/whoami", Some("Bearer not-a-session"), "").0, 401);
+        // The token still works, and is nobody's account.
+        assert!(call_as(port, "GET", "/v1/whoami", Some("Bearer t"), "").1.contains(r#""user":null"#));
+
+        // The account's layout lives here, whatever address it signs in from.
+        assert_eq!(call_as(port, "GET", "/v1/me/layout", Some(&bearer), "").1, "null");
+        let layout = r#"{"groups":[],"activeGroupId":""}"#;
+        assert_eq!(call_as(port, "PUT", "/v1/me/layout", Some(&bearer), layout).0, 200);
+        // Read-only stops workspace writes, not an account keeping its Screens.
+        set_gateway_config(&env, &state, true, false, "read-only".into(), None, false).unwrap();
+        assert_eq!(call_as(port, "PUT", "/v1/me/layout", Some(&bearer), layout).0, 200);
+        assert_eq!(call_as(port, "GET", "/v1/me/layout", Some(&bearer), "").1, layout);
+        assert_eq!(call_as(port, "PUT", "/v1/me/layout", Some("Bearer t"), layout).0, 400, "the token has no layout");
+
+        assert_eq!(call_as(port, "POST", "/v1/logout", Some(&bearer), "").0, 200);
+        assert_eq!(call_as(port, "GET", "/v1/whoami", Some(&bearer), "").0, 401);
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn model_must_be_written_provider_slash_model() {
         let m = split_model("anthropic/claude-sonnet-4-5").expect("a well-formed model");
@@ -2039,9 +2609,13 @@ mod tests {
             shared: Arc::new(Shared {
                 token: Mutex::new("t".into()),
                 read_only: AtomicBool::new(false),
+                terminal: AtomicBool::new(false),
+                remote_terminals: Mutex::new(HashSet::new()),
                 tickets: Mutex::new(HashMap::new()),
             }),
             assets: Arc::new(NoAssets),
+            terminals: None,
+            on_desktop_layout: None,
             on_sessions_changed: None,
         };
         (ctx, root)

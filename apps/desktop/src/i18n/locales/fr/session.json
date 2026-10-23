@@ -27,6 +27,11 @@
     "runAgent": "Lancer un agent",
     "newNotebook": "Nouveau notebook",
     "newMarkdown": "Nouveau Markdown",
+    "sourceMenu": "Quels écrans afficher",
+    "sourceDesktop": "Écrans du bureau",
+    "sourceDesktopHint": "Ceux de la fenêtre du bureau, en direct : un changement ici apparaît là-bas et inversement.",
+    "sourceOwn": "Mes propres écrans",
+    "sourceOwnHint": "Conservés dans ce navigateur. La fenêtre du bureau n’est pas affectée.",
     "splitRightShort": "Diviser à droite",
     "splitDownShort": "Diviser en bas",
     "defaultProject": "Par défaut",
@@ -277,7 +282,8 @@
         "default_one": "a exécuté une étape",
         "default_other": "a exécuté {{count}} étapes"
       },
-      "failedCount": "{{count}} en échec"
+      "callCount_one": "{{count}} appel d’outil",
+      "callCount_other": "{{count}} appels d’outils"
     },
     "process": {
       "thinking": "Analyse terminée",
@@ -495,6 +501,7 @@
     "title": "Terminal",
     "exited": "[processus terminé]",
     "desktopOnly": "Le terminal nécessite l'app de bureau.",
+    "webOff": "Les terminaux sont désactivés pour l’accès web. Activez-les dans l’application de bureau : Réglages › Accès à distance.",
     "new": "Terminal",
     "menu": {
       "label": "Menu du terminal",

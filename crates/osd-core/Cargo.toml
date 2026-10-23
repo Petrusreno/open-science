@@ -14,6 +14,8 @@ getrandom.workspace = true
 # Watches the active workspace so file changes from outside the app (an
 # external editor, a detached process) still enqueue a debounced git snapshot.
 notify = "6"
+argon2 = "0.5"
+sha2 = "0.10"
 
 # System proxy on Windows is read through WinHTTP (manual proxy, bypass list
 # and PAC evaluation) rather than by parsing the registry — see system_proxy.rs.

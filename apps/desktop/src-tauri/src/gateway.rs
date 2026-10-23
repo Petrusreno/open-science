@@ -28,7 +28,14 @@ pub fn state_for(app: &AppHandle) -> GatewayState {
     let on_sessions_changed = Arc::new(move || {
         let _ = emitter.emit("gateway:sessions-changed", ());
     });
+    // A token client changed the Screens it shares with this window.
+    let layout_emitter = app.clone();
+    let on_desktop_layout = Arc::new(move |json: &str| {
+        let _ = layout_emitter.emit("gateway:desktop-layout", json.to_string());
+    });
     GatewayState::new(assets, Some(on_sessions_changed))
+        .with_terminals(Arc::new(crate::terminal::GatewayTerminals(app.clone())))
+        .with_desktop_layout_listener(on_desktop_layout)
 }
 
 /// Bring the remote-access gateway back up if the user left it enabled.
@@ -62,8 +69,9 @@ pub fn set_gateway_config(
     lan: bool,
     mode: String,
     port: Option<u16>,
+    terminal: bool,
 ) -> Result<GatewayStatus, String> {
-    osd_core::gateway::set_gateway_config(&env_of(&app), state.inner(), enabled, lan, mode, port)
+    osd_core::gateway::set_gateway_config(&env_of(&app), state.inner(), enabled, lan, mode, port, terminal)
 }
 
 #[tauri::command(async)]
@@ -72,4 +80,29 @@ pub fn regenerate_gateway_token(
     state: State<'_, GatewayState>,
 ) -> Result<GatewayStatus, String> {
     osd_core::gateway::regenerate_gateway_token(&env_of(&app), state.inner())
+}
+
+/// Web accounts (Settings › Remote access): names only — hashes never leave
+/// the core.
+#[tauri::command]
+pub fn web_accounts_list(app: AppHandle) -> Result<Vec<String>, String> {
+    osd_core::web_accounts::list(&env_of(&app))
+}
+
+/// Create an account, or set a new password (which signs it out everywhere).
+#[tauri::command(async)]
+pub fn web_account_set(app: AppHandle, name: String, password: String) -> Result<(), String> {
+    osd_core::web_accounts::set_password(&env_of(&app), &name, &password)
+}
+
+#[tauri::command]
+pub fn web_account_delete(app: AppHandle, name: String) -> Result<(), String> {
+    osd_core::web_accounts::delete(&env_of(&app), &name)
+}
+
+/// The window's Screens, which token clients mirror and accounts can copy.
+/// Written on every layout change, debounced by the caller.
+#[tauri::command]
+pub fn publish_desktop_layout(app: AppHandle, layout: String) -> Result<(), String> {
+    osd_core::web_accounts::write_desktop_layout(&env_of(&app), &layout).map(|_| ())
 }

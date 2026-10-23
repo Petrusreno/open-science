@@ -27,6 +27,11 @@
     "runAgent": "Ejecutar un agente",
     "newNotebook": "Nuevo notebook",
     "newMarkdown": "Nuevo Markdown",
+    "sourceMenu": "Qué pantallas mostrar",
+    "sourceDesktop": "Pantallas del escritorio",
+    "sourceDesktopHint": "Las de la ventana del escritorio, en vivo: lo que cambies aquí aparece allí y al revés.",
+    "sourceOwn": "Mis propias pantallas",
+    "sourceOwnHint": "Se guardan en este navegador. La ventana del escritorio no se ve afectada.",
     "splitRightShort": "Dividir a la derecha",
     "splitDownShort": "Dividir abajo",
     "defaultProject": "Predeterminado",
@@ -277,7 +282,8 @@
         "default_one": "ejecutó un paso",
         "default_other": "ejecutó {{count}} pasos"
       },
-      "failedCount": "{{count}} fallidos"
+      "callCount_one": "{{count}} llamada a herramienta",
+      "callCount_other": "{{count}} llamadas a herramientas"
     },
     "process": {
       "thinking": "Análisis completado",
@@ -495,6 +501,7 @@
     "title": "Terminal",
     "exited": "[proceso terminado]",
     "desktopOnly": "El terminal requiere la app de escritorio.",
+    "webOff": "Las terminales están desactivadas para el acceso web. Actívalas en la app de escritorio: Ajustes › Acceso remoto.",
     "new": "Terminal",
     "menu": {
       "label": "Menú del terminal",

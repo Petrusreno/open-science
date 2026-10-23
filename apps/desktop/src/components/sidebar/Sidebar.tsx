@@ -139,8 +139,8 @@ export function Sidebar({ project }: { project: Project }) {
   // would strand the user with no way back.
   const inSettings = location.pathname.startsWith("/settings");
   const isMobile = useIsMobile();
-  // Phone and web show one pane at a time — no Screens to place new work in.
-  const singlePane = isMobile || isGatewayWeb;
+  // A phone shows one pane at a time — no Screens to place new work in.
+  const singlePane = isMobile;
   const activeSection = resolveSection(location.pathname.split("/")[2]);
   // Select each field individually: a bare `useRuntimeStore()` subscribes to the
   // whole store, re-rendering the sidebar on every SSE fold during a session (#34).
@@ -254,7 +254,7 @@ export function Sidebar({ project }: { project: Project }) {
   // folds it open or shut, as the row always did.
   const activeProjectId = useLayoutStore(selectActiveProjectId);
   const clickProject = (id: string) => {
-    if (isMobile || isGatewayWeb || activeProjectId === id) {
+    if (isMobile || activeProjectId === id) {
       toggleProject(id);
       return;
     }
@@ -518,7 +518,7 @@ export function Sidebar({ project }: { project: Project }) {
    *  fall through to the NavLink. A trailing click right after a drag is
    *  swallowed by the drag controller's one-shot capture listener. */
   const openRow = (row: Row, e: React.MouseEvent) => {
-    if (row.kind !== "session" || isMobile || isGatewayWeb) return;
+    if (row.kind !== "session" || isMobile) return;
     e.preventDefault();
     const layout = useLayoutStore.getState();
     if (e.metaKey || e.ctrlKey || e.altKey) {
@@ -655,7 +655,7 @@ export function Sidebar({ project }: { project: Project }) {
         onDragStart={(e) => e.preventDefault()}
         onPointerDown={(e) => {
           // Drag a session row into the pane area to dock it (desktop only).
-          if (row.kind === "session" && !moving && !isMobile && !isGatewayWeb) {
+          if (row.kind === "session" && !moving && !isMobile) {
             // eslint-disable-next-line i18next/no-literal-string -- DragSource kind, not UI copy
             startPaneDrag(e, { kind: "session", sessionId: row.id }, row.title);
           }
@@ -1038,7 +1038,7 @@ export function Sidebar({ project }: { project: Project }) {
           )}
           {visibleProjects.map((p) => {
             const open = !collapsedProjects.includes(p.id);
-            const active = !isMobile && !isGatewayWeb ? activeProjectId === p.id : samePath(p.path, workspace);
+            const active = !isMobile ? activeProjectId === p.id : samePath(p.path, workspace);
             const rows = sessionsByProject.get(p.id) ?? [];
             const drafts = draftsIn(p.id);
             return (
@@ -1076,13 +1076,15 @@ export function Sidebar({ project }: { project: Project }) {
                         >
                           {t("projects.rename")}
                         </ContextMenuItem>
-                        <ContextMenuItem
-                          icon={<FolderOpen size={14} />}
-                          disabled={isGatewayWeb}
-                          onSelect={() => void openProjectFolder(p.id)}
-                        >
-                          {t("projects.openFolderLabel")}
-                        </ContextMenuItem>
+                        {/* The folder is on the desktop's disk; a browser cannot open it. */}
+                        {!isGatewayWeb && (
+                          <ContextMenuItem
+                            icon={<FolderOpen size={14} />}
+                            onSelect={() => void openProjectFolder(p.id)}
+                          >
+                            {t("projects.openFolderLabel")}
+                          </ContextMenuItem>
+                        )}
                         <ContextMenuItem
                           icon={<Pin size={14} />}
                           onSelect={() => void setProjectPinned(p.id, !p.pinned)}

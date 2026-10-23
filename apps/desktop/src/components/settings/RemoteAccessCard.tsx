@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Copy, Eye, EyeOff, Globe, Laptop, Plug, RefreshCw, ShieldAlert } from "lucide-react";
 import { Row, Section, Switch } from "@/components/settings/Section";
-import { chipCls } from "@/components/settings/inputCls";
+import { buttonCls, chipCls, inputCls } from "@/components/settings/inputCls";
+import { WebAccounts } from "@/components/settings/WebAccounts";
 import { toast } from "@/lib/toast";
 import {
   acpServerScript,
@@ -75,12 +76,18 @@ export function RemoteAccessCard() {
   const mode: GatewayMode = status?.mode ?? "full";
 
   const configuredPort = status?.configuredPort ?? null;
+  const terminal = status?.terminal ?? false;
 
-  const setEnabled = (v: boolean) => apply(() => setGatewayConfig(v, lan, mode, configuredPort));
-  const setMode = (m: GatewayMode) => apply(() => setGatewayConfig(true, lan, m, configuredPort));
+  const setEnabled = (v: boolean) => apply(() => setGatewayConfig(v, lan, mode, configuredPort, terminal));
+  const setMode = (m: GatewayMode) => apply(() => setGatewayConfig(true, lan, m, configuredPort, terminal));
   const setLan = (v: boolean) => {
     if (v && !window.confirm(t("remote.lanWarn"))) return;
-    apply(() => setGatewayConfig(true, v, mode, configuredPort));
+    apply(() => setGatewayConfig(true, v, mode, configuredPort, terminal));
+  };
+
+  const setTerminal = (v: boolean) => {
+    if (v && !window.confirm(t("remote.terminalWarn"))) return;
+    apply(() => setGatewayConfig(true, lan, mode, configuredPort, v));
   };
 
   const applyPort = () => {
@@ -89,7 +96,7 @@ export function RemoteAccessCard() {
       toast.error(t("remote.portInvalid"));
       return;
     }
-    apply(() => setGatewayConfig(true, lan, mode, n));
+    apply(() => setGatewayConfig(true, lan, mode, n, terminal));
     setPortInput("");
   };
 
@@ -164,11 +171,11 @@ export function RemoteAccessCard() {
                   onChange={(e) => setPortInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && applyPort()}
                   disabled={busy}
-                  className={chipCls("w-24 shrink-0")}
+                  className={inputCls("h-8 w-24 shrink-0")}
                 />
                 <button
                   type="button"
-                  className={chipCls("shrink-0")}
+                  className={buttonCls()}
                   disabled={busy || portInput.trim() === ""}
                   onClick={applyPort}
                 >
@@ -179,7 +186,7 @@ export function RemoteAccessCard() {
                     type="button"
                     className="rounded-input p-2 text-muted transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-50"
                     disabled={busy}
-                    onClick={() => apply(() => setGatewayConfig(true, lan, mode, null))}
+                    onClick={() => apply(() => setGatewayConfig(true, lan, mode, null, terminal))}
                     title={t("remote.portReset")}
                   >
                     <RefreshCw size={14} />
@@ -204,6 +211,26 @@ export function RemoteAccessCard() {
                 </select>
               }
             />
+
+            {/* A shell is a step past driving the agent, so it is its own
+                yes — and a read-only token never gets one. */}
+            <Row
+              title={t("remote.terminal")}
+              hint={mode === "read-only" ? t("remote.terminalReadonlyHint") : t("remote.terminalHint")}
+              control={
+                <Switch
+                  checked={terminal && mode === "full"}
+                  onChange={setTerminal}
+                  label={t("remote.terminal")}
+                  disabled={busy || mode !== "full"}
+                />
+              }
+            />
+
+            {/* Accounts first: the way a person signs in from a browser. */}
+            <Row title={t("remote.accounts")} hint={t("remote.accountsHint")}>
+              <WebAccounts />
+            </Row>
 
             {/* Bearer token. */}
             <Row title={t("remote.token")} hint={t("remote.tokenHint")}>

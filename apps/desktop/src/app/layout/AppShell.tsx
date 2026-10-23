@@ -62,9 +62,9 @@ export function AppShell() {
   useNativeContextMenuGuard();
 
   // Ghostty-style split-pane shortcuts, live only on the /live surface. Disabled
-  // where tiling can't work (phone width, web gateway) and in Settings. New
+  // where tiling can't work (phone width) and in Settings. New
   // panes start as a DRAFT — no session/folder until the pane's first send (#2).
-  const splitDisabled = isMobile || isGatewayWeb;
+  const splitDisabled = isMobile;
   useEffect(() => {
     if (splitDisabled) return;
     const doSplit = (dir: SplitDir) => {

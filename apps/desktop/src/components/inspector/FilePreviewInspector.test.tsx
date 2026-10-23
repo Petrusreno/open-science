@@ -390,6 +390,22 @@ describe("FilePreviewInspector — an editor pane", () => {
     }
   });
 
+  it("renders the note when Preview is chosen, edits included, and goes back to editing on Code", async () => {
+    render(<FilePreviewInspector data={md} onClose={() => {}} startEditing />);
+    const editor = await screen.findByRole("textbox", { name: "Editing report.md" });
+    await userEvent.type(editor, "{Control>}{End}{/Control} Added line.");
+
+    await userEvent.click(screen.getByRole("button", { name: /Preview/ }));
+    expect(screen.queryByRole("textbox", { name: "Editing report.md" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Findings" })).toBeInTheDocument();
+    expect(screen.getByText(/Added line\./)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /Code/ }));
+    expect(
+      (await screen.findByRole("textbox", { name: "Editing report.md" }) as HTMLTextAreaElement).value,
+    ).toContain("Added line.");
+  });
+
   it("does not label a note the user opened as a 'report'", async () => {
     render(<FilePreviewInspector data={md} onClose={() => {}} startEditing />);
     await screen.findByRole("textbox", { name: "Editing report.md" });

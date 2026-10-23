@@ -159,6 +159,7 @@
       "skillMissing": "Ya no está instalada",
       "connectors": "Conectores",
       "connectorsHint": "Los conectores que añadas después estarán activados hasta que los desactives aquí.",
+      "connectorsLoading": "Leyendo conectores…",
       "noConnectors": "No hay conectores configurados. Añádelos en Ajustes › Conectores.",
       "connectorCollision": "Desactivar {{blocked}} también desactivaría {{other}}. Desactiva ambos o deja {{blocked}} activado.",
       "modelDefault": "Modelo predeterminado",
@@ -178,7 +179,18 @@
       "idEmpty": "El nombre necesita al menos una letra o un dígito: se convierte en el ID.",
       "model": "Modelo",
       "modelDefaultNamed": "Modelo predeterminado ({{model}})",
-      "modelUnlisted": "{{model}} (no está en el catálogo)"
+      "modelUnlisted": "{{model}} (no está en el catálogo)",
+      "icon": "Icono",
+      "iconLetter": "Inicial"
+    },
+    "showAll": "Mostrar las {{count}}",
+    "showFewer": "Mostrar menos",
+    "detail": {
+      "close": "Cerrar",
+      "loading": "Leyendo SKILL.md…",
+      "unreadable": "No se pudo leer el archivo de esta habilidad.",
+      "empty": "Este SKILL.md no tiene nada más que su descripción.",
+      "reveal": "Mostrar en la carpeta"
     }
   },
   "notFound": {

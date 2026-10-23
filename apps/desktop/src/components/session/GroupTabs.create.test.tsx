@@ -5,11 +5,19 @@ import i18n from "@/i18n";
 import { draftLeafOf, useLayoutStore } from "@/lib/layout";
 import { GroupTabs } from "./GroupTabs";
 
-// No Tauri: agent detection answers "none installed", which is the shape most
-// machines have and keeps these tests about the create items themselves.
+// The desktop app by default; one test switches to a browser. Agent detection
+// answers "none installed", which is the shape most machines have and keeps
+// these tests about the create items themselves.
+const host = vi.hoisted(() => ({ tauri: true }));
 vi.mock("@/lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tauri")>()),
-  isTauri: false,
+  get isTauri() {
+    return host.tauri;
+  },
+}));
+vi.mock("@/lib/cliAgents", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/cliAgents")>()),
+  detectCliAgents: async () => [],
 }));
 
 const createNotebook = vi.fn(async () => "notebook.ipynb");
@@ -38,6 +46,7 @@ describe("the Screen bar's create menu", () => {
     useLayoutStore.getState().addGroup();
     createNotebook.mockClear();
     createMarkdown.mockClear();
+    host.tauri = true;
   });
 
   it("offers the surfaces a pane can hold", async () => {
@@ -50,6 +59,18 @@ describe("the Screen bar's create menu", () => {
     // The browser pane was removed: a native webview floated above every menu
     // and dialog in the app, which no amount of positioning fixes.
     expect(screen.queryByRole("menuitem", { name: /Browser/ })).not.toBeInTheDocument();
+  });
+
+  it("offers no new files in a browser, which cannot write them", async () => {
+    host.tauri = false;
+    render(<GroupTabs />);
+    await openCreateMenu();
+
+    for (const label of ["New session", "Terminal", "Files"]) {
+      expect(await screen.findByRole("menuitem", { name: label })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole("menuitem", { name: "New Notebook" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "New Markdown" })).not.toBeInTheDocument();
   });
 
   it("opens a terminal in a NEW Screen, leaving the current layout alone", async () => {

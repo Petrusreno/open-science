@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { isTauri } from "@/lib/tauri";
+import { isGatewayWeb } from "@/lib/webMode";
+import { copyText } from "@/lib/clipboard";
+import { useRuntimeStore } from "@/lib/runtime";
+import { terminalTransport, terminalsAvailable } from "@/lib/terminalTransport";
 import {
   ContextMenu,
   ContextMenuItem,
@@ -65,10 +69,31 @@ export function TerminalPane({
 }) {
   const { t } = useTranslation("session");
   const host = useRef<HTMLDivElement | null>(null);
+  const available = terminalsAvailable(useRuntimeStore((s) => s.webTerminal));
   const [searching, setSearching] = useState(false);
+  const searchingRef = useRef(searching);
+  searchingRef.current = searching;
+  // The xterm key handler is bound once, when the terminal is created, but the
+  // terminal outlives this component (it is re-parented on every split or
+  // maximize). It reaches the search bar through this entry, which whichever
+  // component currently shows the terminal keeps pointed at itself.
+  useEffect(() => {
+    const controls: FindControls = {
+      open: () => setSearching(true),
+      close: () => {
+        setSearching(false);
+        getTerminal(leafId)?.term.focus();
+      },
+      isOpen: () => searchingRef.current,
+    };
+    findControls.set(leafId, controls);
+    return () => {
+      if (findControls.get(leafId) === controls) findControls.delete(leafId);
+    };
+  }, [leafId]);
 
   useEffect(() => {
-    if (!isTauri || !host.current) return;
+    if (!available || !host.current) return;
     const parent = host.current;
     let disposed = false;
 
@@ -93,16 +118,12 @@ export function TerminalPane({
         { SearchAddon },
         { Unicode11Addon },
         { WebglAddon },
-        { invoke },
-        { listen },
       ] = await Promise.all([
         import("@xterm/xterm"),
         import("@xterm/addon-fit"),
         import("@xterm/addon-search"),
         import("@xterm/addon-unicode11"),
         import("@xterm/addon-webgl"),
-        import("@tauri-apps/api/core"),
-        import("@tauri-apps/api/event"),
         import("@xterm/xterm/css/xterm.css"),
       ]);
       if (disposed) return;
@@ -133,9 +154,22 @@ export function TerminalPane({
         if (
           event.type === "keydown" &&
           (event.metaKey || event.ctrlKey) &&
-          event.key === "f"
+          event.key.toLowerCase() === "f"
         ) {
-          setSearching(true);
+          event.preventDefault();
+          findControls.get(leafId)?.open();
+          return false;
+        }
+        // Escape with the bar open closes the bar, even with the caret back in
+        // the terminal. Marked handled, or macOS takes an unclaimed Escape as
+        // "leave full screen".
+        if (
+          event.type === "keydown" &&
+          event.key === "Escape" &&
+          findControls.get(leafId)?.isOpen()
+        ) {
+          event.preventDefault();
+          findControls.get(leafId)?.close();
           return false;
         }
         // The jump palette's chord is the app's too: left to xterm, Ctrl+Shift+J
@@ -166,29 +200,17 @@ export function TerminalPane({
         return cwd ?? null;
       });
 
-      await invoke("terminal_open", {
-        id: leafId,
-        cwd,
-        cols: term.cols,
-        rows: term.rows,
+      const created = await terminalTransport.open(leafId, cwd, term.cols, term.rows);
+      const unsubscribe = await terminalTransport.subscribe(leafId, {
+        onData: (chunk) => term.write(chunk),
+        onExit: () => term.write(`\r\n${t("terminal.exited")}\r\n`),
+        onReset: () => term.reset(),
       });
-      const [dataEvent, exitEvent] = await invoke<[string, string]>(
-        "terminal_event_names",
-        {
-          id: leafId,
-        },
-      );
-      const unlistenData = await listen<string>(dataEvent, (event) =>
-        term.write(event.payload),
-      );
-      const unlistenExit = await listen(exitEvent, () =>
-        term.write(`\r\n${t("terminal.exited")}\r\n`),
-      );
       const input = term.onData((data) => {
         // The first keystroke is what makes this terminal worth asking about
         // before it is closed.
         markTerminalUsed(leafId);
-        void invoke("terminal_write", { id: leafId, data });
+        void terminalTransport.write(leafId, data);
       });
 
       // The pane is resizable and tiled; the shell has to be told, or every
@@ -216,21 +238,19 @@ export function TerminalPane({
           fit.fit();
           if (term.cols === sent.cols && term.rows === sent.rows) return;
           sent = { cols: term.cols, rows: term.rows };
-          void invoke("terminal_resize", {
-            id: leafId,
-            cols: term.cols,
-            rows: term.rows,
-          });
+          void terminalTransport.resize(leafId, term.cols, term.rows);
         });
       });
       observer.observe(container);
 
       // Sent once, on the pane's FIRST open — never on a remount, which would
       // re-run it over whatever the user is doing in that shell.
-      const startup = terminalStartup({ command, agent });
+      // And only into a shell this open STARTED: one already running (the
+      // desktop window and a web page share it) is in the middle of something.
+      const startup = created ? terminalStartup({ command, agent }) : undefined;
       if (startup) {
         markTerminalUsed(leafId);
-        void invoke("terminal_write", { id: leafId, data: `${startup}\n` });
+        void terminalTransport.write(leafId, `${startup}\n`);
       }
 
       putTerminal(leafId, {
@@ -239,8 +259,7 @@ export function TerminalPane({
         search,
         container,
         dispose: () => {
-          unlistenData();
-          unlistenExit();
+          unsubscribe();
           input.dispose();
           links.dispose();
           observer.disconnect();
@@ -259,7 +278,7 @@ export function TerminalPane({
     // `agent` are also rewritten every few seconds as the shell moves (see
     // `recordTerminal`), and none of that may rebuild a live terminal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leafId, t]);
+  }, [leafId, t, available]);
 
   /** Right-click, modelled on Orca's terminal menu (`TerminalContextMenu.tsx`):
    *  the clipboard actions first, because that is what a right-click in a
@@ -271,22 +290,26 @@ export function TerminalPane({
       <ContextMenuItem
         onSelect={() => {
           const selection = getTerminal(leafId)?.term.getSelection() ?? "";
-          if (selection) void writeClipboard(selection);
+          if (selection) void copyText(selection);
         }}
       >
         {t("terminal.menu.copy")}
       </ContextMenuItem>
-      <ContextMenuItem
-        onSelect={() => {
-          void readClipboard().then((text) => {
-            if (!text) return;
-            markTerminalUsed(leafId);
-            void invokeWrite(leafId, text);
-          });
-        }}
-      >
-        {t("terminal.menu.paste")}
-      </ContextMenuItem>
+      {/* A browser reads the clipboard only on a secure origin; over a LAN
+          http address it cannot, and ⌘V into the terminal still works. */}
+      {canReadClipboard() && (
+        <ContextMenuItem
+          onSelect={() => {
+            void readClipboard().then((text) => {
+              if (!text) return;
+              markTerminalUsed(leafId);
+              void terminalTransport.write(leafId, text);
+            });
+          }}
+        >
+          {t("terminal.menu.paste")}
+        </ContextMenuItem>
+      )}
       <ContextMenuItem onSelect={() => getTerminal(leafId)?.term.selectAll()}>
         {t("terminal.menu.selectAll")}
       </ContextMenuItem>
@@ -300,7 +323,7 @@ export function TerminalPane({
       >
         {t("terminal.menu.clear")}
       </ContextMenuItem>
-      {cwd && (
+      {cwd && isTauri && (
         <ContextMenuItem onSelect={() => void revealPath(cwd)}>
           {t("terminal.menu.revealCwd")}
         </ContextMenuItem>
@@ -311,7 +334,7 @@ export function TerminalPane({
         <ContextMenuItem
           onSelect={() => {
             markTerminalUsed(leafId);
-            void invokeWrite(leafId, `${resumeCommand(agent)}\n`);
+            void terminalTransport.write(leafId, `${resumeCommand(agent)}\n`);
             getTerminal(leafId)?.term.focus();
           }}
         >
@@ -362,10 +385,10 @@ export function TerminalPane({
     </>
   );
 
-  if (!isTauri) {
+  if (!available) {
     return (
       <div className="p-4 text-[13px] text-muted">
-        {t("terminal.desktopOnly")}
+        {t(isGatewayWeb ? "terminal.webOff" : "terminal.desktopOnly")}
       </div>
     );
   }
@@ -378,16 +401,22 @@ export function TerminalPane({
         {searching && (
           <TerminalSearch
             addon={getTerminal(leafId)?.search ?? null}
-            onClose={() => {
-              setSearching(false);
-              getTerminal(leafId)?.term.focus();
-            }}
+            onClose={() => findControls.get(leafId)?.close()}
           />
         )}
       </div>
     </ContextMenu>
   );
 }
+
+interface FindControls {
+  open: () => void;
+  close: () => void;
+  isOpen: () => boolean;
+}
+
+/** The find bar of whichever component currently shows each terminal. */
+const findControls = new Map<string, FindControls>();
 
 /**
  * Terminal defaults, borrowed from Orca's `lib/pane-manager/pane-terminal-options.ts`
@@ -431,21 +460,16 @@ const TERMINAL_OPTIONS = {
   drawBoldTextInBrightColors: true,
 } as const;
 
-/** Clipboard and shell writes, kept out of the menu body so it reads as a list
+/** Clipboard reads and Finder, kept out of the menu body so it reads as a list
  *  of actions rather than a list of dynamic imports. */
-async function writeClipboard(text: string): Promise<void> {
-  const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
-  await writeText(text);
+function canReadClipboard(): boolean {
+  return isTauri || typeof navigator.clipboard?.readText === "function";
 }
 
 async function readClipboard(): Promise<string> {
+  if (!isTauri) return navigator.clipboard.readText();
   const { readText } = await import("@tauri-apps/plugin-clipboard-manager");
   return (await readText()) ?? "";
-}
-
-async function invokeWrite(id: string, data: string): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("terminal_write", { id, data });
 }
 
 async function revealPath(path: string): Promise<void> {

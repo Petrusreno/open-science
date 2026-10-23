@@ -320,8 +320,7 @@ export function FilePreviewInspector({
     }
   };
 
-  const canToggle =
-    kind === "html" || kind === "markdown" || kind === "molecule" || kind === "genome";
+  const canToggle = TOGGLE_KINDS.has(kind);
 
   // Where the user was in this file, restored when they come back to it —
   // history browsing keeps its own offset so the two don't clobber each other.
@@ -414,7 +413,11 @@ export function FilePreviewInspector({
             className={PANE_ICON_BUTTON}
             aria-label={t("filePreview.editAria")}
             title={t("filePreview.editTitle")}
-            onClick={() => setDraft(text ?? "")}
+            onClick={() => {
+              setDraft(text ?? "");
+              // Editing is done in the text; a Preview tab would hide it.
+              setTab("code");
+            }}
           >
             <Pencil size={13} strokeWidth={1.5} />
           </button>
@@ -512,6 +515,9 @@ export function FilePreviewInspector({
   );
 }
 
+/** Kinds whose header offers Preview ↔ Code. */
+const TOGGLE_KINDS: ReadonlySet<PreviewKind> = new Set(["html", "markdown", "molecule", "genome"]);
+
 /** How a hand edit signs the provenance trail. A stable id, not UI copy: the
  *  history panel groups by it exactly as it groups an agent's tool name. */
 const MANUAL_EDIT_TOOL = "manual-edit";
@@ -528,7 +534,7 @@ const DISK_WATCH_INTERVAL_MS = 2000;
 function Body({
   kind,
   url,
-  text,
+  text: savedText,
   draft,
   onDraftChange,
   onSave,
@@ -558,7 +564,13 @@ function Body({
   // nothing visible, because the table view had no idea an edit had begun and
   // kept drawing the table. Anything the app can open as text can be edited as
   // text, and a rule here cannot be forgotten by the next viewer that is added.
-  if (draft !== null && text !== null) {
+  //
+  // Except where the header offers a Preview tab and it is chosen: then the
+  // preview shows the edit in progress. The draft stays, so autosave carries on
+  // and Code goes back to editing it.
+  const previewing = !showCode && TOGGLE_KINDS.has(kind);
+  const text = previewing && draft !== null ? draft : savedText;
+  if (draft !== null && text !== null && !previewing) {
     return (
       <SourceView
         text={text}

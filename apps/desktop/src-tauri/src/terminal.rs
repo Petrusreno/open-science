@@ -8,9 +8,10 @@
 //
 // Output is pushed as events rather than polled: a shell writes when it writes,
 // and a poll loop would either lag the caret or burn a timer doing nothing.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::sync::Mutex;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tauri::{AppHandle, Emitter, Manager};
@@ -20,6 +21,44 @@ pub(crate) struct Terminal {
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    output: Arc<Mutex<Output>>,
+}
+
+/// Where a shell's output goes besides the window: web clients reading it
+/// through the gateway. The window needs neither part — its xterm keeps its
+/// own scrollback — but a web page that reloads reattaches to a shell whose
+/// screen it no longer has, and the recent output is what redraws it.
+#[derive(Default)]
+struct Output {
+    recent: VecDeque<String>,
+    recent_len: usize,
+    readers: Vec<Sender<String>>,
+}
+
+/// How much output a reattaching web client is replayed. About a few screens
+/// of a busy TUI; whole chunks are dropped from the front, never half of one.
+const RECENT_BYTES: usize = 256 * 1024;
+
+impl Output {
+    fn push(&mut self, chunk: &str) {
+        self.readers.retain(|tx| tx.send(chunk.to_string()).is_ok());
+        self.recent_len += chunk.len();
+        self.recent.push_back(chunk.to_string());
+        while self.recent_len > RECENT_BYTES && self.recent.len() > 1 {
+            if let Some(old) = self.recent.pop_front() {
+                self.recent_len -= old.len();
+            }
+        }
+    }
+
+    fn subscribe(&mut self) -> Receiver<String> {
+        let (tx, rx) = channel();
+        for chunk in &self.recent {
+            let _ = tx.send(chunk.clone());
+        }
+        self.readers.push(tx);
+        rx
+    }
 }
 
 #[derive(Default)]
@@ -69,7 +108,14 @@ pub fn terminal_open(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    open(&app, id, cwd, cols, rows)
+}
+
+/// True when a new shell was started; false when `id` was already running
+/// (a remount, or a shell a web client sharing these Screens opened first).
+/// Only a new shell may be sent the pane's startup command.
+fn open(app: &AppHandle, id: String, cwd: Option<String>, cols: u16, rows: u16) -> Result<bool, String> {
     let state = app.state::<TerminalState>();
     // Reopening a live terminal is a no-op, not a second shell: a pane that
     // remounts (a Screen switch, a React strict-mode double effect) must not
@@ -89,7 +135,7 @@ pub fn terminal_open(
     // inserted.
     let mut terminals = state.0.lock().map_err(|_| "terminal state poisoned")?;
     if terminals.contains_key(&id) {
-        return Ok(());
+        return Ok(false);
     }
 
     let pty = NativePtySystem::default();
@@ -121,12 +167,12 @@ pub fn terminal_open(
     // the app inherits no shell env, so without this a Claude Code / Codex
     // started (or auto-resumed) here cannot reach its API behind a proxy and
     // hangs silently. The user's rc files still run after and can override.
-    for (k, v) in crate::runtime::sidecar_proxy_env(&app) {
+    for (k, v) in crate::runtime::sidecar_proxy_env(app) {
         command.env(k, v);
     }
     // The shell restores what the user exported by hand before the app last
     // closed, after its startup files (see terminal_env.rs).
-    crate::terminal_env::prepare(&app, &shell, &id, &mut command);
+    crate::terminal_env::prepare(app, &shell, &id, &mut command);
 
     let child = pair.slave.spawn_command(command).map_err(|e| e.to_string())?;
     // The slave handle must be dropped or the master never sees EOF when the
@@ -136,6 +182,8 @@ pub fn terminal_open(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
+    let output = Arc::new(Mutex::new(Output::default()));
+    let reader_output = output.clone();
     let reader_app = app.clone();
     let reader_id = id.clone();
     std::thread::spawn(move || {
@@ -154,6 +202,9 @@ pub fn terminal_open(
                     if chunk.is_empty() {
                         continue;
                     }
+                    if let Ok(mut out) = reader_output.lock() {
+                        out.push(&chunk);
+                    }
                     if reader_app.emit(&output_event(&reader_id), chunk).is_err() {
                         break; // The window is gone; so is the reason to read.
                     }
@@ -161,6 +212,10 @@ pub fn terminal_open(
             }
         }
         let _ = reader_app.emit(&exit_event(&reader_id), ());
+        // Dropping the senders is what tells a web reader the shell is gone.
+        if let Ok(mut out) = reader_output.lock() {
+            out.readers.clear();
+        }
         if let Some(state) = reader_app.try_state::<TerminalState>() {
             if let Ok(mut terminals) = state.0.lock() {
                 terminals.remove(&reader_id);
@@ -174,9 +229,10 @@ pub fn terminal_open(
             writer,
             master: pair.master,
             child,
+            output,
         },
     );
-    Ok(())
+    Ok(true)
 }
 
 /// What every live terminal is doing: its shell's folder and the coding agent
@@ -218,9 +274,13 @@ fn foreground_of(_term: &Terminal) -> Option<u32> {
 /// Keystrokes, paste, anything the pane types.
 #[tauri::command]
 pub fn terminal_write(app: AppHandle, id: String, data: String) -> Result<(), String> {
+    write(&app, &id, &data)
+}
+
+fn write(app: &AppHandle, id: &str, data: &str) -> Result<(), String> {
     let state = app.state::<TerminalState>();
     let mut terminals = state.0.lock().map_err(|_| "terminal state poisoned")?;
-    let terminal = terminals.get_mut(&id).ok_or("no such terminal")?;
+    let terminal = terminals.get_mut(id).ok_or("no such terminal")?;
     terminal
         .writer
         .write_all(data.as_bytes())
@@ -232,9 +292,13 @@ pub fn terminal_write(app: AppHandle, id: String, data: String) -> Result<(), St
 /// width and every full-screen program draws into the wrong box.
 #[tauri::command]
 pub fn terminal_resize(app: AppHandle, id: String, cols: u16, rows: u16) -> Result<(), String> {
+    resize(&app, &id, cols, rows)
+}
+
+fn resize(app: &AppHandle, id: &str, cols: u16, rows: u16) -> Result<(), String> {
     let state = app.state::<TerminalState>();
     let terminals = state.0.lock().map_err(|_| "terminal state poisoned")?;
-    let Some(terminal) = terminals.get(&id) else {
+    let Some(terminal) = terminals.get(id) else {
         return Ok(()); // A resize for a shell that already exited is not an error.
     };
     terminal
@@ -251,14 +315,43 @@ pub fn terminal_resize(app: AppHandle, id: String, cols: u16, rows: u16) -> Resu
 /// Kill the shell and forget it. Called when the pane closes.
 #[tauri::command]
 pub fn terminal_close(app: AppHandle, id: String) -> Result<(), String> {
+    close(&app, &id)
+}
+
+fn close(app: &AppHandle, id: &str) -> Result<(), String> {
     let state = app.state::<TerminalState>();
     let mut terminals = state.0.lock().map_err(|_| "terminal state poisoned")?;
-    if let Some(mut terminal) = terminals.remove(&id) {
+    if let Some(mut terminal) = terminals.remove(id) {
         let _ = terminal.child.kill();
         let _ = terminal.child.wait();
     }
-    crate::terminal_env::forget(&app, &id);
+    crate::terminal_env::forget(app, id);
     Ok(())
+}
+
+/// The desktop's shells, offered to the remote-access gateway. Which of them a
+/// web client may touch, and whether it may at all, is the gateway's call.
+pub struct GatewayTerminals(pub AppHandle);
+
+impl osd_core::gateway::Terminals for GatewayTerminals {
+    fn open(&self, id: &str, cwd: Option<String>, cols: u16, rows: u16) -> Result<bool, String> {
+        open(&self.0, id.to_string(), cwd, cols, rows)
+    }
+    fn write(&self, id: &str, data: &str) -> Result<(), String> {
+        write(&self.0, id, data)
+    }
+    fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        resize(&self.0, id, cols, rows)
+    }
+    fn close(&self, id: &str) -> Result<(), String> {
+        close(&self.0, id)
+    }
+    fn subscribe(&self, id: &str) -> Option<Receiver<String>> {
+        let state = self.0.state::<TerminalState>();
+        let terminals = state.0.lock().ok()?;
+        let mut output = terminals.get(id)?.output.lock().ok()?;
+        Some(output.subscribe())
+    }
 }
 
 /// Kill every shell — the app is quitting, and a PTY child outlives its parent
@@ -310,6 +403,33 @@ pub fn terminal_event_names(id: String) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reattaching_reader_gets_recent_output_then_live_output() {
+        let mut out = Output::default();
+        out.push("$ ls\r\n");
+        let early = out.subscribe();
+        out.push("a.txt\r\n");
+        let late = out.subscribe();
+        assert_eq!(early.try_iter().collect::<Vec<_>>(), ["$ ls\r\n", "a.txt\r\n"]);
+        assert_eq!(late.try_iter().collect::<Vec<_>>(), ["$ ls\r\n", "a.txt\r\n"]);
+        // A reader that went away is dropped, not written to forever.
+        drop(early);
+        out.push("$ ");
+        assert_eq!(out.readers.len(), 1);
+        assert_eq!(late.try_iter().collect::<Vec<_>>(), ["$ "]);
+    }
+
+    #[test]
+    fn recent_output_is_capped_in_whole_chunks() {
+        let mut out = Output::default();
+        let chunk = "x".repeat(100 * 1024);
+        for _ in 0..5 {
+            out.push(&chunk);
+        }
+        assert!(out.recent_len <= RECENT_BYTES);
+        assert!(out.recent.iter().all(|c| c.len() == chunk.len()));
+    }
 
     #[test]
     fn a_terminal_owns_its_own_event_names() {
