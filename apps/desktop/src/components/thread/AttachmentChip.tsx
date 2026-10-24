@@ -44,7 +44,17 @@ type Peek =
  * kept per chip — never in a module-level cache keyed by name, because
  * `pasted.png` names a different file in every workspace.
  */
-export function AttachmentChip({ name, onRemove }: { name: string; onRemove: () => void }) {
+export function AttachmentChip({
+  name,
+  dir,
+  onRemove,
+}: {
+  name: string;
+  /** The session folder the file was put in — the web client reads it there,
+   *  which need not be the host's active folder. */
+  dir?: string;
+  onRemove: () => void;
+}) {
   const { t } = useTranslation(["session", "common"]);
   const [peek, setPeek] = useState<Peek>({ state: "idle" });
   // Read off the loaded <img>, not from the file: the pixel size is the fact a
@@ -56,7 +66,7 @@ export function AttachmentChip({ name, onRemove }: { name: string; onRemove: () 
     setPeek({ state: "loading" });
     try {
       if (previewKindForName(name) === "image") {
-        const url = await previewUrl(name);
+        const url = await previewUrl(name, undefined, dir);
         if (!url) {
           setPeek({ state: "unreadable" });
           return;

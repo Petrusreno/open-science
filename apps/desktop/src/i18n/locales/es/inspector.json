@@ -67,6 +67,7 @@
       "code": "Código"
     },
     "loading": "Cargando {{filename}}…",
+    "notFound": "No se encuentra este archivo; puede que se haya movido o eliminado.",
     "desktopOnly": "La vista previa está disponible en la app de escritorio.",
     "sourceDesktopOnly": "El código fuente está disponible en la app de escritorio.",
     "binaryNoPreview": "Este archivo es binario y no tiene vista previa — ábrelo externamente.",

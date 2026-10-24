@@ -226,12 +226,13 @@
   },
   "newPicker": {
     "title": "New session",
-    "subtitle": "Choose the project it belongs to",
     "search": "Search projects…",
     "current": "Current",
-    "noProject": "In no project",
     "newProject": "New project…",
     "hintCreate": "create",
     "hintQuick": "new here, without asking"
+  },
+  "web": {
+    "manyTabs": "Open in {{count}} tabs. A browser allows only a few connections to one address, so more tabs make all of them slower — close the ones you don't need."
   }
 }

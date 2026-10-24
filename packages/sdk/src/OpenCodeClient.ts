@@ -6,6 +6,7 @@ import type {
   McpOAuthStart,
   McpServer,
   OAuthAuthorization,
+  EventStreamOpener,
   OpenCodeClientOptions,
   OpenCodePart,
   OpenCodeRawEvent,
@@ -258,6 +259,9 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   private readonly directory: string | null;
   private abort: AbortController | null = null;
   private es: EventSource | null = null;
+  /** Closes a stream opened through `eventStream` (see OpenCodeClientOptions). */
+  private closeStream: (() => void) | null = null;
+  private readonly eventStream: EventStreamOpener | null;
   /** Pending self-heal of a dead event stream (see reconnectSoon). */
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** True between close() and the next connect() — stops self-healing. */
@@ -295,6 +299,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     this.directory = opts.directory ?? null;
     this.connectTimeoutMs = opts.connectTimeoutMs ?? 5000;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 15000;
+    this.eventStream = opts.eventStream ?? null;
   }
 
   private headers(json = false): Record<string, string> {
@@ -325,6 +330,59 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       this.reconnectTimer = null;
     }
     this.setStatus("connecting");
+
+    // Someone else carries the stream: the same open / message / error rules
+    // as the EventSource below, reconnection included.
+    const opener = this.eventStream;
+    if (opener) {
+      return new Promise((resolve, reject) => {
+        let opened = false;
+        let finished = false;
+        let stop: (() => void) | null = null;
+        const release = () => {
+          stop?.();
+          if (this.closeStream === stop) this.closeStream = null;
+        };
+        const timer = setTimeout(() => {
+          if (finished) return;
+          finished = true;
+          this.setStatus("error");
+          release();
+          reject(new Error("Timed out opening OpenCode event stream"));
+        }, this.connectTimeoutMs);
+        stop = opener(this.directory, {
+          onOpen: () => {
+            if (finished) return;
+            opened = true;
+            finished = true;
+            clearTimeout(timer);
+            this.setStatus("ready");
+            resolve();
+          },
+          onMessage: (data) => {
+            try {
+              this.normalize(JSON.parse(data) as OpenCodeRawEvent);
+            } catch {
+              /* ignore malformed frame */
+            }
+          },
+          onError: () => {
+            if (!opened) {
+              if (finished) return;
+              finished = true;
+              clearTimeout(timer);
+              this.setStatus("error");
+              release();
+              reject(new Error("Could not open OpenCode event stream"));
+            } else if (this.closeStream === stop) {
+              release();
+              this.reconnectSoon();
+            }
+          },
+        });
+        this.closeStream = stop;
+      });
+    }
 
     // Prefer EventSource in a real webview/browser (reliable SSE, incl. macOS
     // WKWebView) — auth rides along as ?auth_token=, since EventSource cannot
@@ -429,6 +487,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     }
     this.es?.close();
     this.es = null;
+    this.closeStream?.();
+    this.closeStream = null;
     this.abort?.abort();
     this.abort = null;
     this.setStatus("offline");

@@ -5,11 +5,10 @@ import { findLeaf, leaves, recentScreens, useLayoutStore } from "@/lib/layout";
 import { projectIdForGroup } from "@/lib/projectScope";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { cn } from "@/lib/cn";
-import { SessionView } from "@/components/session/SessionView";
-import { PaneTree } from "@/components/session/PaneTree";
+import { Leaf, PaneTree } from "@/components/session/PaneTree";
 import { GroupTabs } from "@/components/session/GroupTabs";
 import { EmptyGroup } from "@/components/session/EmptyGroup";
-import { PresentedArtifactPane } from "@/components/session/PresentedArtifactPane";
+import { PaneSwitcher } from "@/components/session/PaneSwitcher";
 
 /** How many screens are kept alive at once (the active one plus the last nine
  *  visited) — enough that a working set of screens is always instant to switch
@@ -70,6 +69,7 @@ export function LiveSessionPage() {
   const activeGroupId = useLayoutStore((s) => s.activeGroupId);
   const focusedLeafId = useLayoutStore((s) => s.focusedLeafId);
   const pruneSessions = useLayoutStore((s) => s.pruneSessions);
+  const focusLeaf = useLayoutStore((s) => s.focusLeaf);
   const focusedLeaf = tree && focusedLeafId ? findLeaf(tree, focusedLeafId) : null;
   const focusedSid = focusedLeaf?.sessionId ?? null;
 
@@ -163,6 +163,13 @@ export function LiveSessionPage() {
   // replace) so a new conversation adds a history entry (Back works).
   useEffect(() => {
     if (!focusedSid) return;
+    // The effect above may have just moved the focus in this same commit (a
+    // link to a session other than the restored layout's): this render's
+    // value is then stale, and following it sent the address — and the link —
+    // back to the old session. The next render brings the new one.
+    const st = useLayoutStore.getState();
+    const now = st.tree && st.focusedLeafId ? findLeaf(st.tree, st.focusedLeafId)?.sessionId : null;
+    if (now !== focusedSid) return;
     const want = `/live/${focusedSid}`;
     if (location.pathname !== want) navigate(want);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -242,22 +249,21 @@ export function LiveSessionPage() {
   const mounted = useMemo(() => new Set(live), [live]);
   /** Kept laid out and painted, so revealing one is a compositor change. */
   const warm = useMemo(() => new Set(live.slice(0, WARM_SCREENS)), [live]);
-  // Web / phone: no tiling — show the focused pane alone (its own titlebar), or
-  // the onboarding if the group is somehow empty.
+  // Phone: no tiling — the Screen bar, the Screen's panes to choose between
+  // (when it has more than one), then the chosen pane alone, or the onboarding
+  // if the Screen is empty. The Screens are the same ones as anywhere else;
+  // only one pane of each fits.
   if (singlePane) {
-    return focusedLeaf ? (
-      focusedLeaf.artifact && focusedLeaf.sessionId ? (
-        <PresentedArtifactPane
-          artifact={focusedLeaf.artifact}
-          leafId={focusedLeaf.id}
-          sessionId={focusedLeaf.sessionId}
-          onClose={() => useLayoutStore.getState().closePane(focusedLeaf.id)}
-        />
-      ) : (
-        <SessionView sessionId={focusedLeaf.sessionId} leafId={focusedLeaf.id} focused chromeAsTitlebar />
-      )
-    ) : (
-      <EmptyGroup />
+    return (
+      <div className="flex h-full min-w-0 flex-col">
+        <GroupTabs />
+        <PaneSwitcher tree={tree} focusedLeafId={focusedLeafId} onFocus={focusLeaf} />
+        <div className="min-h-0 flex-1">
+          {/* The same pane as on the desktop, so a terminal or the file tree
+              shows as itself, not as a conversation. */}
+          {focusedLeaf ? <Leaf key={focusedLeaf.id} leaf={focusedLeaf} zoom={1} focused active laidOut solo /> : <EmptyGroup />}
+        </div>
+      </div>
     );
   }
   // Desktop: the group tab strip owns the window titlebar; below it, the pane

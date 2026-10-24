@@ -67,6 +67,7 @@
       "code": "Code"
     },
     "loading": "Loading {{filename}}…",
+    "notFound": "This file can't be found here — it may have been moved or deleted.",
     "desktopOnly": "Preview is available in the desktop app.",
     "sourceDesktopOnly": "Source is available in the desktop app.",
     "binaryNoPreview": "This file is binary and has no preview — open it externally.",

@@ -13,6 +13,7 @@ export {
   type SessionRetryEvent,
   type RetryAction,
   type OpenCodeClientOptions,
+  type EventStreamOpener,
   type RuntimeStatus,
   type ToolCallStatus,
   type SessionMeta,

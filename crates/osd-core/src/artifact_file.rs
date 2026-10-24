@@ -556,16 +556,7 @@ pub fn add_text_to_workspace(
     filename: String,
     content: String,
 ) -> Result<String, String> {
-    let base = Path::new(&filename)
-        .file_name()
-        .ok_or("invalid file name")?
-        .to_string_lossy()
-        .to_string();
-    let ws = workspace_dir(env)?;
-    let name = unique_name(&ws, &base);
-    std::fs::write(ws.join(&name), content).map_err(|e| format!("write failed: {e}"))?;
-    crate::git_snapshot::request_snapshot(&ws);
-    Ok(name)
+    write_new_file(&workspace_dir(env)?, &filename, content.as_bytes())
 }
 
 /// Attach explicit local file paths to the workspace. Used by drag-and-drop,
@@ -585,16 +576,23 @@ pub fn add_binary_to_workspace(
     filename: String,
     base64: String,
 ) -> Result<String, String> {
-    let base = Path::new(&filename)
+    let bytes = base64_decode(&base64)?;
+    write_new_file(&workspace_dir(env)?, &filename, &bytes)
+}
+
+/// Write `bytes` into the root of `dir` under the base name of `filename`
+/// (deduplicated as name-1.ext on collision) and return the name written.
+/// Shared by paste, long-text paste and the web client's upload, so all three
+/// land the same way and the chip's discard (root-level only) can find them.
+pub fn write_new_file(dir: &Path, filename: &str, bytes: &[u8]) -> Result<String, String> {
+    let base = Path::new(filename)
         .file_name()
         .ok_or("invalid file name")?
         .to_string_lossy()
         .to_string();
-    let bytes = base64_decode(&base64)?;
-    let ws = workspace_dir(env)?;
-    let name = unique_name(&ws, &base);
-    std::fs::write(ws.join(&name), bytes).map_err(|e| format!("write failed: {e}"))?;
-    crate::git_snapshot::request_snapshot(&ws);
+    let name = unique_name(dir, &base);
+    std::fs::write(dir.join(&name), bytes).map_err(|e| format!("write failed: {e}"))?;
+    crate::git_snapshot::request_snapshot(dir);
     Ok(name)
 }
 
@@ -617,10 +615,16 @@ fn is_discardable_name(name: &str) -> bool {
 /// A missing file is not an error — the chip is going either way, and failing
 /// the removal over an already-gone file would only strand it in the composer.
 pub fn discard_workspace_file(env: &Env, name: String) -> Result<(), String> {
-    if !is_discardable_name(&name) {
+    discard_file_in(&workspace_dir(env)?, &name)
+}
+
+/// `discard_workspace_file` for an explicit folder — the web client's chips
+/// live in the session's folder, which need not be the host's active one.
+pub fn discard_file_in(dir: &Path, name: &str) -> Result<(), String> {
+    if !is_discardable_name(name) {
         return Err("not a workspace file name".into());
     }
-    let full = resolve_under(&workspace_dir(env)?, &name)?;
+    let full = resolve_under(dir, name)?;
     match std::fs::metadata(&full) {
         Err(_) => return Ok(()),
         Ok(m) if !m.is_file() => return Err("not a file".into()),

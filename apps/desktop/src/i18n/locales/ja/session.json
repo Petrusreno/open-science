@@ -35,7 +35,8 @@
     "splitRightShort": "右に分割",
     "splitDownShort": "下に分割",
     "defaultProject": "デフォルト",
-    "projectMenu": "プロジェクトを切り替え"
+    "projectMenu": "プロジェクトを切り替え",
+    "panes": "このスクリーンのペイン"
   },
   "composer": {
     "placeholder": {
@@ -582,7 +583,6 @@
       "evening": "こんばんは",
       "night": "夜更かしですね"
     },
-    "count_other": "{{count}} 件のセッション",
-    "countDefault_other": "プロジェクト外のセッション {{count}} 件"
+    "count_other": "{{count}} 件のセッション"
   }
 }

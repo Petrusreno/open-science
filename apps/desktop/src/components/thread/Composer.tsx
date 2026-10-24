@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowUp,
@@ -48,6 +55,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { useLabelsOverflow } from "@/lib/useCompactWidth";
 import { isGatewayWeb } from "@/lib/webMode";
+import { discardUpload, uploadToWorkspace } from "@/lib/artifactFile";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 /** A paste longer than this becomes a workspace file chip instead of raw text. */
@@ -447,6 +455,23 @@ export function Composer({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
   }, [value]);
+  // …and again when its width changes. Measured while its Screen was hidden or
+  // not laid out yet, the box is a sliver: even the placeholder wraps a word a
+  // line and the height lands on the cap — and nothing re-measured it once the
+  // box had its width back, so an empty composer could stay 160px tall.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const submit = () => {
     if (disabled) return;
@@ -626,6 +651,14 @@ export function Composer({
     }
   };
 
+  // The desktop writes through Rust into the draft's folder; the browser has no
+  // disk of its own, so it uploads to the gateway into this session's folder.
+  const canAttach = (isTauri || isGatewayWeb) && !!onSend;
+  const writeBlob = async (name: string, blob: Blob) =>
+    isGatewayWeb
+      ? uploadToWorkspace(name, blob, sessionDir)
+      : addBinaryToWorkspace(name, await blobToBase64(blob));
+
   // Anything pasted that is a FILE becomes a workspace chip; only characters
   // stay characters. A screenshot, a .md copied in Finder and a CSV all arrive
   // as clipboard file items and all belong in the draft's folder (materialized
@@ -633,7 +666,7 @@ export function Composer({
   // text, because only `image/*` was looked for. A very long text paste becomes
   // a file too, rather than flooding the box.
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    if (!isTauri || !onSend) return;
+    if (!canAttach) return;
     const blobs = Array.from(e.clipboardData.items ?? [])
       .filter((it) => it.kind === "file")
       .map((it) => it.getAsFile())
@@ -645,10 +678,7 @@ export function Composer({
           blobs.map(async (blob) => ({
             // A bitmap has no name of its own, so it gets one; a file copied
             // in a file manager keeps the name the person knows it by.
-            name: await addBinaryToWorkspace(
-              blob.name || `pasted.${imageExt(blob.type)}`,
-              await blobToBase64(blob),
-            ),
+            name: await writeBlob(blob.name || `pasted.${imageExt(blob.type)}`, blob),
             copied: true,
           })),
         ),
@@ -661,7 +691,16 @@ export function Composer({
     }
     e.preventDefault();
     void addWorkspaceFile(async () => [
-      { name: await addTextToWorkspace("pasted.txt", text), copied: true },
+      {
+        name: isGatewayWeb
+          ? await uploadToWorkspace(
+              "pasted.txt",
+              new Blob([text], { type: "text/plain" }),
+              sessionDir,
+            )
+          : await addTextToWorkspace("pasted.txt", text),
+        copied: true,
+      },
     ]);
   };
 
@@ -695,7 +734,7 @@ export function Composer({
   const removeFile = (name: string) => {
     setFiles((f) => f.filter((n) => n !== name));
     if (!owned.current.delete(name)) return;
-    void discardWorkspaceFile(name).catch(() => {
+    void (isGatewayWeb ? discardUpload(name, sessionDir) : discardWorkspaceFile(name)).catch(() => {
       // The chip is gone either way: a file that cannot be deleted is litter in
       // the workspace folder, not a reason to put the attachment back.
     });
@@ -749,8 +788,73 @@ export function Composer({
     };
   }, []);
 
+  // Browser: files from a drop or the picker are uploaded one by one, so one
+  // that fails (too large, read-only token) does not lose the others' chips.
+  const uploadFiles = async (picked: File[]) => {
+    if (picked.length === 0) return;
+    setAdding(true);
+    try {
+      await addWorkspaceFile(async () => {
+        const added: AttachedFile[] = [];
+        for (const f of picked) {
+          try {
+            added.push({ name: await uploadToWorkspace(f.name, f, sessionDir), copied: true });
+          } catch (err) {
+            toast.error(
+              t("composer.error.addFiles", {
+                message: err instanceof Error ? err.message : String(err),
+              }),
+            );
+          }
+        }
+        return added;
+      });
+    } finally {
+      setAdding(false);
+    }
+  };
+  const pickerRef = useRef<HTMLInputElement>(null);
+
+  // Browser drops are DOM events on the composer. Everywhere else in the page
+  // a dropped file would make the browser navigate to it, leaving the app.
+  useEffect(() => {
+    if (!isGatewayWeb) return;
+    const block = (e: globalThis.DragEvent) => {
+      if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
+    };
+    window.addEventListener("dragover", block);
+    window.addEventListener("drop", block);
+    return () => {
+      window.removeEventListener("dragover", block);
+      window.removeEventListener("drop", block);
+    };
+  }, []);
+  const webDrop =
+    isGatewayWeb && canAttach
+      ? {
+          onDragOver: (e: DragEvent<HTMLDivElement>) => {
+            if (!e.dataTransfer.types.includes("Files")) return;
+            e.preventDefault();
+            setDragOver(true);
+          },
+          onDragLeave: (e: DragEvent<HTMLDivElement>) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false);
+          },
+          onDrop: (e: DragEvent<HTMLDivElement>) => {
+            if (!e.dataTransfer.types.includes("Files")) return;
+            e.preventDefault();
+            setDragOver(false);
+            void uploadFiles(Array.from(e.dataTransfer.files));
+          },
+        }
+      : {};
+
   // Copy local files into the agent workspace; they appear as chips.
   const addFiles = async () => {
+    if (isGatewayWeb) {
+      pickerRef.current?.click();
+      return;
+    }
     setAdding(true);
     try {
       // Same as paste: give the draft its folder before copying files in.
@@ -769,7 +873,6 @@ export function Composer({
     }
   };
 
-  const canAttach = isTauri && !!onSend;
   const canSend =
     !disabled &&
     (command
@@ -780,6 +883,7 @@ export function Composer({
 
   return (
     <div
+      {...webDrop}
       className={cn(
         "relative rounded-card border bg-surface px-2 py-2 shadow-card",
         // Plan mode gets the blue link tone — distinct from shell (warn) and
@@ -889,7 +993,12 @@ export function Composer({
       {files.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-1 pb-2">
           {files.map((name) => (
-            <AttachmentChip key={name} name={name} onRemove={() => removeFile(name)} />
+            <AttachmentChip
+              key={name}
+              name={name}
+              dir={sessionDir}
+              onRemove={() => removeFile(name)}
+            />
           ))}
         </div>
       )}
@@ -973,15 +1082,30 @@ export function Composer({
           </span>
         ) : (
           canAttach && (
-            <button
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
-              aria-label={t("composer.attach.addAria")}
-              title={t("composer.attach.title")}
-              onClick={() => void addFiles()}
-              disabled={adding}
-            >
-              <Paperclip size={15} />
-            </button>
+            <>
+              <button
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
+                aria-label={t("composer.attach.addAria")}
+                title={t("composer.attach.title")}
+                onClick={() => void addFiles()}
+                disabled={adding}
+              >
+                <Paperclip size={15} />
+              </button>
+              {isGatewayWeb && (
+                <input
+                  ref={pickerRef}
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    const picked = Array.from(e.target.files ?? []);
+                    e.target.value = ""; // picking the same file again still fires
+                    void uploadFiles(picked);
+                  }}
+                />
+              )}
+            </>
           )
         )}
         {/* Folder picker for a fresh draft — renders nothing once the session

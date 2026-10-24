@@ -72,6 +72,7 @@ export function renderBlock(
           usage={block.usage}
           contextLimit={contextLimit}
           onOpenArtifact={handlers?.onArtifactOpen}
+          directory={workspaceDirectory}
         />
       );
     case "reasoning":

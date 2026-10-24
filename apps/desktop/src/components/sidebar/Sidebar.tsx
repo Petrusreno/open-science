@@ -514,14 +514,16 @@ export function Sidebar({ project }: { project: Project }) {
 
   /** Open a session row. Desktop tiling: a plain click opens it full-screen in
    *  the tentative "preview" screen (#3); a modifier-click opens it in a NEW
-   *  split pane — it never clobbers the focused pane. Web/phone (single-pane)
-   *  fall through to the NavLink. A trailing click right after a drag is
-   *  swallowed by the drag controller's one-shot capture listener. */
+   *  split pane — it never clobbers the focused pane. A phone has Screens but
+   *  no splits, so there it is always the preview screen: replacing the pane
+   *  would change it for every other view of the same Screen. A trailing
+   *  click right after a drag is swallowed by the drag controller's one-shot
+   *  capture listener. */
   const openRow = (row: Row, e: React.MouseEvent) => {
-    if (row.kind !== "session" || isMobile) return;
+    if (row.kind !== "session") return;
     e.preventDefault();
     const layout = useLayoutStore.getState();
-    if (e.metaKey || e.ctrlKey || e.altKey) {
+    if (!isMobile && (e.metaKey || e.ctrlKey || e.altKey)) {
       // eslint-disable-next-line i18next/no-literal-string -- SplitDir enum, not UI copy
       layout.split("row", row.id);
     } else {

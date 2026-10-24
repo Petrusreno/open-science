@@ -66,6 +66,7 @@
       "code": "代码"
     },
     "loading": "正在加载 {{filename}}…",
+    "notFound": "找不到这个文件，它可能已被移动或删除。",
     "desktopOnly": "预览功能在桌面应用中可用。",
     "sourceDesktopOnly": "源代码在桌面应用中可用。",
     "binaryNoPreview": "此文件为二进制文件，无法预览——请在外部打开。",

@@ -674,7 +674,8 @@ export function SessionView({
             !(sidebarCollapsed && asTitlebar) && "h-8",
             // The Screen's only pane: the whole row waits for the pointer —
             // unless it hosts the sidebar button, or has trouble to report.
-            solo && !chromeAsTitlebar && !trouble && HOVER_REVEAL,
+            // A phone has no pointer to wait for.
+            solo && !chromeAsTitlebar && !trouble && !isMobile && HOVER_REVEAL,
           )}
         >
           {showSidebarExpand && (

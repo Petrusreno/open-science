@@ -234,6 +234,7 @@ export const AgentMessage = memo(function AgentMessage({
   usage,
   contextLimit,
   onOpenArtifact,
+  directory,
 }: {
   markdown: string;
   /** Turn timings and token accounting, when the runtime reported them —
@@ -243,6 +244,8 @@ export const AgentMessage = memo(function AgentMessage({
   usage?: MessageUsage;
   contextLimit?: number;
   onOpenArtifact?: (a: ArtifactBlock) => void;
+  /** The session's folder, where the files it mentions are looked up. */
+  directory?: string;
 }) {
   const { t } = useTranslation(["session", "common"]);
   const [copied, setCopied] = useState(false);
@@ -279,7 +282,7 @@ export const AgentMessage = memo(function AgentMessage({
       setRefs([]);
       return;
     }
-    void Promise.all(mentionedKey.split("\n").map((p) => resolveArtifactPath(p).catch(() => null))).then(
+    void Promise.all(mentionedKey.split("\n").map((p) => resolveArtifactPath(p, directory).catch(() => null))).then(
       (resolved) => {
         if (cancelled) return;
         setRefs([...new Set(resolved.filter((p): p is string => p !== null))]);
@@ -288,7 +291,7 @@ export const AgentMessage = memo(function AgentMessage({
     return () => {
       cancelled = true;
     };
-  }, [mentionedKey]);
+  }, [mentionedKey, directory]);
 
   const copy = async () => {
     try {

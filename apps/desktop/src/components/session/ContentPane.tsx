@@ -11,6 +11,7 @@ import { NotebookEditor } from "@/components/notebook/NotebookEditor";
 import { FilesPage } from "@/app/routes/FilesPage";
 import { FilePreviewInspector } from "@/components/inspector/FilePreviewInspector";
 import { HOVER_REVEAL } from "@/components/inspector/RightPane";
+import { useIsMobile } from "@/lib/useIsMobile";
 import { cn } from "@/lib/cn";
 
 /**
@@ -42,6 +43,7 @@ export function ContentPane({
   const dockSession = useLayoutStore((s) => s.dockSession);
   const aimDraft = useRuntimeStore((s) => s.aimDraft);
   const [renaming, setRenaming] = useState(false);
+  const isMobile = useIsMobile();
 
   /** Split into a CONVERSATION, aimed at the folder the pane works in — the
    *  same path the session header's split button takes, so a session opened
@@ -61,7 +63,8 @@ export function ContentPane({
           <header
             className={cn(
               "flex h-8 shrink-0 select-none items-center gap-1.5 px-2.5",
-              solo && HOVER_REVEAL,
+              // A phone has no pointer to wait for.
+              solo && !isMobile && HOVER_REVEAL,
             )}
           >
             <TerminalIcon size={13} strokeWidth={1.5} className="shrink-0 text-muted" />

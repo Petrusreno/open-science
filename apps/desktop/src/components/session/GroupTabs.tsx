@@ -36,6 +36,8 @@ import { detectCliAgents, selectCliAgent, type CliAgent } from "@/lib/cliAgents"
 import { useOverlayTitlebar, useUiStore } from "@/lib/store";
 import { overlayTitlebarStyle } from "@/lib/titlebar";
 import { cn } from "@/lib/cn";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { useTransientScrollbar } from "@/lib/transientScrollbar";
 import { ContextMenu, ContextMenuItem } from "@/components/ui/ContextMenu";
 import { InlineName } from "@/components/ui/InlineName";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -212,6 +214,7 @@ export function useActiveProjectPath(): string | undefined {
  */
 function ProjectSwitcher() {
   const { t } = useTranslation("session");
+  const compact = useIsMobile();
   const projectId = useLayoutStore(selectActiveProjectId);
   const setActiveProject = useLayoutStore((s) => s.setActiveProject);
   const projects = useRuntimeStore((s) => s.projects);
@@ -229,10 +232,15 @@ function ProjectSwitcher() {
         <button
           aria-label={t("group.projectMenu")}
           title={t("group.projectMenu")}
-          className="mr-1 flex h-7 max-w-[180px] shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-text hover:bg-surface-2"
+          // A phone gives the width to the Screens: icon and caret, no gaps.
+          className={cn(
+            "flex h-7 max-w-[180px] shrink-0 items-center rounded-md text-[12px] font-medium text-text hover:bg-surface-2",
+            compact ? "gap-0.5 px-1" : "mr-1 gap-1 px-2",
+          )}
         >
           <Folder size={13} className="shrink-0 text-accent" />
-          <span className="truncate">{current}</span>
+          {/* A phone keeps the width for the Screens; the menu names the project. */}
+          {!compact && <span className="truncate">{current}</span>}
           <ChevronDown size={12} className="shrink-0 text-muted" />
         </button>
       </DropdownMenu.Trigger>
@@ -266,6 +274,7 @@ function ProjectSwitcher() {
  */
 function LayoutSourceSwitcher() {
   const { t } = useTranslation("session");
+  const compact = useIsMobile();
   const webUser = useRuntimeStore((s) => s.webUser);
   const [source, setSource] = useState<LayoutSource>(layoutSource);
   const [busy, setBusy] = useState(false);
@@ -291,10 +300,15 @@ function LayoutSourceSwitcher() {
         <button
           aria-label={t("group.sourceMenu")}
           title={t("group.sourceMenu")}
-          className="mr-1 flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-muted hover:bg-surface-2 hover:text-text"
+          className={cn(
+            "flex h-7 shrink-0 items-center rounded-md text-[12px] text-muted hover:bg-surface-2 hover:text-text",
+            compact ? "gap-0.5 px-1" : "mr-1 gap-1 px-2",
+          )}
         >
           <Icon size={13} className="shrink-0" />
-          <span className="truncate">{source === "desktop" ? t("group.sourceDesktop") : t("group.sourceOwn")}</span>
+          {!compact && (
+            <span className="truncate">{source === "desktop" ? t("group.sourceDesktop") : t("group.sourceOwn")}</span>
+          )}
           <ChevronDown size={12} className="shrink-0" />
         </button>
       </DropdownMenu.Trigger>
@@ -342,27 +356,13 @@ function closeNeedsConfirm(group: LayoutGroup, ephemeralGroupId: string | null):
   return group.id !== ephemeralGroupId;
 }
 
-export function GroupTabs() {
+/**
+ * What a pane is called wherever it is named on its own: in the Screen bar
+ * (a Screen is named after its first pane) and in the phone's pane switcher.
+ */
+export function usePaneNames() {
   const { t } = useTranslation(["session", "nav"]);
-  const allGroups = useLayoutStore((s) => s.groups);
-  const projectId = useLayoutStore(selectActiveProjectId);
-  // Only the active project's Screens: the bar is that project's.
-  const groups = projectGroups(allGroups, projectId);
-  const activeGroupId = useLayoutStore((s) => s.activeGroupId);
-  const ephemeralGroupId = useLayoutStore((s) => s.ephemeralGroupId);
-  const setActiveGroup = useLayoutStore((s) => s.setActiveGroup);
-  const closeGroup = useLayoutStore((s) => s.closeGroup);
-  const renameGroup = useLayoutStore((s) => s.renameGroup);
-
-  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
-  const setSidebarCollapsed = useUiStore((s) => s.setSidebarCollapsed);
-  const overlayTitlebar = useOverlayTitlebar();
-  const isMac = navigator.userAgent.includes("Mac");
-
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [confirmCloseId, setConfirmCloseId] = useState<string | null>(null);
   const sessions = useRuntimeStore((s) => s.sessions);
-  const fallback = (n: number) => t("group.defaultName", { n });
   /** A conversation's Screen is named after the conversation — the first few
    *  words of its title, once the runtime has generated one. */
   const sessionTitle = (sessionId: string): string | null => {
@@ -385,7 +385,40 @@ export function GroupTabs() {
         return content.path.split("/").pop() || null;
     }
   };
+  return { describe, sessionTitle };
+}
 
+export function GroupTabs() {
+  const { t } = useTranslation(["session", "nav"]);
+  const allGroups = useLayoutStore((s) => s.groups);
+  const projectId = useLayoutStore(selectActiveProjectId);
+  // Only the active project's Screens: the bar is that project's.
+  const groups = projectGroups(allGroups, projectId);
+  const activeGroupId = useLayoutStore((s) => s.activeGroupId);
+  const ephemeralGroupId = useLayoutStore((s) => s.ephemeralGroupId);
+  const setActiveGroup = useLayoutStore((s) => s.setActiveGroup);
+  const closeGroup = useLayoutStore((s) => s.closeGroup);
+  const renameGroup = useLayoutStore((s) => s.renameGroup);
+
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useUiStore((s) => s.setSidebarCollapsed);
+  const overlayTitlebar = useOverlayTitlebar();
+  const isMac = navigator.userAgent.includes("Mac");
+
+  const compact = useIsMobile();
+  const stripRef = useTransientScrollbar();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmCloseId, setConfirmCloseId] = useState<string | null>(null);
+  // The Screen on display is always in view: on a narrow bar the strip
+  // scrolls, and a switch from elsewhere (a sidebar click, a link) can land on
+  // a tab scrolled out of sight.
+  useEffect(() => {
+    document
+      .querySelector(`[data-group-tab="${CSS.escape(activeGroupId)}"]`)
+      ?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [activeGroupId]);
+  const { describe, sessionTitle } = usePaneNames();
+  const fallback = (n: number) => t("group.defaultName", { n });
 
   return (
     <>
@@ -421,7 +454,8 @@ export function GroupTabs() {
         <LayoutSourceSwitcher />
         <div
           data-tauri-drag-region={overlayTitlebar || undefined}
-          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+          ref={stripRef}
+          className={cn("flex min-w-0 flex-1 items-center gap-1 overflow-x-auto", compact && "scrollbar-transient")}
         >
           {groups.map((g, i) => {
             const active = g.id === activeGroupId;

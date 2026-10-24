@@ -226,12 +226,13 @@
   },
   "newPicker": {
     "title": "Nueva sesión",
-    "subtitle": "Elige el proyecto al que pertenece",
     "search": "Buscar proyectos…",
     "current": "Actual",
-    "noProject": "Fuera de un proyecto",
     "newProject": "Nuevo proyecto…",
     "hintCreate": "crear",
     "hintQuick": "aquí mismo, sin preguntar"
+  },
+  "web": {
+    "manyTabs": "Abierto en {{count}} pestañas. Un navegador permite pocas conexiones a una misma dirección, así que cada pestaña de más las ralentiza todas: cierra las que no uses."
   }
 }

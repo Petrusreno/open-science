@@ -35,7 +35,8 @@
     "splitRightShort": "Dividir a la derecha",
     "splitDownShort": "Dividir abajo",
     "defaultProject": "Predeterminado",
-    "projectMenu": "Cambiar de proyecto"
+    "projectMenu": "Cambiar de proyecto",
+    "panes": "Paneles de esta pantalla"
   },
   "composer": {
     "placeholder": {
@@ -595,8 +596,6 @@
       "night": "Trabajando tarde"
     },
     "count_one": "{{count}} sesión",
-    "count_other": "{{count}} sesiones",
-    "countDefault_one": "{{count}} sesión fuera de proyectos",
-    "countDefault_other": "{{count}} sesiones fuera de proyectos"
+    "count_other": "{{count}} sesiones"
   }
 }

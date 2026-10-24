@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { Command, defaultFilter } from "cmdk";
-import { Folder, MessagesSquare, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { DEFAULT_PROJECT, selectActiveProjectId, useLayoutStore } from "@/lib/layout";
 import { useRuntimeStore } from "@/lib/runtime";
 import { projectIdForSession } from "@/lib/projectScope";
@@ -24,7 +24,7 @@ const matchShown = (_value: string, search: string, keywords?: string[]) =>
  *
  * The project on display comes first and is already highlighted, so Enter
  * starts the conversation there: asking costs a keyboard user nothing. The
- * rest follow by when they were last used, then "in no project", then a new
+ * rest follow by when they were last used, then the default sessions, then a new
  * project. ⌘T skips the question entirely (the hint says so).
  */
 export function NewSessionPicker({
@@ -60,13 +60,19 @@ export function NewSessionPicker({
     .filter((p) => p.id !== current)
     .sort((a, b) => (usage.get(b.id)?.last ?? b.createdAt) - (usage.get(a.id)?.last ?? a.createdAt));
   const currentProject = projects.find((p) => p.id === current);
-  const noProject = t("newPicker.noProject");
+  // The same name the Screen bar gives these sessions, so the two never
+  // disagree about where a conversation went.
+  const defaultName = t("session:group.defaultProject");
 
-  const row = "flex cursor-pointer items-center gap-3 rounded-input px-3 py-2 text-sm text-text data-[selected=true]:bg-surface-2";
+  // One quiet shape for every row: name left, a muted fact right. The folder
+  // icon on every line said nothing a list of projects does not already say.
+  const row =
+    "flex h-9 cursor-pointer items-center gap-3 rounded-input px-3 text-[13.5px] text-text data-[selected=true]:bg-surface-2";
+  const fact = "shrink-0 text-xs tabular-nums text-muted";
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/20 px-4 pt-[14vh]"
       onClick={onClose}
       // Esc is the picker's: it must not reach the session page and interrupt a turn.
       onKeyDown={(e) => {
@@ -81,7 +87,7 @@ export function NewSessionPicker({
         aria-modal="true"
         aria-label={t("newPicker.title")}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md"
+        className="w-full max-w-[440px]"
       >
         <Command
           label={t("newPicker.title")}
@@ -89,47 +95,43 @@ export function NewSessionPicker({
           defaultValue={valueOf(current)}
           className="overflow-hidden rounded-card border border-border bg-surface shadow-pop"
         >
-          <div className="px-4 pb-1 pt-3.5">
-            <div className="text-[15px] font-semibold text-text">{t("newPicker.title")}</div>
-            <div className="mt-0.5 text-xs text-muted">{t("newPicker.subtitle")}</div>
+          <div className="border-b border-border px-4 pb-2.5 pt-3">
+            <div className="text-xs text-muted">{t("newPicker.title")}</div>
+            <Command.Input
+              autoFocus
+              placeholder={t("newPicker.search")}
+              className="mt-1 w-full bg-transparent text-[15px] text-text outline-none placeholder:text-muted/70"
+            />
           </div>
-          <Command.Input
-            autoFocus
-            placeholder={t("newPicker.search")}
-            className="w-full border-b border-border bg-transparent px-4 py-2.5 text-sm text-text outline-none placeholder:text-muted"
-          />
-          <Command.List className="max-h-[50vh] overflow-y-auto p-2">
+          <Command.List className="max-h-[50vh] overflow-y-auto p-1.5">
             <Command.Empty className="px-3 py-6 text-center text-sm text-muted">{t("jump.noResults")}</Command.Empty>
             {/* Where the user is: first, highlighted, Enter. */}
             <Command.Item
               value={valueOf(current)}
-              keywords={[currentProject?.name ?? noProject]}
+              keywords={[currentProject?.name ?? defaultName]}
               onSelect={() => onPick(current)}
               className={row}
             >
-              {currentProject ? <Folder size={15} className="shrink-0 text-accent" /> : <MessagesSquare size={15} className="shrink-0 text-accent" />}
-              <span className="min-w-0 flex-1 truncate">{currentProject?.name ?? noProject}</span>
-              <span className="shrink-0 rounded bg-accent/10 px-1.5 py-px text-[11px] text-accent">{t("newPicker.current")}</span>
+              <span className="min-w-0 flex-1 truncate font-medium">{currentProject?.name ?? defaultName}</span>
+              <span className={fact}>{t("newPicker.current")}</span>
             </Command.Item>
             {others.map((p) => (
               <Command.Item key={p.id} value={valueOf(p.id)} keywords={[p.name]} onSelect={() => onPick(p.id)} className={row}>
-                <Folder size={15} className="shrink-0 text-muted" />
                 <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                <span className="shrink-0 text-xs text-muted">{detail(p.id)}</span>
+                <span className={fact}>{detail(p.id)}</span>
               </Command.Item>
             ))}
             {current !== DEFAULT_PROJECT && (
-              <Command.Item value={DEFAULT_VALUE} keywords={[noProject]} onSelect={() => onPick(DEFAULT_PROJECT)} className={row}>
-                <MessagesSquare size={15} className="shrink-0 text-muted" />
-                <span className="min-w-0 flex-1 truncate">{noProject}</span>
-                <span className="shrink-0 text-xs text-muted">{detail(DEFAULT_PROJECT)}</span>
+              <Command.Item value={DEFAULT_VALUE} keywords={[defaultName]} onSelect={() => onPick(DEFAULT_PROJECT)} className={row}>
+                <span className="min-w-0 flex-1 truncate">{defaultName}</span>
+                <span className={fact}>{detail(DEFAULT_PROJECT)}</span>
               </Command.Item>
             )}
             {onNewProject && (
               <>
-                <Command.Separator className="my-1 h-px bg-border" />
-                <Command.Item value="new-project" keywords={[t("newPicker.newProject")]} onSelect={onNewProject} className={row}>
-                  <Plus size={15} className="shrink-0 text-muted" />
+                <Command.Separator className="mx-3 my-1.5 h-px bg-border" />
+                <Command.Item value="new-project" keywords={[t("newPicker.newProject")]} onSelect={onNewProject} className={`${row} text-muted data-[selected=true]:text-text`}>
+                  <Plus size={14} className="-ml-0.5 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{t("newPicker.newProject")}</span>
                 </Command.Item>
               </>
@@ -156,5 +158,5 @@ export function NewSessionPicker({
 }
 
 function Kbd({ children }: { children: React.ReactNode }) {
-  return <kbd className="mr-1 rounded border border-border bg-surface-2 px-1 py-px font-sans text-[10.5px] text-text/80">{children}</kbd>;
+  return <kbd className="mr-1 font-sans text-[11px] text-text/70">{children}</kbd>;
 }

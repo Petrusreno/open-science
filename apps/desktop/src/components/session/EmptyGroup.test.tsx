@@ -100,7 +100,7 @@ describe("a project's home", () => {
     renderAt("/live");
     const view = await home();
     expect(view.getByRole("heading", { name: "Default" })).toBeInTheDocument();
-    expect(view.getByText("1 session in no project")).toBeInTheDocument();
+    expect(view.getByText("1 session")).toBeInTheDocument();
     expect(view.getByText("quick question")).toBeInTheDocument();
     expect(view.queryByText("analysis 6")).not.toBeInTheDocument();
   });

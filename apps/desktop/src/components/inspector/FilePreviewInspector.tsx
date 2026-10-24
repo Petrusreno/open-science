@@ -180,6 +180,13 @@ export function FilePreviewInspector({
         if (isGatewayWeb) {
           const u = await previewUrl(data.path, data.root, workspaceDirectory);
           if (cancelled) return;
+          // No ticket means the gateway could not find the file here. Say
+          // that: falling through ended at "available in the desktop app",
+          // which the desktop could not have done any better.
+          if (!u) {
+            setError(t("filePreview.notFound"));
+            return;
+          }
           setDl(u);
           if (needsUrl) setUrl(u);
           if (needsText && data.content === undefined) {

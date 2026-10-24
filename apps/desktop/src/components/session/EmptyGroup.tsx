@@ -113,7 +113,7 @@ export function EmptyGroup() {
             )}
             {path && <span aria-hidden>·</span>}
             <span className="shrink-0">
-              {project ? t("home.count", { count: mine.length }) : t("home.countDefault", { count: mine.length })}
+              {t("home.count", { count: mine.length })}
             </span>
           </div>
 

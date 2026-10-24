@@ -35,20 +35,42 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 let poller: ReturnType<typeof setInterval> | undefined;
 /** The shared layout's revision this client last saw or wrote. */
 let rev = 0;
-/** The layout last taken from elsewhere, exactly as `persist` will serialize
- *  it: adopting it fires a local change, and that one must not be sent back. */
-let lastApplied: string | null = null;
+/** The shared part (`sharedPart`) of the layout last sent or taken from
+ *  elsewhere. A change that leaves it as it was — adopting what arrived, or
+ *  only switching Screen or focus — is this view's own and is not sent: it
+ *  would tell the others nothing, and could overwrite a change of theirs
+ *  that has not reached this view yet. */
+let lastShared: string | null = null;
 
 const auth = (): Record<string, string> => {
   const token = gatewayToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
+/** What views share of a layout: everything but where one of them is looking
+ *  (see `keepOwnView`). Anything that is not a layout compares as itself. */
+function sharedPart(json: string): string {
+  try {
+    const { groups } = JSON.parse(json) as { groups?: Array<Record<string, unknown>> };
+    if (!Array.isArray(groups)) return json;
+    return JSON.stringify(groups.map((g) => ({ ...g, focusedLeafId: undefined, zoomedLeafId: undefined })));
+  } catch {
+    return json;
+  }
+}
+
 /** Every local layout change (from `persist`). */
 export function layoutChanged(json: string): void {
-  if (!mode || json === lastApplied) return;
+  if (!mode) return;
+  // Its own Screens keep this view's position too, so every change is saved.
+  if (mode === "own") {
+    clearTimeout(timer);
+    return void push(json);
+  }
+  const shared = sharedPart(json);
+  if (shared === lastShared) return;
   clearTimeout(timer);
-  if (mode === "own") return void push(json);
+  lastShared = shared;
   // The window and a mirror share one layout: keep the other side close behind.
   timer = setTimeout(() => void push(json), mode === "account" ? 800 : 300);
 }
@@ -78,15 +100,25 @@ async function push(json: string): Promise<void> {
   }
 }
 
-/** Show a layout that came from elsewhere. False when it is not one. */
-async function apply(value: unknown): Promise<boolean> {
-  const { parseLayout, useLayoutStore } = await import("./layout");
-  const layout = parseLayout(value);
-  if (!layout) return false;
+/** Show a layout that came from elsewhere. False when it is not one.
+ *  `keepView`: stay on this view's own Screen and panes (see `keepOwnView`) —
+ *  everywhere but a view's first look, which starts where the layout is. */
+async function apply(value: unknown, keepView: boolean): Promise<boolean> {
+  const { keepOwnView, parseLayout, useLayoutStore } = await import("./layout");
+  const arrived = parseLayout(value);
+  if (!arrived) return false;
+  const { groups, activeGroupId } = useLayoutStore.getState();
+  const layout = keepView ? keepOwnView(arrived, { groups, activeGroupId }) : arrived;
   // What arrived supersedes a local change not yet sent.
   clearTimeout(timer);
-  lastApplied = JSON.stringify({ groups: layout.groups, activeGroupId: layout.activeGroupId });
+  lastShared = sharedPart(JSON.stringify({ groups: layout.groups, activeGroupId: layout.activeGroupId }));
   useLayoutStore.getState().adoptLayout(layout);
+  // A view's first look replaced where it was — including the conversation its
+  // address names (a link opened in a new tab). Show that one, the way the
+  // sidebar does: on its Screen if it has one, else in a preview Screen, never
+  // by swapping a pane another view may be looking at.
+  const linked = !keepView && window.location.pathname.match(/^\/live\/([^/]+)$/)?.[1];
+  if (linked) useLayoutStore.getState().openSessionEphemeral(decodeURIComponent(linked));
   return true;
 }
 
@@ -99,7 +131,7 @@ async function current(): Promise<string> {
 // The window hears about a token client's change from the gateway directly.
 if (isTauri) {
   void import("@tauri-apps/api/event")
-    .then(({ listen }) => listen<string>("gateway:desktop-layout", (e) => void apply(JSON.parse(e.payload))))
+    .then(({ listen }) => listen<string>("gateway:desktop-layout", (e) => void apply(JSON.parse(e.payload), true)))
     .catch(() => {});
 }
 
@@ -133,10 +165,10 @@ async function showOwnLayout(): Promise<void> {
     saved = null;
   }
   mode = "own";
-  if (await apply(saved)) return;
+  if (await apply(saved, false)) return;
   const { groups, activeGroupId } = useLayoutStore.getState();
   const copy = cloneLayout(parseLayout({ groups, activeGroupId }) ?? { groups, activeGroupId });
-  await apply(copy);
+  await apply(copy, false);
   void push(await current());
 }
 
@@ -153,7 +185,7 @@ async function followDesktop(): Promise<void> {
   mode = "mirror";
   rev = first.rev;
   // A window that has published nothing yet gets this browser's Screens.
-  if (!(await apply(first.layout))) void push(await current());
+  if (!(await apply(first.layout, false))) void push(await current());
   poller = setInterval(() => void poll(), POLL_MS);
 }
 
@@ -166,7 +198,7 @@ async function poll(): Promise<void> {
     // Switched to its own Screens while this was in flight: not ours to show.
     if (mode !== "mirror") return;
     rev = next.rev;
-    await apply(next.layout);
+    await apply(next.layout, true);
   } catch {
     // The next poll is a second away.
   }
@@ -186,7 +218,7 @@ export async function adoptAccountLayout(): Promise<void> {
     return;
   }
   mode = "account";
-  if (!(saved && (await apply(saved)))) void push(await current());
+  if (!(saved && (await apply(saved, false)))) void push(await current());
 }
 
 /** For the tests. */
@@ -195,5 +227,5 @@ export function resetLayoutSync(): void {
   clearInterval(poller);
   mode = isTauri ? "desktop" : null;
   rev = 0;
-  lastApplied = null;
+  lastShared = null;
 }

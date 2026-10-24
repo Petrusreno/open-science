@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -155,6 +155,8 @@ struct Shared {
     remote_terminals: Mutex<HashSet<String>>,
     /// Live file tickets: id → (issued, resolved absolute path). See `issue_ticket`.
     tickets: Mutex<HashMap<String, (Instant, PathBuf)>>,
+    /// Open browser-tab streams (`GET /v1/mux`), by id. See `mux_open`.
+    muxes: Mutex<HashMap<String, Mux>>,
 }
 
 /// How long a file ticket stays valid. Long enough for a <video> to stream and
@@ -209,7 +211,14 @@ fn redeem_verify(ctx: &Ctx, full: &Path) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())?
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    if !canon.starts_with(&base) && !crate::project::is_inside_registered_project(&ctx.env, &canon) {
+    // The same folders `fs_base` issues tickets in: the base folder, the host's
+    // active workspace (which may sit elsewhere, e.g. `osd server --workspace`),
+    // and registered projects.
+    let active = workspace_dir(&ctx.env).ok().and_then(|p| p.canonicalize().ok());
+    if !canon.starts_with(&base)
+        && !active.is_some_and(|a| canon.starts_with(a))
+        && !crate::project::is_inside_registered_project(&ctx.env, &canon)
+    {
         return Err("outside the workspace".into());
     }
     Ok(canon)
@@ -298,6 +307,7 @@ impl Default for GatewayState {
     }
 }
 
+#[derive(Clone)]
 struct Ctx {
     env: Env,
     shared: Arc<Shared>,
@@ -389,6 +399,7 @@ pub fn start_at(
         terminal: AtomicBool::new(p.terminal),
         remote_terminals: Mutex::new(HashSet::new()),
         tickets: Mutex::new(HashMap::new()),
+        muxes: Mutex::new(HashMap::new()),
     });
     let ctx = Arc::new(Ctx {
         env: env.clone(),
@@ -496,6 +507,18 @@ pub fn shutdown(env: &Env, state: &GatewayState) {
 
 // ---- request handling -------------------------------------------------------
 
+/// Largest body any request may carry. Everything but an upload is small JSON.
+const MAX_BODY: usize = 8 * 1024 * 1024;
+/// Largest file the web client may upload into a session folder. The body is
+/// held in memory while it is written, so this is a memory bound too; the
+/// client checks it first and says so, this is the backstop.
+pub const MAX_UPLOAD: usize = 50 * 1024 * 1024;
+
+enum ParseError {
+    Bad,
+    TooLarge,
+}
+
 struct Request {
     method: String,
     path: String,
@@ -505,7 +528,11 @@ struct Request {
 }
 
 impl Request {
-    fn parse(stream: &TcpStream) -> Option<Request> {
+    fn parse(stream: &TcpStream) -> Result<Request, ParseError> {
+        Self::parse_inner(stream).unwrap_or(Err(ParseError::Bad))
+    }
+
+    fn parse_inner(stream: &TcpStream) -> Option<Result<Request, ParseError>> {
         let mut reader = BufReader::new(stream.try_clone().ok()?);
         let mut line = String::new();
         reader.read_line(&mut line).ok()?;
@@ -536,15 +563,16 @@ impl Request {
                 headers.push((k, v));
             }
         }
-        // Guard against an oversized body claim (nothing here needs > 8 MiB).
-        if content_length > 8 * 1024 * 1024 {
-            return None;
+        // Guard against an oversized body claim; only an upload may be large.
+        let limit = if path == "/v1/fs/upload" { MAX_UPLOAD } else { MAX_BODY };
+        if content_length > limit {
+            return Some(Err(ParseError::TooLarge));
         }
         let mut body = vec![0u8; content_length];
         if content_length > 0 {
             reader.read_exact(&mut body).ok()?;
         }
-        Some(Request { method, path, query, headers, body })
+        Some(Ok(Request { method, path, query, headers, body }))
     }
 
     fn header(&self, k: &str) -> Option<&str> {
@@ -558,9 +586,13 @@ impl Request {
 
 fn handle(mut stream: TcpStream, ctx: Arc<Ctx>) {
     let req = match Request::parse(&stream) {
-        Some(r) => r,
-        None => {
+        Ok(r) => r,
+        Err(ParseError::Bad) => {
             respond_json(&mut stream, 400, "{\"error\":\"bad request\"}");
+            return;
+        }
+        Err(ParseError::TooLarge) => {
+            respond_json(&mut stream, 413, "{\"error\":\"file is too large\"}");
             return;
         }
     };
@@ -616,7 +648,9 @@ fn route(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
         };
         // Read-only stops changes to the workspace, not an account keeping
         // its own Screens or signing itself out.
-        let own_state = (req.method == "PUT" && rest == "me/layout") || (req.method == "POST" && rest == "logout");
+        // Following a stream changes nothing either, so a read-only token may.
+        let own_state = (req.method == "PUT" && rest == "me/layout")
+            || (req.method == "POST" && (rest == "logout" || rest.starts_with("mux/")));
         if ctx.read_only() && req.method != "GET" && !own_state {
             respond_json(stream, 403, "{\"error\":\"token is read-only\"}");
             return;
@@ -797,6 +831,9 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str, who: &Princi
         }
         ("GET", ["fs", "list"]) => fs_list(stream, req, ctx),
         ("GET", ["fs", "read"]) => fs_read(stream, req, ctx),
+        ("GET", ["fs", "locate"]) => fs_locate(stream, req, ctx),
+        ("POST", ["fs", "upload"]) => fs_upload(stream, req, ctx),
+        ("POST", ["fs", "discard"]) => fs_discard(stream, req, ctx),
         // Trade the token for a short-lived, single-file read capability the
         // client can safely put in an <iframe>/<img> src. A GET (not a POST) so
         // a read-only token can still preview files.
@@ -874,6 +911,8 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str, who: &Princi
         // gets the identical list the desktop picker filters by. Carries no
         // credentials in either direction.
         (_, ["terminals", id, ..]) => terminal_route(stream, req, ctx, id, &segs[2..], who),
+        ("GET", ["mux"]) => mux_open(stream, ctx),
+        ("POST", ["mux", id]) => mux_change(stream, req, ctx, id, who),
         ("POST", ["logout"]) => match who {
             Principal::User { session, .. } => match crate::web_accounts::logout(&ctx.env, session) {
                 Ok(()) => respond_json(stream, 200, "{\"ok\":true}"),
@@ -1338,10 +1377,59 @@ fn fs_resolve(ctx: &Ctx, req: &Request) -> Result<PathBuf, String> {
     resolve_under(&base, &located)
 }
 
+/// Where a file an answer mentions really is, or `null`: the desktop's
+/// `resolve_artifact` for the web client, so a mention becomes a chip only when
+/// there is a file behind it — as on the desktop — instead of a chip whose
+/// preview then fails.
+fn fs_locate(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
+    let rel = req.query_get("path").unwrap_or_default();
+    match fs_base(ctx, req) {
+        Ok(base) => {
+            let found = locate_under(&base, &rel);
+            respond_json(stream, 200, &serde_json::json!({ "path": found }).to_string());
+        }
+        Err(e) => respond_json(stream, 400, &err_json(&e)),
+    }
+}
+
 fn fs_read(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     match fs_resolve(ctx, req) {
         Ok(full) => send_file(stream, &full),
         Err(e) => respond_json(stream, 404, &err_json(&e)),
+    }
+}
+
+/// The folder a composer attachment goes to: the session's `dir`, or the
+/// host's active workspace. Never the `base` folder — an attachment belongs to
+/// one session, like the desktop's copy into its workspace root.
+fn attach_dir(ctx: &Ctx, req: &Request) -> Result<PathBuf, String> {
+    if req.query_get("root").is_some() {
+        return Err("attachments go to a session folder".into());
+    }
+    fs_base(ctx, req)
+}
+
+/// The web composer's paste / drop / "add files": the raw body becomes a file
+/// at the root of the session folder, deduplicated, exactly where the desktop
+/// copies one. Answers with the name written, which the chip and the prompt use.
+fn fs_upload(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
+    let name = req.query_get("name").unwrap_or_default();
+    match attach_dir(ctx, req)
+        .and_then(|dir| crate::artifact_file::write_new_file(&dir, &name, &req.body))
+    {
+        Ok(written) => respond_json(stream, 200, &serde_json::json!({ "name": written }).to_string()),
+        Err(e) => respond_json(stream, 400, &err_json(&e)),
+    }
+}
+
+/// Removing an uploaded chip before sending deletes the upload. Root-level
+/// names only (see `discard_file_in`), so it can never reach a file that was
+/// in the folder before.
+fn fs_discard(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
+    let name = req.query_get("name").unwrap_or_default();
+    match attach_dir(ctx, req).and_then(|dir| crate::artifact_file::discard_file_in(&dir, &name)) {
+        Ok(()) => respond_json(stream, 200, "{\"ok\":true}"),
+        Err(e) => respond_json(stream, 400, &err_json(&e)),
     }
 }
 
@@ -1575,6 +1663,264 @@ fn events(stream: &mut TcpStream, ctx: &Ctx, directory: &str) {
     }
 }
 
+// ---- one stream per browser tab ---------------------------------------------
+//
+// A browser opens at most six connections to one host and port — over plain
+// HTTP/1.1, which is what a LAN address gets — shared by every tab. A tab used
+// to hold one stream per folder it showed and one per terminal pane, so two
+// tabs of a real workbench took all six, and from then on every other request
+// from that browser (loading a thread, sending, even opening the page) waited
+// forever. Now a tab holds ONE: `GET /v1/mux` streams everything it follows,
+// each frame tagged with the tab's own key, and `POST /v1/mux/:id` changes what
+// that is.
+
+/// One tab's stream: where its frames go, and a stop switch per subscription.
+struct Mux {
+    tx: Sender<String>,
+    subs: HashMap<String, Arc<AtomicBool>>,
+}
+
+#[derive(serde::Deserialize)]
+struct MuxChange {
+    #[serde(default)]
+    add: Vec<MuxSub>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct MuxSub {
+    key: String,
+    #[serde(flatten)]
+    what: MuxWhat,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum MuxWhat {
+    /// The sidecar's events for one folder — what `/event?directory=` streams.
+    Events { directory: Option<String> },
+    /// A shell's output — what `/v1/terminals/:id/output` streams.
+    Terminal { id: String },
+}
+
+/// One frame: `{"k": key, <field>: value}`. Fields: `open` (it is flowing),
+/// `d` (an event's data, or a chunk of output), `exit` (the shell ended),
+/// `gone` (it cannot be, or can no longer be, followed).
+fn mux_frame(key: &str, field: &str, value: serde_json::Value) -> String {
+    let mut m = serde_json::Map::new();
+    m.insert("k".into(), serde_json::Value::String(key.into()));
+    m.insert(field.into(), value);
+    format!("data: {}\n\n", serde_json::Value::Object(m))
+}
+
+/// A tab's key for one of its subscriptions: short, and safe to echo back.
+fn valid_mux_key(key: &str) -> bool {
+    !key.is_empty() && key.len() <= 64 && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// `GET /v1/mux`: the first frame names the stream (`{"mux": id}`), then every
+/// subscription's frames follow. Holds this connection until the tab goes;
+/// then every subscription stops with it.
+fn mux_open(stream: &mut TcpStream, ctx: &Ctx) {
+    let id = random_hex(16);
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    ctx.shared.muxes.lock().unwrap().insert(id.clone(), Mux { tx, subs: HashMap::new() });
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+    let hello = format!("data: {}\n\n", serde_json::json!({ "mux": id }));
+    if stream.write_all(head.as_bytes()).is_ok() && stream.write_all(hello.as_bytes()).is_ok() {
+        let _ = stream.flush();
+        let mut idle = 0;
+        loop {
+            let frame = match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(frame) => frame,
+                Err(RecvTimeoutError::Timeout) => {
+                    // A closed tab is noticed within a second, not at the next
+                    // failed write, so its subscriptions let go at once.
+                    if peer_closed(stream) {
+                        break;
+                    }
+                    idle += 1;
+                    if idle < 15 {
+                        continue;
+                    }
+                    ": keepalive\n\n".to_string()
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            idle = 0;
+            if stream.write_all(frame.as_bytes()).is_err() {
+                break;
+            }
+            let _ = stream.flush();
+        }
+    }
+    if let Some(mux) = ctx.shared.muxes.lock().unwrap().remove(&id) {
+        for stop in mux.subs.values() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Has the other end of a stream gone? The tab never writes after its
+/// request, so a readable end-of-stream means it closed.
+fn peer_closed(stream: &TcpStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let closed = match stream.peek(&mut [0u8; 1]) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+    };
+    let _ = stream.set_nonblocking(false);
+    closed
+}
+
+/// `POST /v1/mux/:id` — `{"add": [{key, kind, …}], "remove": [key]}`. Adding a
+/// key that is already there replaces it. A subscription that cannot be
+/// followed (a terminal that is not this client's) answers with its own `gone`
+/// frame rather than failing the rest.
+fn mux_change(stream: &mut TcpStream, req: &Request, ctx: &Ctx, id: &str, who: &Principal) {
+    let Ok(change) = serde_json::from_slice::<MuxChange>(&req.body) else {
+        return respond_json(stream, 400, "{\"error\":\"bad body\"}");
+    };
+    if !change.add.iter().map(|s| s.key.as_str()).chain(change.remove.iter().map(String::as_str)).all(valid_mux_key) {
+        return respond_json(stream, 400, "{\"error\":\"bad key\"}");
+    }
+    let mut muxes = ctx.shared.muxes.lock().unwrap();
+    let Some(mux) = muxes.get_mut(id) else {
+        return respond_json(stream, 404, "{\"error\":\"no such stream\"}");
+    };
+    for key in &change.remove {
+        if let Some(stop) = mux.subs.remove(key) {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+    for sub in change.add {
+        if let Some(old) = mux.subs.remove(&sub.key) {
+            old.store(true, Ordering::Relaxed);
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        mux.subs.insert(sub.key.clone(), stop.clone());
+        let (tx, ctx) = (mux.tx.clone(), ctx.clone());
+        match sub.what {
+            MuxWhat::Events { directory } => {
+                let dir = directory.filter(|d| !d.is_empty()).unwrap_or_else(|| ws_dir(&ctx));
+                std::thread::spawn(move || mux_events(&ctx, &sub.key, &dir, &tx, &stop));
+            }
+            MuxWhat::Terminal { id: tid } => {
+                // The same rule as `terminal_route`: the token reaches every
+                // shell, an account only the ones the gateway opened.
+                let ours = matches!(who, Principal::Token)
+                    || ctx.shared.remote_terminals.lock().unwrap().contains(&tid);
+                let rx = ctx
+                    .terminals()
+                    .filter(|_| valid_terminal_id(&tid) && ours)
+                    .and_then(|t| t.subscribe(&tid));
+                match rx {
+                    Some(rx) => {
+                        std::thread::spawn(move || mux_terminal(&ctx, &sub.key, rx, &tx, &stop));
+                    }
+                    None => {
+                        let _ = tx.send(mux_frame(&sub.key, "gone", serde_json::Value::Bool(true)));
+                    }
+                }
+            }
+        }
+    }
+    respond_json(stream, 200, "{\"ok\":true}");
+}
+
+/// Forward one folder's sidecar events into a tab's stream, an event per
+/// frame. Stops at the next event after `stop` — the sidecar's heartbeat
+/// arrives every ten seconds, so an unfollowed folder lets go soon.
+fn mux_events(ctx: &Ctx, key: &str, directory: &str, tx: &Sender<String>, stop: &AtomicBool) {
+    let send = |field: &str, v: serde_json::Value| tx.send(mux_frame(key, field, v)).is_ok();
+    let gone = || send("gone", serde_json::Value::Bool(true));
+    let Some((base, pw)) = endpoint(ctx) else {
+        gone();
+        return;
+    };
+    // No timeout, as for `events`: an idle event stream must not be cut.
+    let Ok(client) = reqwest::blocking::Client::builder().build() else {
+        gone();
+        return;
+    };
+    let resp = client
+        .get(format!("{base}{}", with_query("/event", &[("directory", directory)])))
+        .basic_auth("opencode", Some(pw))
+        .send();
+    let mut resp = match resp {
+        Ok(r) if r.status().is_success() => r,
+        _ => {
+            gone();
+            return;
+        }
+    };
+    if !send("open", serde_json::Value::Bool(true)) {
+        return;
+    }
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = match resp.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        pending.extend(buf[..n].iter().filter(|b| **b != b'\r'));
+        while let Some(end) = pending.windows(2).position(|w| w == b"\n\n") {
+            let block: Vec<u8> = pending.drain(..end + 2).collect();
+            let text = String::from_utf8_lossy(&block);
+            let data: Vec<&str> = text
+                .lines()
+                .filter_map(|l| l.strip_prefix("data:"))
+                .map(|l| l.strip_prefix(' ').unwrap_or(l))
+                .collect();
+            if !data.is_empty() && !send("d", serde_json::Value::String(data.join("\n"))) {
+                return;
+            }
+        }
+    }
+    if !stop.load(Ordering::Relaxed) {
+        gone();
+    }
+}
+
+/// Forward a shell's output into a tab's stream, as `terminal_output` does on
+/// a connection of its own.
+fn mux_terminal(ctx: &Ctx, key: &str, rx: Receiver<String>, tx: &Sender<String>, stop: &AtomicBool) {
+    let send = |field: &str, v: serde_json::Value| tx.send(mux_frame(key, field, v)).is_ok();
+    if !send("open", serde_json::Value::Bool(true)) {
+        return;
+    }
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(chunk) => {
+                if !send("d", serde_json::Value::String(chunk)) {
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                send("exit", serde_json::Value::Bool(true));
+                return;
+            }
+        }
+        // Access withdrawn (switch off, read-only, gateway stopped).
+        if ctx.terminals().is_none() {
+            send("gone", serde_json::Value::Bool(true));
+            return;
+        }
+    }
+}
+
 // ---- upstream proxy helpers -------------------------------------------------
 
 fn shared_client() -> &'static reqwest::blocking::Client {
@@ -1804,6 +2150,7 @@ fn reason(status: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         409 => "Conflict",
+        413 => "Payload Too Large",
         500 => "Internal Server Error",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
@@ -2612,6 +2959,7 @@ mod tests {
                 terminal: AtomicBool::new(false),
                 remote_terminals: Mutex::new(HashSet::new()),
                 tickets: Mutex::new(HashMap::new()),
+                muxes: Mutex::new(HashMap::new()),
             }),
             assets: Arc::new(NoAssets),
             terminals: None,
@@ -2653,6 +3001,26 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// The host's active folder may be any folder (a picked one, or
+    /// `osd server --workspace`); `fs_base` issues tickets there, so redemption
+    /// must honour them — else every web preview and image send there is a 403.
+    #[test]
+    #[cfg(unix)]
+    fn a_ticket_for_a_file_in_an_active_folder_outside_the_base_redeems() {
+        let (ctx, root) = ctx_with_base("active");
+        let picked = root.join("picked-folder");
+        std::fs::create_dir_all(&picked).unwrap();
+        let file = picked.join("shot.png");
+        std::fs::write(&file, b"png").unwrap();
+        assert!(redeem_verify(&ctx, &file).is_err(), "not active yet");
+        crate::runtime::set_workspace(&ctx.env, picked.to_string_lossy().to_string()).unwrap();
+        assert!(redeem_verify(&ctx, &file).is_ok());
+        let sibling = root.join("secret.txt");
+        std::fs::write(&sibling, b"no").unwrap();
+        assert!(redeem_verify(&ctx, &sibling).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// An in-place project lives OUTSIDE the base workspace, and `fs_base`
     /// issues tickets for files in it — so redemption must accept any file under
     /// that project's root, not only the root itself.
@@ -2677,5 +3045,179 @@ mod tests {
         std::fs::write(&sibling, b"no").unwrap();
         assert!(redeem_verify(&ctx, &sibling).is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The web composer's attachments: an upload lands at the root of the
+    /// session folder under a free name, a removed chip deletes only what was
+    /// uploaded, and nothing can write outside a session folder.
+    #[test]
+    #[cfg(unix)]
+    fn web_uploads_land_in_the_session_folder_and_nowhere_else() {
+        let (env, dir) = env_with_recorded_port("upload", None);
+        std::fs::create_dir_all(dir.join("runtime")).unwrap();
+        let base = dir.join("base");
+        std::fs::create_dir_all(base.join("ses1")).unwrap();
+        crate::runtime::set_workspace_base(&env, base.to_string_lossy().to_string()).unwrap();
+        let ses = base.join("ses1").canonicalize().unwrap();
+        let ses_q = enc(&ses.to_string_lossy());
+        let state = GatewayState::default();
+        let mut p = read_persisted(&env);
+        p.enabled = true;
+        write_persisted(&env, &p).unwrap();
+        let port = start_at(&env, &state, &p, None).unwrap();
+        let name_of = |body: &str| {
+            serde_json::from_str::<serde_json::Value>(body).unwrap()["name"].as_str().unwrap().to_string()
+        };
+
+        let up = format!("/v1/fs/upload?name=fig.png&dir={ses_q}");
+        let (s1, b1) = call(port, "POST", &up, "png-bytes");
+        assert_eq!((s1, name_of(&b1)), (200, "fig.png".to_string()));
+        let (s2, b2) = call(port, "POST", &up, "second");
+        assert_eq!((s2, name_of(&b2)), (200, "fig-1.png".to_string()), "a second upload must not overwrite");
+        assert_eq!(std::fs::read(ses.join("fig.png")).unwrap(), b"png-bytes");
+
+        // A name carrying a path keeps only its file name: it cannot climb out.
+        let (s, b) = call(port, "POST", &format!("/v1/fs/upload?name=..%2F..%2Fescape.txt&dir={ses_q}"), "x");
+        assert_eq!((s, name_of(&b)), (200, "escape.txt".to_string()));
+        assert!(!dir.join("escape.txt").exists() && !base.join("escape.txt").exists());
+
+        // Only session folders: not the base folder, not anywhere else.
+        assert_eq!(call(port, "POST", "/v1/fs/upload?name=a.txt&root=base", "x").0, 400);
+        let outside = enc(&dir.to_string_lossy());
+        assert_eq!(call(port, "POST", &format!("/v1/fs/upload?name=a.txt&dir={outside}"), "x").0, 400);
+        assert!(!dir.join("a.txt").exists());
+
+        // Removing a chip deletes the upload; a nested name is refused.
+        std::fs::create_dir_all(ses.join("sub")).unwrap();
+        std::fs::write(ses.join("sub/keep.txt"), b"mine").unwrap();
+        assert_eq!(call(port, "POST", &format!("/v1/fs/discard?name=fig-1.png&dir={ses_q}"), "").0, 200);
+        assert!(!ses.join("fig-1.png").exists() && ses.join("fig.png").exists());
+        assert_eq!(call(port, "POST", &format!("/v1/fs/discard?name=sub%2Fkeep.txt&dir={ses_q}"), "").0, 400);
+        assert!(ses.join("sub/keep.txt").exists());
+
+        // Too large is refused before the body is read.
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let head = format!(
+            "POST {up} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer t\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            MAX_UPLOAD + 1
+        );
+        c.write_all(head.as_bytes()).unwrap();
+        let mut buf = String::new();
+        let _ = c.read_to_string(&mut buf);
+        assert!(buf.starts_with("HTTP/1.1 413"), "{buf}");
+
+        // A mention is located like on the desktop: by path, else by name in a
+        // subfolder; a file that is not there is `null`, not a broken chip.
+        let path_of = |body: &str| serde_json::from_str::<serde_json::Value>(body).unwrap()["path"].clone();
+        let (s, b) = call(port, "GET", &format!("/v1/fs/locate?path=keep.txt&dir={ses_q}"), "");
+        assert_eq!((s, path_of(&b)), (200, serde_json::json!("sub/keep.txt")));
+        let (s, b) = call(port, "GET", &format!("/v1/fs/locate?path=gone.html&dir={ses_q}"), "");
+        assert_eq!((s, path_of(&b)), (200, serde_json::Value::Null));
+        assert_eq!(call(port, "GET", &format!("/v1/fs/locate?path=a.txt&dir={outside}"), "").0, 400);
+
+        // A read-only token cannot write.
+        set_gateway_config(&env, &state, true, false, "read-only".into(), None, false).unwrap();
+        assert_eq!(call(port, "POST", &up, "x").0, 403);
+        assert_eq!(call(port, "POST", &format!("/v1/fs/discard?name=fig.png&dir={ses_q}"), "").0, 403);
+        assert!(ses.join("fig.png").exists());
+
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A tab's one stream carries its shells' output (and its folders'
+    /// events), each frame under the tab's own key; removing a key stops it;
+    /// what a client may not follow answers `gone` on its own key.
+    #[test]
+    fn a_tab_follows_everything_over_one_stream() {
+        let (env, dir) = env_with_recorded_port("mux", None);
+        let fake = Arc::new(FakeTerminals::default());
+        fake.open("desktop-pane", None, 80, 24).unwrap();
+        let state = GatewayState::default().with_terminals(fake.clone());
+        let mut p = read_persisted(&env);
+        p.enabled = true;
+        write_persisted(&env, &p).unwrap();
+        let port = start_at(&env, &state, &p, None).unwrap();
+        set_gateway_config(&env, &state, true, false, "full".into(), None, true).unwrap();
+        crate::web_accounts::set_password(&env, "erin", "a long password").unwrap();
+        let (_, login) = call_as(port, "POST", "/v1/login", None, r#"{"name":"erin","password":"a long password"}"#);
+        let account = format!(
+            "Bearer {}",
+            serde_json::from_str::<serde_json::Value>(&login).unwrap()["token"].as_str().unwrap()
+        );
+
+        // Open the stream and collect its frames as they come.
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(b"GET /v1/mux HTTP/1.1\r\nAuthorization: Bearer t\r\n\r\n").unwrap();
+        let frames = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        {
+            let frames = frames.clone();
+            let reader = BufReader::new(s.try_clone().unwrap());
+            std::thread::spawn(move || {
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Some(json) = line.strip_prefix("data: ") {
+                        frames.lock().unwrap().push(serde_json::from_str(json).unwrap());
+                    }
+                }
+            });
+        }
+        let wait_for = |pred: &dyn Fn(&serde_json::Value) -> bool| {
+            for _ in 0..100 {
+                if frames.lock().unwrap().iter().any(pred) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(wait_for(&|f| f["mux"].is_string()));
+        let id = frames.lock().unwrap()[0]["mux"].as_str().unwrap().to_string();
+        let change = |body: &str| call(port, "POST", &format!("/v1/mux/{id}"), body).0;
+
+        // A shell's output arrives under the key the tab gave it.
+        assert_eq!(change(r#"{"add":[{"key":"t1","kind":"terminal","id":"desktop-pane"}]}"#), 200);
+        assert!(wait_for(&|f| f["k"] == "t1" && f["open"] == true));
+        fake.write("desktop-pane", "ls").unwrap();
+        assert!(wait_for(&|f| f["k"] == "t1" && f["d"] == "echo:ls"));
+
+        // An account does not reach the window's shell: `gone`, nothing else.
+        assert_eq!(
+            call_as(port, "POST", &format!("/v1/mux/{id}"), Some(&account), r#"{"add":[{"key":"t2","kind":"terminal","id":"desktop-pane"}]}"#).0,
+            200
+        );
+        assert!(wait_for(&|f| f["k"] == "t2" && f["gone"] == true));
+
+        // No runtime here, so a folder's events cannot be followed: `gone`.
+        assert_eq!(change(r#"{"add":[{"key":"e1","kind":"events","directory":"/tmp"}]}"#), 200);
+        assert!(wait_for(&|f| f["k"] == "e1" && f["gone"] == true));
+
+        // Removed: the next output is not forwarded.
+        assert_eq!(change(r#"{"remove":["t1"]}"#), 200);
+        std::thread::sleep(Duration::from_millis(1300));
+        fake.write("desktop-pane", "pwd").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!frames.lock().unwrap().iter().any(|f| f["d"] == "echo:pwd"));
+
+        // Bad input and unknown streams are refused.
+        assert_eq!(change(r#"{"add":[{"key":"bad key!","kind":"terminal","id":"x"}]}"#), 400);
+        assert_eq!(call(port, "POST", "/v1/mux/nope", r#"{"add":[]}"#).0, 404);
+
+        // A read-only token can still change what it follows.
+        set_gateway_config(&env, &state, true, false, "read-only".into(), None, true).unwrap();
+        assert_eq!(change(r#"{"remove":[]}"#), 200);
+
+        // The tab goes (the reader holds a clone, so close it outright): its
+        // stream is forgotten within about a second.
+        s.shutdown(std::net::Shutdown::Both).unwrap();
+        for _ in 0..30 {
+            if call(port, "POST", &format!("/v1/mux/{id}"), r#"{"remove":[]}"#).0 == 404 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(call(port, "POST", &format!("/v1/mux/{id}"), r#"{"remove":[]}"#).0, 404);
+
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

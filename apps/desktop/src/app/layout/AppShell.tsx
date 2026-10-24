@@ -23,6 +23,9 @@ import { useUpdateStore } from "@/lib/update";
 import { isGatewayWeb, gatewayToken, setUnauthorizedHandler } from "@/lib/webMode";
 import { WebTokenGate } from "@/components/web/WebTokenGate";
 import { useIsMobile } from "@/lib/useIsMobile";
+import { MANY_TABS, rollCall } from "@/lib/tabRollCall";
+import { toast } from "@/lib/toast";
+import i18n from "@/i18n";
 import {
   findLeaf,
   leaves,
@@ -132,6 +135,12 @@ export function AppShell() {
   useEffect(() => {
     if (isGatewayWeb && !webReady) return; // wait for the token gate
     void useRuntimeStore.getState().bootstrap();
+    // Too many tabs of this browser on one address slow every one of them.
+    if (isGatewayWeb) {
+      void rollCall().then((tabs) => {
+        if (tabs >= MANY_TABS) toast.error(i18n.t("nav:web.manyTabs", { count: tabs }));
+      });
+    }
     void ensureJupyter();
     // One app-lifetime listener for uv provisioning progress, so a running
     // download's live output survives navigating between pages.

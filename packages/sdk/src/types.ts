@@ -374,7 +374,19 @@ export interface OpenCodeClientOptions {
    * return an empty list until something else touches the workspace instance.
    */
   directory?: string;
+  /**
+   * Open the event stream some other way than a connection of its own. The
+   * gateway's web client follows every stream of a browser tab over ONE (a
+   * browser allows six connections per host, shared by all its tabs). Gets
+   * the folder; returns how to stop.
+   */
+  eventStream?: EventStreamOpener;
 }
+
+export type EventStreamOpener = (
+  directory: string | null,
+  handlers: { onOpen: () => void; onMessage: (data: string) => void; onError: () => void },
+) => () => void;
 
 /**
  * A file sent as a real multimodal part of a turn, so a vision-capable model

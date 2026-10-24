@@ -35,7 +35,8 @@
     "splitRightShort": "Diviser à droite",
     "splitDownShort": "Diviser en bas",
     "defaultProject": "Par défaut",
-    "projectMenu": "Changer de projet"
+    "projectMenu": "Changer de projet",
+    "panes": "Volets de cet écran"
   },
   "composer": {
     "placeholder": {
@@ -595,8 +596,6 @@
       "night": "Encore debout"
     },
     "count_one": "{{count}} session",
-    "count_other": "{{count}} sessions",
-    "countDefault_one": "{{count}} session hors projet",
-    "countDefault_other": "{{count}} sessions hors projet"
+    "count_other": "{{count}} sessions"
   }
 }

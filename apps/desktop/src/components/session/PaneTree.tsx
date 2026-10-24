@@ -300,7 +300,9 @@ function contentNeedsConfirm(leaf: PaneLeaf): boolean {
   return leaf.content?.kind === "terminal" && isTerminalUsed(leaf.id);
 }
 
-function Leaf({
+/** One pane, whatever it holds. Exported for the phone, which shows the
+ *  active Screen's focused pane alone. */
+export function Leaf({
   leaf,
   zoom,
   focused,

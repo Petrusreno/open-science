@@ -5,6 +5,7 @@
 // through `/v1/terminals/...`, which the user has to switch on in Settings. The
 // pane does not care which: it opens, writes, resizes, closes and reads output.
 import { isTauri } from "./tauri";
+import { follow } from "./gatewayMux";
 import { gatewayOrigin, gatewayPost, gatewayToken, isGatewayWeb, layoutSource, signedInAccount } from "./webMode";
 
 export interface TerminalOutput {
@@ -133,61 +134,37 @@ const web: TerminalTransport = {
     await fetch(url, { method: "DELETE", headers: authHeader() });
   },
   async subscribe(id, output) {
-    // fetch rather than EventSource: EventSource cannot send a header, and the
-    // token must not ride in a URL.
-    const abort = new AbortController();
-    void (async () => {
-      for (let attempt = 0; !abort.signal.aborted; attempt++) {
-        try {
-          const res = await fetch(`${gatewayOrigin()}${path(id, "/output")}`, {
-            headers: authHeader(),
-            signal: abort.signal,
-          });
-          // Gone (closed elsewhere, or access withdrawn): nothing to come back to.
-          if (!res.ok || !res.body) return output.onExit();
-          if (attempt > 0) output.onReset();
-          if (await readEvents(res.body, output)) return;
-        } catch {
-          if (abort.signal.aborted) return;
-        }
-        await new Promise((r) => setTimeout(r, RECONNECT_MS));
-      }
-    })();
-    return () => abort.abort();
+    // Over the tab's one stream (see gatewayMux): a connection per terminal
+    // pane is how two tabs used up the browser's six.
+    let stopped = false;
+    let stop = () => {};
+    let opens = 0;
+    const start = () => {
+      stop = follow(
+        { kind: "terminal", id: shellOf(id).wire },
+        {
+          // Each later open replays the shell's recent output.
+          onOpen: () => {
+            if (opens++ > 0) output.onReset();
+          },
+          onData: (chunk) => output.onData(chunk),
+          onEnd: (why) => {
+            if (stopped) return;
+            if (why === "drop") setTimeout(() => !stopped && start(), RECONNECT_MS);
+            // Gone (closed elsewhere, or access withdrawn): nothing to come back to.
+            else output.onExit();
+          },
+        },
+      );
+    };
+    start();
+    return () => {
+      stopped = true;
+      stop();
+    };
   },
 };
 
-/** Read server-sent events until the stream ends. True when the shell exited
- *  (`event: exit`), false when only the connection dropped. */
-export async function readEvents(
-  body: ReadableStream<Uint8Array>,
-  output: Pick<TerminalOutput, "onData" | "onExit">,
-): Promise<boolean> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffered = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return false;
-    buffered += decoder.decode(value, { stream: true });
-    let end: number;
-    while ((end = buffered.indexOf("\n\n")) >= 0) {
-      const frame = buffered.slice(0, end);
-      buffered = buffered.slice(end + 2);
-      let event = "message";
-      let data = "";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("event: ")) event = line.slice(7);
-        else if (line.startsWith("data: ")) data += line.slice(6);
-      }
-      if (event === "exit") {
-        output.onExit();
-        return true;
-      }
-      if (data) output.onData(JSON.parse(data) as string);
-    }
-  }
-}
 
 export const terminalTransport: TerminalTransport = isGatewayWeb ? web : desktop;
 
