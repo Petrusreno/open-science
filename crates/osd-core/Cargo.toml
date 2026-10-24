@@ -4,6 +4,8 @@ description = "Open Science Desktop — the server core: workspace, OpenCode sid
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# std::fs::File::lock (the cross-process ledger lock) is stable since 1.89.
+rust-version = "1.89"
 
 [dependencies]
 serde.workspace = true
