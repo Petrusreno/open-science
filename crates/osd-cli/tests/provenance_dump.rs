@@ -1,14 +1,18 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(0);
 
 fn workspace() -> PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "osd-provenance-cli-{}-{}",
+        "osd-provenance-cli-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&root).unwrap();
     root

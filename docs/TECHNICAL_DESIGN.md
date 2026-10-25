@@ -553,9 +553,9 @@ recording commits the immutable run snapshot and every successful output link
 in one transaction. Authored provenance writes use the same DB and workspace
 lock. Retries reuse the original run and existing links. Standalone link APIs
 are rejected in this mode; use run recording. Independent UI requests can span
-a commit and therefore are not a shared multi-request snapshot. The legacy
-`read_runs` Vec helper returns empty on storage failure; built-in list and
-index APIs propagate errors through their Result interfaces.
+a commit and therefore are not a shared multi-request snapshot. Production
+callers use `read_runs_checked` and propagate storage errors; the legacy Vec
+helper is restricted to unit tests.
 
 An existing DB of unknown version, malformed DB, changed/missing legacy source,
 or incomplete migration causes readers and writers to fail closed, with no
