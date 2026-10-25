@@ -3382,6 +3382,7 @@ mod tests {
     /// A terminal's agent is found on its pane: the desktop window's for the
     /// token, the account's own Screens for an account (where a browser names
     /// the shell `w<browser>-<pane>`). One that has exited does not count.
+    #[cfg(unix)]
     #[test]
     fn a_terminal_agent_is_found_on_its_pane() {
         let (ctx, root) = ctx_with_base("tagent");
