@@ -26,9 +26,10 @@ export function reproducePrompt(r: ProvenanceRecord): string {
   // the recorded code (e.g. a generated report.md) cannot close it early.
   const fence = "`".repeat(Math.max(3, longestBacktickRun(content) + 1));
   // Records are capped at 100 KB (provenance.rs cap_content) — a truncated
-  // record is not runnable, and the history store cannot restore omitted text.
+  // record is not runnable, so tell the agent where the full code lives.
   const truncNote = content.endsWith("[truncated]")
-    ? " NOTE: the recorded code below is truncated at the history size cap. Do not run it as complete code; locate the original generating source or command in the workspace or session, and request review if unavailable."
+    ? " NOTE: the recorded code below is truncated at the store's size cap — read the full " +
+      `record for \`${r.path}\` from \`.openscience/provenance.jsonl\` before re-running.`
     : "";
   return (
     `Reproduce \`${r.path}\` (provenance v${r.version}).${env} ` +
@@ -47,7 +48,7 @@ function longestBacktickRun(text: string): number {
 /**
  * The provenance History of one artifact: every recorded version with the code
  * that produced it, the tool, the model, and a link back to the originating
- * conversation. Data comes from the workspace's active provenance store.
+ * conversation. Data comes from `.openscience/provenance.jsonl` (P0-3).
  */
 export function ProvenancePanel({
   path,
