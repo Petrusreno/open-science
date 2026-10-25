@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { absoluteArtifactPath } from "@/lib/artifactFile";
 import { copyText } from "@/lib/clipboard";
-import { openInApp, openWithDefaultApp, useLinkMenu, type LinkTarget } from "@/lib/links";
+import { openInApp, openWithDefaultApp, showInFiles, useLinkMenu, type LinkTarget } from "@/lib/links";
+import { isGatewayWeb } from "@/lib/webMode";
 import { toast } from "@/lib/toast";
 
 const isMac = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
@@ -111,11 +112,22 @@ function MenuBody({ target, done }: { target: LinkTarget; done: () => void }) {
             {!target.isDir && (
               <Item label={t("linkMenu.openFile")} keys={direct} onSelect={run(() => openInApp(target))} />
             )}
-            <Item
-              label={t("linkMenu.openDefault")}
-              keys={target.isDir ? direct : shifted}
-              onSelect={run(() => openWithDefaultApp(target))}
-            />
+            {/* Only a base-relative target knows where in the tree it is. */}
+            {target.root === "base" && (
+              <Item
+                label={t("linkMenu.showInFiles")}
+                keys={target.isDir && isGatewayWeb ? direct : undefined}
+                onSelect={run(() => showInFiles(target))}
+              />
+            )}
+            {/* A browser has no default apps to hand a file to. */}
+            {!isGatewayWeb && (
+              <Item
+                label={t("linkMenu.openDefault")}
+                keys={target.isDir ? direct : shifted}
+                onSelect={run(() => openWithDefaultApp(target))}
+              />
+            )}
             <Item label={t("linkMenu.copyPath")} onSelect={run(() => void copy())} />
           </>
         )}

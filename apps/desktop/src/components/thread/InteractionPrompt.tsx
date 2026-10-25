@@ -128,7 +128,7 @@ function QuestionCard({
           const multiple = !!it.multiple;
           return (
             <div key={qi} className="space-y-2">
-              <div className="text-sm text-text">{it.question}</div>
+              <div className="select-text text-sm text-text">{it.question}</div>
               <div className="flex flex-col gap-1.5">
                 {it.options.map((opt) => {
                   const on = selected[qi]?.has(opt.label) ?? false;

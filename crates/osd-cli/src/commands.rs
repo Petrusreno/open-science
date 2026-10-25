@@ -20,6 +20,25 @@ pub fn run(args: &Args) -> Result<(), String> {
         ("session", "show") => show(args),
         ("session", "rm") | ("session", "delete") => rm_session(args),
         ("session", "abort") => abort(args),
+        ("session", "status") => session_status(args),
+        ("session", "wait") => session_wait(args),
+        ("session", "rename") => session_rename(args),
+        ("session", "archive") => session_archive(args, true),
+        ("session", "unarchive") => session_archive(args, false),
+        ("session", "move") => session_move(args),
+        ("session", "find") | ("session", "search") => session_find(args),
+        ("question", "ls") | ("question", "list") => questions(args),
+        ("question", "answer") => question_answer(args),
+        ("question", "reject") | ("question", "dismiss") => question_reject(args),
+        ("fs", "put") | ("fs", "upload") => fs_put(args),
+        ("screen", "ls") | ("screen", "list") => crate::screens::screen_ls(args),
+        ("screen", "new") => crate::screens::screen_new(args),
+        ("screen", "add") => crate::screens::screen_add(args),
+        ("screen", "close") => crate::screens::screen_close(args),
+        ("screen", "show") => crate::screens::screen_show(args),
+        ("term", "read") => crate::screens::term_read(args),
+        ("term", "send") => crate::screens::term_send(args),
+        ("audit", _) => crate::screens::audit(args),
         ("project", "ls") | ("project", "list") => projects(args),
         ("project", "new") | ("project", "create") => new_project(args),
         ("run", "ls") | ("run", "list") => runs(args),
@@ -66,7 +85,7 @@ fn ledger_export(args: &Args) -> Result<(), String> {
     const USAGE: &str = "usage: osd ledger export --workspace <directory> --output <new-directory> [--json]";
     let root = args.value("workspace").ok_or(USAGE)?;
     let output = args.value("output").ok_or(USAGE)?;
-    let summary = osd_core::ledger::export_v1(
+    let summary = osd_core::ledger_v1::export_v1(
         std::path::Path::new(&root),
         std::path::Path::new(&output),
     )?;
@@ -103,7 +122,7 @@ fn ledger_migrate(args: &Args) -> Result<(), String> {
     {
         return Err("no legacy ledger sources or active ledger in workspace".into());
     }
-    osd_core::ledger::migrate_v1(&root)?;
+    osd_core::ledger_v1::migrate_v1(&root)?;
     if args.has("json") {
         println!("{}", serde_json::json!({"format":"ledger-v1","workspace":root,"status":"active"}));
     } else {
@@ -353,7 +372,23 @@ fn wait_for_reply(
 fn show(args: &Args) -> Result<(), String> {
     let client = Client::connect(args)?;
     let session = args.at(0, "session id")?;
-    let messages = client.get(&format!("/v1/sessions/{session}/messages"))?;
+    let mut messages = client.get(&format!("/v1/sessions/{session}/messages"))?;
+    // The last N turns (a turn starts at a user message): what another agent
+    // usually wants, without the whole conversation filling its context.
+    if let Some(n) = args.value("last") {
+        let n: usize = n.parse().map_err(|_| format!("invalid --last {n:?}"))?;
+        if let Some(all) = messages.as_array_mut() {
+            let starts: Vec<usize> = all
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.get("info").unwrap_or(m)["role"].as_str() == Some("user"))
+                .map(|(i, _)| i)
+                .collect();
+            if n > 0 && starts.len() > n {
+                all.drain(..starts[starts.len() - n]);
+            }
+        }
+    }
     if args.has("json") {
         return print_json(&messages);
     }
@@ -365,6 +400,129 @@ fn show(args: &Args) -> Result<(), String> {
             continue;
         }
         println!("--- {role}\n{text}\n");
+    }
+    Ok(())
+}
+
+/// The folder a session works in, for the requests that are about it.
+fn session_dir(client: &Client, session: &str) -> Result<String, String> {
+    let all = client.get("/v1/sessions")?;
+    all.as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["id"] == session)
+        .and_then(|s| s["directory"].as_str().map(str::to_string))
+        .ok_or_else(|| format!("no session {session}"))
+}
+
+fn session_status(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let session = args.at(0, "session id")?;
+    let status = client.get(&format!("/v1/sessions/{session}/status"))?;
+    if args.has("json") {
+        return print_json(&status);
+    }
+    let state = status["state"].as_str().unwrap_or("idle");
+    println!("{state}  ({} messages, last from the {})", status["messages"], status["lastRole"].as_str().unwrap_or("?"));
+    if let Some(err) = status.get("lastError").filter(|e| !e.is_null()) {
+        println!("last error: {err}");
+    }
+    Ok(())
+}
+
+/// Wait for a session's current turn — whoever started it — to finish, then
+/// print its answer. A session already idle answers at once.
+fn session_wait(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let session = args.at(0, "session id")?;
+    let timeout = args
+        .value("timeout")
+        .map(|t| t.parse::<u64>().map_err(|_| format!("invalid --timeout {t:?}")))
+        .transpose()?
+        .unwrap_or(3600);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(timeout);
+    let mut interval = Duration::from_secs(1);
+    loop {
+        let status = client.get(&format!("/v1/sessions/{session}/status"))?;
+        if let Some(err) = status.get("lastError").filter(|e| !e.is_null()) {
+            return Err(format!("the turn failed: {err}"));
+        }
+        // A message just sent reads as idle until its turn starts: the last
+        // word is still the user's. Give it the time a turn takes to start
+        // (as `send --wait` does) before calling the session idle.
+        let starting = status["lastRole"].as_str() == Some("user") && started.elapsed() < Duration::from_secs(45);
+        if status["state"].as_str() != Some("working") && !starting {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err(format!("still working after {timeout}s"));
+        }
+        std::thread::sleep(interval);
+        interval = (interval + Duration::from_millis(500)).min(Duration::from_secs(5));
+    }
+    let messages = client.get(&format!("/v1/sessions/{session}/messages"))?;
+    match last_assistant_text(&messages, 0) {
+        Some(text) => println!("{text}"),
+        None => println!("(no answer yet)"),
+    }
+    Ok(())
+}
+
+fn session_rename(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let session = args.at(0, "session id")?;
+    let title = args.rest(1);
+    if title.trim().is_empty() {
+        return Err("no title: osd session rename <id> <title…>".into());
+    }
+    client.patch(&format!("/v1/sessions/{session}"), json!({ "title": title }))?;
+    Ok(())
+}
+
+fn session_archive(args: &Args, archived: bool) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let session = args.at(0, "session id")?;
+    client.patch(&format!("/v1/sessions/{session}"), json!({ "archived": archived }))?;
+    Ok(())
+}
+
+/// File a session under a project: its folder becomes the project's.
+fn session_move(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let session = args.at(0, "session id")?;
+    let name = args.value("project").ok_or("which project? osd session move <id> --project NAME")?;
+    let projects = client.get("/v1/projects")?;
+    let id = projects
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&name)))
+        .and_then(|p| p["id"].as_str().map(str::to_string))
+        .ok_or_else(|| format!("no project named {name:?} (osd project ls)"))?;
+    let moved = client.post(&format!("/v1/sessions/{session}/move"), json!({ "project": id }))?;
+    println!("{}", moved["directory"].as_str().unwrap_or(""));
+    Ok(())
+}
+
+fn session_find(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let words = args.rest(0);
+    if words.trim().is_empty() {
+        return Err("find what? osd session find <words…>".into());
+    }
+    let limit = args.value("limit").unwrap_or_else(|| "20".into());
+    let found = client.get(&format!("/v1/sessions/find?q={}&limit={}", urlencode(&words), urlencode(&limit)))?;
+    if args.has("json") {
+        return print_json(&found);
+    }
+    let rows = found.as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        println!("No conversation mentions {words:?}.");
+    }
+    for f in rows {
+        println!("{}  {}", f["id"].as_str().unwrap_or("?"), f["title"].as_str().unwrap_or(""));
+        println!("    {}", f["snippet"].as_str().unwrap_or(""));
     }
     Ok(())
 }
@@ -420,7 +578,7 @@ fn new_project(args: &Args) -> Result<(), String> {
 }
 
 /// The workspace folder of the project called `name` (or with that id).
-fn project_dir(client: &Client, name: &str) -> Result<String, String> {
+pub(crate) fn project_dir(client: &Client, name: &str) -> Result<String, String> {
     let list = client.get("/v1/projects")?;
     let rows = list.as_array().cloned().unwrap_or_default();
     let hit = rows.iter().find(|p| {
@@ -708,9 +866,17 @@ fn approval_set(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
+/// `?dir=` for a request about a session's folder (`--session ID`), else nothing.
+fn dir_query(client: &Client, args: &Args) -> Result<String, String> {
+    Ok(match args.value("session") {
+        Some(id) => format!("?dir={}", urlencode(&session_dir(client, &id)?)),
+        None => String::new(),
+    })
+}
+
 fn permissions(args: &Args) -> Result<(), String> {
     let client = Client::connect(args)?;
-    let list = client.get("/v1/permissions")?;
+    let list = client.get(&format!("/v1/permissions{}", dir_query(&client, args)?))?;
     if args.has("json") {
         return print_json(&list);
     }
@@ -733,8 +899,76 @@ fn permissions(args: &Args) -> Result<(), String> {
 fn reply(args: &Args, verdict: &str) -> Result<(), String> {
     let client = Client::connect(args)?;
     let id = args.at(0, "request id")?;
-    client.post(&format!("/v1/permissions/{id}/reply"), json!({ "reply": verdict }))?;
+    client.post(&format!("/v1/permissions/{id}/reply{}", dir_query(&client, args)?), json!({ "reply": verdict }))?;
     println!("Answered {id}: {verdict}");
+    Ok(())
+}
+
+/// Questions an agent asked and is waiting on (its `question` tool).
+fn questions(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let list = client.get(&format!("/v1/questions{}", dir_query(&client, args)?))?;
+    if args.has("json") {
+        return print_json(&list);
+    }
+    let rows = list.as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        println!("No agent is waiting on a question.");
+    }
+    for q in rows {
+        println!("{}  (session {})", q["id"].as_str().unwrap_or("?"), q["sessionID"].as_str().unwrap_or("?"));
+        for (i, item) in q["questions"].as_array().into_iter().flatten().enumerate() {
+            println!("  {}. {}", i + 1, item["question"].as_str().or(item["header"].as_str()).unwrap_or(""));
+            for o in item["options"].as_array().into_iter().flatten() {
+                let label = o["label"].as_str().unwrap_or("");
+                match o["description"].as_str().filter(|d| !d.is_empty()) {
+                    Some(d) => println!("     - {label}: {d}"),
+                    None => println!("     - {label}"),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One answer per question, in order: an option's label, or your own words.
+fn question_answer(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let id = args.at(0, "question id")?;
+    let answers: Vec<Vec<String>> = args.positional.iter().skip(1).map(|a| vec![a.clone()]).collect();
+    if answers.is_empty() {
+        return Err("no answer: osd question answer <id> <answer> [<answer for the next question>…]".into());
+    }
+    client.post(&format!("/v1/questions/{id}/reply{}", dir_query(&client, args)?), json!({ "answers": answers }))?;
+    Ok(())
+}
+
+fn question_reject(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let id = args.at(0, "question id")?;
+    client.post(&format!("/v1/questions/{id}/reject{}", dir_query(&client, args)?), json!({}))?;
+    Ok(())
+}
+
+/// Put a file into a session's folder (its root), as the composer's "add
+/// files" does. A name already taken gets a free one; the name used is printed.
+fn fs_put(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let local = args.at(0, "file")?;
+    let bytes = std::fs::read(&local).map_err(|e| format!("{local}: {e}"))?;
+    let name = args.value("name").unwrap_or_else(|| {
+        std::path::Path::new(&local).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    });
+    let dir = match (args.value("session"), args.value("directory")) {
+        (Some(id), _) => Some(session_dir(&client, &id)?),
+        (None, d) => d,
+    };
+    let mut path = format!("/v1/fs/upload?name={}", urlencode(&name));
+    if let Some(d) = dir {
+        path.push_str(&format!("&dir={}", urlencode(&d)));
+    }
+    let put = client.post_bytes(&path, bytes)?;
+    println!("{}", put["name"].as_str().unwrap_or(&name));
     Ok(())
 }
 

@@ -4,6 +4,7 @@ import { Copy, Eye, EyeOff, Globe, Laptop, Plug, RefreshCw, ShieldAlert } from "
 import { Row, Section, Switch } from "@/components/settings/Section";
 import { buttonCls, chipCls, inputCls } from "@/components/settings/inputCls";
 import { WebAccounts } from "@/components/settings/WebAccounts";
+import { AuditLog } from "@/components/settings/AuditLog";
 import { toast } from "@/lib/toast";
 import {
   acpServerScript,
@@ -230,6 +231,11 @@ export function RemoteAccessCard() {
             {/* Accounts first: the way a person signs in from a browser. */}
             <Row title={t("remote.accounts")} hint={t("remote.accountsHint")}>
               <WebAccounts />
+            </Row>
+
+            {/* Who did what, through any of the doors above. */}
+            <Row title={t("remote.audit.title")} hint={t("remote.audit.hint")}>
+              <AuditLog />
             </Row>
 
             {/* Bearer token. */}

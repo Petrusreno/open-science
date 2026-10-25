@@ -35,7 +35,8 @@
     "splitRightShort": "Diviser à droite",
     "splitDownShort": "Diviser en bas",
     "defaultProject": "Par défaut",
-    "projectMenu": "Changer de projet"
+    "projectMenu": "Changer de projet",
+    "panes": "Volets de cet écran"
   },
   "composer": {
     "placeholder": {
@@ -77,20 +78,6 @@
     },
     "send": {
       "aria": "Envoyer"
-    },
-    "agent": {
-      "aria": "Mode de l'agent",
-      "title": "Planifier d'abord ou exécuter directement",
-      "menuAria": "Modes de l'agent",
-      "menuTitle": "Comment l'agent doit-il travailler ?",
-      "build": {
-        "label": "Exécuter",
-        "description": "Modifie des fichiers et lance des commandes"
-      },
-      "plan": {
-        "label": "Planifier",
-        "description": "Lecture seule : recherche et rédige d'abord un plan"
-      }
     },
     "approval": {
       "aria": "Mode d'approbation",
@@ -146,17 +133,44 @@
       "removeAria": "Retirer la référence à {{title}}"
     },
     "compact": {
-      "aria": "Compresser le contexte",
-      "title": "Résume les tours précédents ; la prochaine réponse utilisera le contexte compressé",
       "confirmTitle": "Compacter le contexte ?",
       "confirmBody": "Les échanges précédents sont remplacés par un résumé afin que la prochaine réponse s'exécute dans un contexte borné. La conversation d'origine complète reste stockée localement.",
-      "confirmAction": "Compacter"
-    }
+      "confirmAction": "Compacter",
+      "empty": "Pas encore de conversation à compacter",
+      "justCompacted": "Compacté à l'instant — rien de nouveau depuis",
+      "small": "Seulement {{used}} de contexte utilisé ; le compactage commence à {{threshold}}"
+    },
+    "builtin": {
+      "plan": "Mode plan : explorer et rédiger un plan avant de modifier des fichiers. /plan off pour quitter",
+      "compact": "Compresser le contexte : résumer la conversation antérieure"
+    },
+    "planMode": {
+      "label": "Mode plan",
+      "title": "L'agent explore et rédige un plan ; il ne modifie aucun fichier. Maj+Tab ou /plan off pour quitter",
+      "exitAria": "Quitter le mode plan"
+    },
+    "queue": {
+      "aria": "Messages en attente",
+      "edit": "Modifier le message en attente",
+      "save": "Enregistrer",
+      "cancelEdit": "Annuler la modification",
+      "remove": "Retirer le message en attente",
+      "steer": "Intervenir maintenant",
+      "sendNow": "Envoyer maintenant",
+      "add": "Mettre en attente",
+      "addTitle": "Envoyer après ce tour (Entrée) · Cmd/Ctrl+Entrée intervient maintenant"
+    },
+    "busyCommand": "Attendez la fin de ce tour avant de lancer une commande."
   },
   "localCommand": {
-    "newDescription": "Effacer le contexte du chat dans ce dossier",
-    "clearDescription": "Identique à /new ; les fichiers restent dans ce dossier",
-    "cleared": "Contexte du chat effacé. Les fichiers restent dans le même dossier."
+    "newDescription": "Nouvelle conversation dans ce dossier",
+    "clearDescription": "Effacer le contexte ; les messages précédents restent visibles au-dessus",
+    "clearedLabel": "Contexte effacé",
+    "clearedHint": "Le modèle ne voit plus les messages ci-dessus",
+    "openEarlier": "Ouvrir cette session",
+    "olderCleared_one": "{{count}} conversation effacée plus ancienne",
+    "olderCleared_other": "{{count}} conversations effacées plus anciennes",
+    "showOlder": "Afficher"
   },
   "starters": {
     "newSession": "Nouvelle session",
@@ -243,7 +257,10 @@
       "starting": "Démarrage du runtime…",
       "disconnected": "Connectez-vous pour discuter",
       "waiting": "En attente de la réponse…",
-      "readOnly": "Accès en lecture seule — consultation uniquement"
+      "readOnly": "Accès en lecture seule — consultation uniquement",
+      "queue": "Entrée met en attente pour après, Cmd/Ctrl+Entrée intervient maintenant",
+      "steerQueue": "Cmd/Ctrl+Entrée envoie maintenant tous les messages en attente",
+      "compacting": "Compression du contexte…"
     }
   },
   "tool": {
@@ -416,7 +433,13 @@
       "body": "Cela ramène la conversation à ce message et le supprime, ainsi que tous les messages suivants et les modifications de fichiers effectuées lors de ces tours. Action irréversible.",
       "edit": "Modifier et renvoyer",
       "revert": "Revenir ici"
-    }
+    },
+    "sentByAgentFull": "Envoyé par l’agent de « {{session}} » ({{id}}). Cliquez pour copier sa référence pour un agent.",
+    "sentByAccount": "Envoyé par le compte {{account}}",
+    "sentByAgentLabel": "Envoyé par l’agent de",
+    "sentByAccountLabel": "Envoyé par le compte",
+    "clickToCopyRef": "Cliquez pour copier sa référence pour un agent",
+    "from": "De"
   },
   "historyRepair": {
     "reason": {
@@ -527,7 +550,8 @@
       "close": "Fermer la recherche",
       "none": "aucun résultat",
       "find": "Rechercher…"
-    }
+    },
+    "recentInput": "Saisies récentes venues de l’extérieur :"
   },
   "splitInto": {
     "session": "Session"
@@ -595,8 +619,10 @@
       "night": "Encore debout"
     },
     "count_one": "{{count}} session",
-    "count_other": "{{count}} sessions",
-    "countDefault_one": "{{count}} session hors projet",
-    "countDefault_other": "{{count}} sessions hors projet"
+    "count_other": "{{count}} sessions"
+  },
+  "reference": {
+    "copy": "Copier une référence pour un agent",
+    "copied": "Référence copiée — collez-la à un agent"
   }
 }

@@ -3,7 +3,7 @@ import type { MessageUsage, RuntimeStatus, ToolCallStatus } from "@ai4s/shared";
 export type { RuntimeStatus, ToolCallStatus };
 
 /** Pinned OpenCode release this client targets. */
-export const OPENCODE_VERSION = "1.18.32";
+export const OPENCODE_VERSION = "1.19.4";
 
 /** OpenCode server defaults (`opencode serve`). */
 export const DEFAULT_OPENCODE_URL = "http://127.0.0.1:4096";
@@ -69,6 +69,16 @@ export interface SessionIdleEvent {
  *  OpenCode injects itself when the plan_exit question is answered Yes. The
  *  app syncs its per-session agent-mode state from this (never from question
  *  text, which is locale/version-brittle). */
+/** The words of a user message, as the runtime stored them: its non-synthetic
+ *  text parts joined, re-emitted whole as parts arrive. Lets the app show a
+ *  message it did not send itself — another agent's, another tab's, the CLI's. */
+export interface UserMessageEvent {
+  type: "user.message";
+  sessionId: string;
+  messageID: string;
+  text: string;
+}
+
 export interface MessageAgentEvent {
   type: "message.agent";
   sessionId: string;
@@ -204,6 +214,7 @@ export type OpenCodeEvent =
   | ToolUpdatedEvent
   | SessionIdleEvent
   | MessageAgentEvent
+  | UserMessageEvent
   | SessionRetryEvent
   | RuntimeErrorEvent
   | QuestionAskedEvent
@@ -374,7 +385,19 @@ export interface OpenCodeClientOptions {
    * return an empty list until something else touches the workspace instance.
    */
   directory?: string;
+  /**
+   * Open the event stream some other way than a connection of its own. The
+   * gateway's web client follows every stream of a browser tab over ONE (a
+   * browser allows six connections per host, shared by all its tabs). Gets
+   * the folder; returns how to stop.
+   */
+  eventStream?: EventStreamOpener;
 }
+
+export type EventStreamOpener = (
+  directory: string | null,
+  handlers: { onOpen: () => void; onMessage: (data: string) => void; onError: () => void },
+) => () => void;
 
 /**
  * A file sent as a real multimodal part of a turn, so a vision-capable model

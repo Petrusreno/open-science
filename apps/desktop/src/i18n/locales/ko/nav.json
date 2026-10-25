@@ -223,12 +223,13 @@
   },
   "newPicker": {
     "title": "새 세션",
-    "subtitle": "어느 프로젝트에 넣을지 고르세요",
     "search": "프로젝트 검색…",
     "current": "현재",
-    "noProject": "프로젝트 밖",
     "newProject": "새 프로젝트…",
     "hintCreate": "만들기",
     "hintQuick": "묻지 않고 현재 프로젝트에 만들기"
+  },
+  "web": {
+    "manyTabs": "탭 {{count}}개에서 열려 있습니다. 브라우저는 같은 주소에 연결을 몇 개만 허용하므로 탭이 늘수록 모두 느려집니다. 쓰지 않는 탭은 닫아 주세요."
   }
 }

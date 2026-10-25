@@ -75,7 +75,7 @@ export const ReviewerCard = memo(function ReviewerCard({ block }: { block: Revie
                   // space in it, which `pre-wrap` alone will not break. Without
                   // `break-words` a finding stuck out past the card and made
                   // the whole conversation scroll sideways.
-                  <p className="whitespace-pre-wrap break-words font-mono text-[12.5px] leading-relaxed text-muted">
+                  <p className="select-text whitespace-pre-wrap break-words font-mono text-[12.5px] leading-relaxed text-muted">
                     {f.evidence}
                   </p>
                 )}

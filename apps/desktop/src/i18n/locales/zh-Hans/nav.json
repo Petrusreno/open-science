@@ -223,12 +223,13 @@
   },
   "newPicker": {
     "title": "新建会话",
-    "subtitle": "选择它属于哪个项目",
     "search": "搜索项目…",
     "current": "当前",
-    "noProject": "不属于任何项目",
     "newProject": "新建项目…",
     "hintCreate": "新建",
     "hintQuick": "直接在当前项目新建"
+  },
+  "web": {
+    "manyTabs": "已在 {{count}} 个标签页打开。浏览器对同一地址的连接数有限，标签页越多越慢，建议关掉不用的。"
   }
 }

@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -155,7 +155,18 @@ struct Shared {
     remote_terminals: Mutex<HashSet<String>>,
     /// Live file tickets: id → (issued, resolved absolute path). See `issue_ticket`.
     tickets: Mutex<HashMap<String, (Instant, PathBuf)>>,
+    /// Open browser-tab streams (`GET /v1/mux`), by id. See `mux_open`.
+    muxes: Mutex<HashMap<String, Mux>>,
+    /// When each conversation last messaged another one through `osd` (see
+    /// `agent_send_limited`).
+    agent_sends: Mutex<HashMap<String, Vec<Instant>>>,
 }
+
+/// How many messages one conversation may send to other sessions and
+/// terminals within `AGENT_SEND_WINDOW`. Two agents told to talk to each other
+/// would otherwise go on for as long as the tokens last.
+const AGENT_SEND_LIMIT: usize = 5;
+const AGENT_SEND_WINDOW: Duration = Duration::from_secs(600);
 
 /// How long a file ticket stays valid. Long enough for a <video> to stream and
 /// seek through one sitting, short enough that a leaked URL is quickly worthless.
@@ -209,7 +220,14 @@ fn redeem_verify(ctx: &Ctx, full: &Path) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())?
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    if !canon.starts_with(&base) && !crate::project::is_inside_registered_project(&ctx.env, &canon) {
+    // The same folders `fs_base` issues tickets in: the base folder, the host's
+    // active workspace (which may sit elsewhere, e.g. `osd server --workspace`),
+    // and registered projects.
+    let active = workspace_dir(&ctx.env).ok().and_then(|p| p.canonicalize().ok());
+    if !canon.starts_with(&base)
+        && !active.is_some_and(|a| canon.starts_with(a))
+        && !crate::project::is_inside_registered_project(&ctx.env, &canon)
+    {
         return Err("outside the workspace".into());
     }
     Ok(canon)
@@ -266,6 +284,10 @@ pub struct GatewayState {
     /// Called with a layout a token client wrote, so the desktop window shows
     /// it at once (the window and token clients share one set of Screens).
     on_desktop_layout: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    /// Called with a Screen's id when a client asks the window to show it
+    /// (`osd screen show`): which Screen a view shows is its own, so this is
+    /// a request to the window, not a layout change.
+    on_show_screen: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     /// Called when a client created or deleted a session, so a desktop window
     /// showing the same workspace refreshes instead of going stale.
     on_sessions_changed: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -276,12 +298,25 @@ impl GatewayState {
         assets: Arc<dyn Assets>,
         on_sessions_changed: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
-        GatewayState { running: Mutex::new(None), assets, terminals: None, on_desktop_layout: None, on_sessions_changed }
+        GatewayState {
+            running: Mutex::new(None),
+            assets,
+            terminals: None,
+            on_desktop_layout: None,
+            on_show_screen: None,
+            on_sessions_changed,
+        }
     }
 
     /// Tell the window when a token client changes the shared Screens.
     pub fn with_desktop_layout_listener(mut self, f: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
         self.on_desktop_layout = Some(f);
+        self
+    }
+
+    /// Let clients ask the window to show a Screen.
+    pub fn with_show_screen_listener(mut self, f: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+        self.on_show_screen = Some(f);
         self
     }
 
@@ -298,12 +333,14 @@ impl Default for GatewayState {
     }
 }
 
+#[derive(Clone)]
 struct Ctx {
     env: Env,
     shared: Arc<Shared>,
     assets: Arc<dyn Assets>,
     terminals: Option<Arc<dyn Terminals>>,
     on_desktop_layout: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    on_show_screen: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     on_sessions_changed: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -389,6 +426,8 @@ pub fn start_at(
         terminal: AtomicBool::new(p.terminal),
         remote_terminals: Mutex::new(HashSet::new()),
         tickets: Mutex::new(HashMap::new()),
+        muxes: Mutex::new(HashMap::new()),
+        agent_sends: Mutex::new(HashMap::new()),
     });
     let ctx = Arc::new(Ctx {
         env: env.clone(),
@@ -396,6 +435,7 @@ pub fn start_at(
         assets: state.assets.clone(),
         terminals: state.terminals.clone(),
         on_desktop_layout: state.on_desktop_layout.clone(),
+        on_show_screen: state.on_show_screen.clone(),
         on_sessions_changed: state.on_sessions_changed.clone(),
     });
     let sf = stop_flag.clone();
@@ -496,6 +536,18 @@ pub fn shutdown(env: &Env, state: &GatewayState) {
 
 // ---- request handling -------------------------------------------------------
 
+/// Largest body any request may carry. Everything but an upload is small JSON.
+const MAX_BODY: usize = 8 * 1024 * 1024;
+/// Largest file the web client may upload into a session folder. The body is
+/// held in memory while it is written, so this is a memory bound too; the
+/// client checks it first and says so, this is the backstop.
+pub const MAX_UPLOAD: usize = 50 * 1024 * 1024;
+
+enum ParseError {
+    Bad,
+    TooLarge,
+}
+
 struct Request {
     method: String,
     path: String,
@@ -505,7 +557,11 @@ struct Request {
 }
 
 impl Request {
-    fn parse(stream: &TcpStream) -> Option<Request> {
+    fn parse(stream: &TcpStream) -> Result<Request, ParseError> {
+        Self::parse_inner(stream).unwrap_or(Err(ParseError::Bad))
+    }
+
+    fn parse_inner(stream: &TcpStream) -> Option<Result<Request, ParseError>> {
         let mut reader = BufReader::new(stream.try_clone().ok()?);
         let mut line = String::new();
         reader.read_line(&mut line).ok()?;
@@ -536,15 +592,16 @@ impl Request {
                 headers.push((k, v));
             }
         }
-        // Guard against an oversized body claim (nothing here needs > 8 MiB).
-        if content_length > 8 * 1024 * 1024 {
-            return None;
+        // Guard against an oversized body claim; only an upload may be large.
+        let limit = if path == "/v1/fs/upload" { MAX_UPLOAD } else { MAX_BODY };
+        if content_length > limit {
+            return Some(Err(ParseError::TooLarge));
         }
         let mut body = vec![0u8; content_length];
         if content_length > 0 {
             reader.read_exact(&mut body).ok()?;
         }
-        Some(Request { method, path, query, headers, body })
+        Some(Ok(Request { method, path, query, headers, body }))
     }
 
     fn header(&self, k: &str) -> Option<&str> {
@@ -558,13 +615,166 @@ impl Request {
 
 fn handle(mut stream: TcpStream, ctx: Arc<Ctx>) {
     let req = match Request::parse(&stream) {
-        Some(r) => r,
-        None => {
+        Ok(r) => r,
+        Err(ParseError::Bad) => {
             respond_json(&mut stream, 400, "{\"error\":\"bad request\"}");
             return;
         }
+        Err(ParseError::TooLarge) => {
+            respond_json(&mut stream, 413, "{\"error\":\"file is too large\"}");
+            return;
+        }
     };
+    let call = audit_call(&req);
+    // Who, before handling: signing out ends the very session that names them.
+    let actor = call.as_ref().map(|c| match principal(&req, &ctx) {
+        Some(Principal::Token) => "admin".to_string(),
+        Some(Principal::User { name, .. }) => format!("account:{name}"),
+        None if c.action == "login" => format!("account:{}", c.target.clone().unwrap_or_default()),
+        None => "anonymous".to_string(),
+    });
+    LAST_STATUS.with(|s| s.set(0));
     route(&mut stream, &req, &ctx);
+    if let (Some(call), Some(actor)) = (call, actor) {
+        let status = LAST_STATUS.with(|s| s.get());
+        audit_record(&ctx, &req, &stream, call, actor, status);
+    }
+}
+
+/// A change worth recording: what was done, to what, with what words.
+struct AuditCall {
+    action: String,
+    target: Option<String>,
+    detail: Option<String>,
+}
+
+/// The audit entry a request makes, or None for one that changes nothing
+/// (every GET) or nothing anyone needs to look back on (a resize, a layout save).
+/// Covers both doors: the `/v1` API (CLI, scripts) and the OpenCode paths the
+/// web client's conversations go through.
+fn audit_call(req: &Request) -> Option<AuditCall> {
+    if req.method == "GET" {
+        return None;
+    }
+    let body = || serde_json::from_slice::<serde_json::Value>(&req.body).unwrap_or_default();
+    let field = |k: &str| body()[k].as_str().map(str::to_string);
+    let words = |text: String| Some(crate::audit::clip(&text, 500));
+    let parts_text = || {
+        body()["parts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["type"] == "text")
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let call = |action: &str, target: Option<String>, detail: Option<String>| {
+        Some(AuditCall { action: action.to_string(), target, detail })
+    };
+    let m = req.method.as_str();
+    if let Some(rest) = req.path.strip_prefix("/v1/") {
+        let segs: Vec<&str> = rest.trim_matches('/').split('/').collect();
+        let id = |i: usize| segs.get(i).map(|s| s.to_string());
+        return match (m, segs.as_slice()) {
+            ("POST", ["login"]) => call("login", field("name"), None),
+            ("POST", ["logout"]) => call("logout", None, None),
+            ("POST", ["sessions"]) => call("session.create", field("directory"), field("title")),
+            ("DELETE", ["sessions", _]) => call("session.delete", id(1), None),
+            ("POST", ["sessions", _, "prompt"]) => call("session.prompt", id(1), words(field("text").unwrap_or_default())),
+            ("POST", ["sessions", _, "abort"]) => call("session.abort", id(1), None),
+            ("PATCH", ["sessions", _]) => match body()["archived"].as_bool() {
+                Some(true) => call("session.archive", id(1), None),
+                Some(false) => call("session.unarchive", id(1), None),
+                None => call("session.rename", id(1), field("title")),
+            },
+            ("POST", ["sessions", _, "move"]) => call("session.move", id(1), field("project")),
+            ("POST", ["questions", _, what @ ("reply" | "reject")]) => {
+                call(&format!("question.{what}"), id(1), words(String::from_utf8_lossy(&req.body).into_owned()))
+            }
+            ("POST", ["permissions", _, "reply"]) => call("permission.reply", id(1), field("reply")),
+            ("POST", ["fs", "upload"]) => {
+                call("file.upload", req.query_get("name"), Some(format!("{} bytes", req.body.len())))
+            }
+            ("POST", ["fs", "discard"]) => call("file.discard", req.query_get("name"), None),
+            ("POST", ["projects"]) => call("project.create", field("name"), None),
+            ("POST", ["screens"]) => call("screen.new", field("name").filter(|n| !n.is_empty()), Some(format!("{} panes", body()["panes"].as_array().map_or(0, Vec::len)))),
+            ("POST", ["screens", _, "panes"]) => call("screen.add", id(1), words(String::from_utf8_lossy(&req.body).into_owned())),
+            ("DELETE", ["screens", _]) => call("screen.close", id(1), None),
+            // A browser saves its whole layout on every change, which is no news.
+            // A script or an agent overwriting it whole is: it can undo what the
+            // window just did. (`osd screen` edits it in place instead.)
+            ("PUT", ["layout", "desktop"]) if !req.header("user-agent").is_some_and(|ua| ua.contains("Mozilla")) => {
+                call("layout.replace", None, None)
+            }
+            ("POST", ["terminals", _]) => call("terminal.open", id(1), None),
+            ("DELETE", ["terminals", _]) => call("terminal.close", id(1), None),
+            ("POST", ["terminals", _, "input"]) => call("terminal.input", id(1), field("data")),
+            _ => None,
+        };
+    }
+    let segs: Vec<&str> = req.path.trim_matches('/').split('/').collect();
+    let id = segs.get(1).map(|s| s.to_string());
+    match (m, segs.as_slice()) {
+        ("POST", ["session"]) => call("session.create", req.query_get("directory"), field("title")),
+        ("DELETE", ["session", _]) => call("session.delete", id, None),
+        ("PATCH", ["session", _]) => call("session.rename", id, field("title")),
+        ("POST", ["session", _, "prompt_async" | "message"]) => call("session.prompt", id, words(parts_text())),
+        ("POST", ["session", _, "command"]) => {
+            let line = format!("/{} {}", field("command").unwrap_or_default(), field("arguments").unwrap_or_default());
+            call("session.command", id, words(line.trim_end().to_string()))
+        }
+        ("POST", ["session", _, "shell"]) => call("session.shell", id, words(field("command").unwrap_or_default())),
+        ("POST", ["session", _, what @ ("abort" | "revert" | "unrevert" | "summarize" | "fork")]) => {
+            call(&format!("session.{what}"), id, None)
+        }
+        ("POST", ["permission", _, "reply"]) => call("permission.reply", id, field("reply")),
+        ("POST", ["question", _, what @ ("reply" | "reject")]) => {
+            call(&format!("question.{what}"), id, words(String::from_utf8_lossy(&req.body).into_owned()))
+        }
+        ("PATCH", ["global", "config"]) => call("config.model", None, field("model")),
+        _ => None,
+    }
+}
+
+/// Keys typed into a web terminal arrive one request each. They are gathered
+/// per typist and terminal and recorded as one line when Enter is pressed (or
+/// past 2 KB), so the log reads `ls -l⏎`, not seven entries.
+static TYPING: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+fn audit_record(ctx: &Ctx, req: &Request, stream: &TcpStream, mut call: AuditCall, actor: String, status: u16) {
+    if call.action == "terminal.input" {
+        if status != 200 {
+            return;
+        }
+        let data = call.detail.take().unwrap_or_default();
+        // The data dir keeps two gateways in one process (tests) apart.
+        let key = format!("{}\0{actor}\0{}", ctx.env.data_dir().display(), call.target.as_deref().unwrap_or(""));
+        let mut typing = TYPING.lock().unwrap_or_else(|e| e.into_inner());
+        let buf = typing.get_or_insert_with(HashMap::new).entry(key.clone()).or_default();
+        buf.push_str(&data);
+        if !data.contains(['\r', '\n']) && buf.len() < 2048 {
+            return;
+        }
+        let line = typing.as_mut().and_then(|t| t.remove(&key)).unwrap_or_default();
+        call.detail = Some(crate::audit::clip(&crate::audit::typed(&line), 2048));
+    }
+    if call.action == "login" && status != 200 {
+        call.action = "login.failed".into();
+    }
+    crate::audit::record(
+        &ctx.env,
+        &crate::audit::Entry {
+            time: crate::audit::now(),
+            actor,
+            ip: stream.peer_addr().ok().map(|a| a.ip().to_string()),
+            via: req.header("x-osd-origin-session").filter(|v| !v.is_empty()).map(str::to_string),
+            action: call.action,
+            target: call.target,
+            detail: call.detail,
+            status,
+        },
+    );
 }
 
 fn route(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
@@ -616,10 +826,21 @@ fn route(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
         };
         // Read-only stops changes to the workspace, not an account keeping
         // its own Screens or signing itself out.
-        let own_state = (req.method == "PUT" && rest == "me/layout") || (req.method == "POST" && rest == "logout");
+        // Following a stream changes nothing either, so a read-only token may.
+        let own_state = (req.method == "PUT" && rest == "me/layout")
+            || (req.method == "POST" && (rest == "logout" || rest.starts_with("mux/")));
         if ctx.read_only() && req.method != "GET" && !own_state {
             respond_json(stream, 403, "{\"error\":\"token is read-only\"}");
             return;
+        }
+        if agent_send_limited(req, ctx, rest) {
+            let error = format!(
+                "this conversation has sent {AGENT_SEND_LIMIT} messages to other sessions or terminals in the last \
+                 {} minutes — stop and ask the user before sending more (a guard against agents messaging each other \
+                 without end)",
+                AGENT_SEND_WINDOW.as_secs() / 60
+            );
+            return respond_json(stream, 429, &serde_json::json!({ "error": error }).to_string());
         }
         v1(stream, req, ctx, rest, &who);
         return;
@@ -687,6 +908,164 @@ fn route(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     proxy_opencode(stream, req, ctx);
 }
 
+/// Is this a message an agent is sending (`X-OSD-Origin-Session`, set by the
+/// runtime's origin plugin) past its conversation's allowance? A message is a
+/// prompt to a session, or terminal input that presses Enter — typing without
+/// it sends nothing. Counts the message when it is let through.
+fn agent_send_limited(req: &Request, ctx: &Ctx, rest: &str) -> bool {
+    let Some(origin) = req.header("x-osd-origin-session").filter(|o| !o.is_empty()) else {
+        return false;
+    };
+    let segs: Vec<&str> = rest.trim_matches('/').split('/').collect();
+    let sends = req.method == "POST"
+        && match segs.as_slice() {
+            ["sessions", _, "prompt"] => true,
+            ["terminals", _, "input"] => json_str_field(&req.body, "data").is_some_and(|d| d.contains('\r') || d.contains('\n')),
+            _ => false,
+        };
+    if !sends {
+        return false;
+    }
+    let now = Instant::now();
+    let mut all = ctx.shared.agent_sends.lock().unwrap();
+    all.retain(|_, times| times.last().is_some_and(|t| now.duration_since(*t) < AGENT_SEND_WINDOW));
+    let times = all.entry(origin.to_string()).or_default();
+    times.retain(|t| now.duration_since(*t) < AGENT_SEND_WINDOW);
+    if times.len() >= AGENT_SEND_LIMIT {
+        return true;
+    }
+    times.push(now);
+    false
+}
+
+/// The folder a request is about: `?dir=` (a session's, checked to be inside
+/// the workspace), else the host's.
+fn req_dir(ctx: &Ctx, req: &Request) -> Result<String, String> {
+    match req.query_get("dir").filter(|d| !d.is_empty()) {
+        Some(d) => session_dir(ctx, &d),
+        None => Ok(ws_dir(ctx)),
+    }
+}
+
+fn upstream_patch(ctx: &Ctx, path: &str, body: &str) -> UpstreamResult {
+    let (base, pw) = endpoint(ctx).ok_or_else(|| "runtime not started".to_string())?;
+    shared_client()
+        .patch(format!("{base}{path}"))
+        .basic_auth("opencode", Some(pw))
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .map_err(|e| e.to_string())
+}
+
+/// The app's own namespace in a session's metadata (the web client's META_NS).
+const META_NS: &str = "ai4s";
+
+/// `PATCH /v1/sessions/:id {title?, archived?}`.
+fn session_patch(stream: &mut TcpStream, req: &Request, ctx: &Ctx, id: &str) {
+    let v: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+    let mut patch = serde_json::Map::new();
+    if let Some(title) = v["title"].as_str().map(str::trim).filter(|t| !t.is_empty()) {
+        patch.insert("title".into(), serde_json::json!(title));
+    }
+    if let Some(archived) = v["archived"].as_bool() {
+        // PATCH replaces `metadata` whole: start from what is there, so other
+        // keys (another client's) survive.
+        let current: serde_json::Value = match upstream_get(ctx, &format!("/session/{}", enc(id)), &[]) {
+            Ok(r) if r.status().is_success() => r.bytes().ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default(),
+            Ok(r) => return respond_json(stream, r.status().as_u16(), &err_json("no such session")),
+            Err(e) => return respond_json(stream, 502, &err_json(&e)),
+        };
+        let mut metadata = current["metadata"].as_object().cloned().unwrap_or_default();
+        let mut mine = metadata.get(META_NS).and_then(|m| m.as_object().cloned()).unwrap_or_default();
+        if archived {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            mine.insert("archived".into(), serde_json::json!(now));
+        } else {
+            mine.remove("archived");
+        }
+        if mine.is_empty() {
+            metadata.remove(META_NS);
+        } else {
+            metadata.insert(META_NS.into(), serde_json::Value::Object(mine));
+        }
+        patch.insert("metadata".into(), serde_json::Value::Object(metadata));
+    }
+    if patch.is_empty() {
+        return respond_json(stream, 400, &err_json("nothing to change: give a title or archived"));
+    }
+    if forward(stream, upstream_patch(ctx, &format!("/session/{}", enc(id)), &serde_json::Value::Object(patch).to_string())) {
+        ctx.sessions_changed();
+    }
+}
+
+/// One layout change at a time, so two `osd screen` calls cannot each read
+/// the layout before the other has written it.
+static LAYOUT_EDIT: Mutex<()> = Mutex::new(());
+
+/// Change the Screens this caller works in — the desktop window's for the
+/// token (which the window shows at once, as it does a token client's change),
+/// an account's own for an account — by editing the saved layout in place.
+fn edit_layout<T>(ctx: &Ctx, who: &Principal, edit: impl FnOnce(&mut serde_json::Value) -> Result<T, String>) -> Result<T, String> {
+    let _one = LAYOUT_EDIT.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = match who {
+        Principal::Token => crate::web_accounts::read_desktop_layout(&ctx.env).map(|(_, json)| json),
+        Principal::User { name, .. } => crate::web_accounts::read_layout(&ctx.env, name),
+    };
+    let mut layout: serde_json::Value = saved.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    let out = edit(&mut layout)?;
+    let json = layout.to_string();
+    match who {
+        Principal::Token => {
+            crate::web_accounts::write_desktop_layout(&ctx.env, &json)?;
+            if let Some(f) = &ctx.on_desktop_layout {
+                f(&json);
+            }
+        }
+        Principal::User { name, .. } => crate::web_accounts::write_layout(&ctx.env, name, &json)?,
+    }
+    Ok(out)
+}
+
+/// `{"session": "<id>"}` or `{"terminal": {"cwd": "<dir>"}}` (or `"terminal": true`).
+fn pane_of(v: &serde_json::Value) -> Result<crate::screens::Pane, String> {
+    if let Some(id) = v["session"].as_str().filter(|s| !s.is_empty()) {
+        return Ok(crate::screens::Pane::Session(id.to_string()));
+    }
+    if !v["terminal"].is_null() {
+        let text = |k: &str| v["terminal"][k].as_str().filter(|s| !s.trim().is_empty()).map(str::to_string);
+        return Ok(crate::screens::Pane::Terminal { cwd: text("cwd"), command: text("command") });
+    }
+    Err("a pane is {\"session\": id} or {\"terminal\": {\"cwd\": dir, \"command\": cmd}}".into())
+}
+
+/// `POST /v1/screens {name?, directory?, panes: [...]}`: a new Screen, filed
+/// under the project `directory` belongs to.
+fn screen_new(stream: &mut TcpStream, req: &Request, ctx: &Ctx, who: &Principal) {
+    let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+    let panes: Result<Vec<_>, _> = body["panes"].as_array().into_iter().flatten().map(pane_of).collect();
+    let panes = match panes {
+        Ok(p) => p,
+        Err(e) => return respond_json(stream, 400, &err_json(&e)),
+    };
+    let project = body["directory"]
+        .as_str()
+        .map(|dir| {
+            let projects: Vec<(String, String)> = crate::project::list_projects(&ctx.env)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| (p.id, p.path))
+                .collect();
+            crate::screens::project_for(dir, &projects)
+        })
+        .unwrap_or_default();
+    let name = body["name"].as_str().unwrap_or("");
+    match edit_layout(ctx, who, |l| crate::screens::new_screen(l, name, &panes, &project)) {
+        Ok((id, panes)) => respond_json(stream, 200, &serde_json::json!({ "id": id, "panes": panes }).to_string()),
+        Err(e) => respond_json(stream, 400, &err_json(&e)),
+    }
+}
+
 /// The versioned contract surface (CLI / curl / the SPA's file browser).
 /// `rest` is the path after `/v1/`.
 fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str, who: &Principal) {
@@ -701,6 +1080,9 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str, who: &Princi
             let payload = serde_json::json!({
                 "mode": mode,
                 "directory": ws_dir(ctx),
+                // The base folder, so a client can name a session's files the
+                // way the Files tree does (base-relative), e.g. for links.
+                "base": crate::runtime::base_workspace_dir(&ctx.env).ok().map(|p| p.to_string_lossy().into_owned()),
                 "terminal": ctx.terminals().is_some(),
                 "user": user,
             });
@@ -781,22 +1163,68 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str, who: &Princi
         ("POST", ["sessions", id, "abort"]) => {
             forward(stream, upstream_post(ctx, &format!("/session/{}/abort", enc(id)), &[], "{}"));
         }
-        ("GET", ["permissions"]) => {
-            let ws = ws_dir(ctx);
-            forward(stream, upstream_get(ctx, "/permission", &[("directory", &ws)]));
+        // Permission requests and questions belong to a folder's runtime
+        // instance: `?dir=` names a session's folder, else the host's.
+        ("GET", ["permissions"]) => match req_dir(ctx, req) {
+            Ok(dir) => {
+                forward(stream, upstream_get(ctx, "/permission", &[("directory", &dir)]));
+            }
+            Err(e) => respond_json(stream, 400, &err_json(&e)),
+        },
+        ("GET", ["questions"]) => match req_dir(ctx, req) {
+            Ok(dir) => {
+                forward(stream, upstream_get(ctx, "/question", &[("directory", &dir)]));
+            }
+            Err(e) => respond_json(stream, 400, &err_json(&e)),
+        },
+        ("POST", ["permissions", rid, "reply"]) => match req_dir(ctx, req) {
+            Ok(dir) => {
+                let reply = json_str_field(&req.body, "reply").unwrap_or_else(|| "reject".into());
+                let body = serde_json::json!({ "reply": reply }).to_string();
+                forward(stream, upstream_post(ctx, &format!("/permission/{}/reply", enc(rid)), &[("directory", &dir)], &body));
+            }
+            Err(e) => respond_json(stream, 400, &err_json(&e)),
+        },
+        // `{"answers": [[label, …], …]}`, one list per question, or reject to
+        // let the agent go on without an answer.
+        ("POST", ["questions", rid, what @ ("reply" | "reject")]) => match req_dir(ctx, req) {
+            Ok(dir) => {
+                let body = if *what == "reply" {
+                    let v: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+                    serde_json::json!({ "answers": v["answers"] }).to_string()
+                } else {
+                    "{}".to_string()
+                };
+                forward(stream, upstream_post(ctx, &format!("/question/{}/{what}", enc(rid)), &[("directory", &dir)], &body));
+            }
+            Err(e) => respond_json(stream, 400, &err_json(&e)),
+        },
+        ("GET", ["sessions", "find"]) => {
+            let q = req.query_get("q").unwrap_or_default();
+            let limit = req.query_get("limit").and_then(|v| v.parse().ok()).unwrap_or(20);
+            match crate::runtime::runtime_root(&ctx.env).and_then(|root| crate::session_find::find(&root, &q, limit)) {
+                Ok(found) => respond_json(stream, 200, &serde_json::to_string(&found).unwrap_or_else(|_| "[]".into())),
+                Err(e) => respond_json(stream, 400, &err_json(&e)),
+            }
         }
-        ("GET", ["questions"]) => {
-            let ws = ws_dir(ctx);
-            forward(stream, upstream_get(ctx, "/question", &[("directory", &ws)]));
-        }
-        ("POST", ["permissions", rid, "reply"]) => {
-            let ws = ws_dir(ctx);
-            let reply = json_str_field(&req.body, "reply").unwrap_or_else(|| "reject".into());
-            let body = serde_json::json!({ "reply": reply }).to_string();
-            forward(stream, upstream_post(ctx, &format!("/permission/{}/reply", enc(rid)), &[("directory", &ws)], &body));
+        // `{"title": …}` renames; `{"archived": true|false}` files it away or
+        // back, as the sidebar does (the app's key in the session's metadata).
+        ("PATCH", ["sessions", id]) => session_patch(stream, req, ctx, id),
+        ("POST", ["sessions", id, "move"]) => {
+            let project = json_str_field(&req.body, "project").unwrap_or_default();
+            match crate::session_sync::move_session_to_project(&ctx.env, id, &project) {
+                Ok(moved) => {
+                    ctx.sessions_changed();
+                    respond_json(stream, 200, &serde_json::to_string(&moved).unwrap_or_else(|_| "{}".into()));
+                }
+                Err(e) => respond_json(stream, 400, &err_json(&e)),
+            }
         }
         ("GET", ["fs", "list"]) => fs_list(stream, req, ctx),
         ("GET", ["fs", "read"]) => fs_read(stream, req, ctx),
+        ("GET", ["fs", "locate"]) => fs_locate(stream, req, ctx),
+        ("POST", ["fs", "upload"]) => fs_upload(stream, req, ctx),
+        ("POST", ["fs", "discard"]) => fs_discard(stream, req, ctx),
         // Trade the token for a short-lived, single-file read capability the
         // client can safely put in an <iframe>/<img> src. A GET (not a POST) so
         // a read-only token can still preview files.
@@ -874,6 +1302,8 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str, who: &Princi
         // gets the identical list the desktop picker filters by. Carries no
         // credentials in either direction.
         (_, ["terminals", id, ..]) => terminal_route(stream, req, ctx, id, &segs[2..], who),
+        ("GET", ["mux"]) => mux_open(stream, ctx),
+        ("POST", ["mux", id]) => mux_change(stream, req, ctx, id, who),
         ("POST", ["logout"]) => match who {
             Principal::User { session, .. } => match crate::web_accounts::logout(&ctx.env, session) {
                 Ok(()) => respond_json(stream, 200, "{\"ok\":true}"),
@@ -926,6 +1356,56 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str, who: &Princi
                 }
             }
             Principal::User { .. } => respond_json(stream, 403, "{\"error\":\"an account keeps its own layout\"}"),
+        },
+        // Who did what — for the desktop's owner only: an account reading
+        // everyone's messages and keystrokes would undo the point of it.
+        ("GET", ["audit"]) => match who {
+            Principal::Token => {
+                let filter = crate::audit::Filter {
+                    actor: req.query_get("actor"),
+                    target: req.query_get("target"),
+                    action: req.query_get("action"),
+                    since: req.query_get("since"),
+                    until: req.query_get("until"),
+                    limit: req.query_get("limit").and_then(|v| v.parse().ok()),
+                };
+                match crate::audit::query(&ctx.env, &filter) {
+                    Ok(list) => respond_json(stream, 200, &serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())),
+                    Err(e) => respond_json(stream, 500, &err_json(&e)),
+                }
+            }
+            Principal::User { .. } => respond_json(stream, 403, "{\"error\":\"the audit log is for the desktop's owner\"}"),
+        },
+        ("POST", ["screens"]) => screen_new(stream, req, ctx, who),
+        ("POST", ["screens", id, "panes"]) => {
+            let pane = match pane_of(&serde_json::from_slice(&req.body).unwrap_or_default()) {
+                Ok(p) => p,
+                Err(e) => return respond_json(stream, 400, &err_json(&e)),
+            };
+            match edit_layout(ctx, who, |l| crate::screens::add_pane(l, id, &pane)) {
+                Ok(pane) => respond_json(stream, 200, &serde_json::json!({ "pane": pane }).to_string()),
+                Err(e) => respond_json(stream, 404, &err_json(&e)),
+            }
+        }
+        // The desktop window's view only: a browser shows what its user picks.
+        ("POST", ["screens", id, "show"]) => match (who, &ctx.on_show_screen) {
+            (Principal::User { .. }, _) => respond_json(stream, 403, &err_json("an account's Screens are shown by its own browser")),
+            (_, None) => respond_json(stream, 409, &err_json("no desktop window to show it in")),
+            (_, Some(show)) => {
+                let known = crate::web_accounts::read_desktop_layout(&ctx.env)
+                    .and_then(|(_, j)| serde_json::from_str::<serde_json::Value>(&j).ok())
+                    .is_some_and(|l| l["groups"].as_array().is_some_and(|g| g.iter().any(|g| g["id"] == *id)));
+                if known {
+                    show(id);
+                    respond_json(stream, 200, "{\"ok\":true}");
+                } else {
+                    respond_json(stream, 404, &err_json(&format!("no Screen {id}")));
+                }
+            }
+        },
+        ("DELETE", ["screens", id]) => match edit_layout(ctx, who, |l| crate::screens::close_screen(l, id)) {
+            Ok(()) => respond_json(stream, 200, "{\"ok\":true}"),
+            Err(e) => respond_json(stream, 404, &err_json(&e)),
         },
         ("GET", ["zen-models"]) => match crate::model_probe::fetch_zen_models() {
             Ok(ids) => {
@@ -1338,10 +1818,59 @@ fn fs_resolve(ctx: &Ctx, req: &Request) -> Result<PathBuf, String> {
     resolve_under(&base, &located)
 }
 
+/// Where a file an answer mentions really is, or `null`: the desktop's
+/// `resolve_artifact` for the web client, so a mention becomes a chip only when
+/// there is a file behind it — as on the desktop — instead of a chip whose
+/// preview then fails.
+fn fs_locate(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
+    let rel = req.query_get("path").unwrap_or_default();
+    match fs_base(ctx, req) {
+        Ok(base) => {
+            let found = locate_under(&base, &rel);
+            respond_json(stream, 200, &serde_json::json!({ "path": found }).to_string());
+        }
+        Err(e) => respond_json(stream, 400, &err_json(&e)),
+    }
+}
+
 fn fs_read(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     match fs_resolve(ctx, req) {
         Ok(full) => send_file(stream, &full),
         Err(e) => respond_json(stream, 404, &err_json(&e)),
+    }
+}
+
+/// The folder a composer attachment goes to: the session's `dir`, or the
+/// host's active workspace. Never the `base` folder — an attachment belongs to
+/// one session, like the desktop's copy into its workspace root.
+fn attach_dir(ctx: &Ctx, req: &Request) -> Result<PathBuf, String> {
+    if req.query_get("root").is_some() {
+        return Err("attachments go to a session folder".into());
+    }
+    fs_base(ctx, req)
+}
+
+/// The web composer's paste / drop / "add files": the raw body becomes a file
+/// at the root of the session folder, deduplicated, exactly where the desktop
+/// copies one. Answers with the name written, which the chip and the prompt use.
+fn fs_upload(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
+    let name = req.query_get("name").unwrap_or_default();
+    match attach_dir(ctx, req)
+        .and_then(|dir| crate::artifact_file::write_new_file(&dir, &name, &req.body))
+    {
+        Ok(written) => respond_json(stream, 200, &serde_json::json!({ "name": written }).to_string()),
+        Err(e) => respond_json(stream, 400, &err_json(&e)),
+    }
+}
+
+/// Removing an uploaded chip before sending deletes the upload. Root-level
+/// names only (see `discard_file_in`), so it can never reach a file that was
+/// in the folder before.
+fn fs_discard(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
+    let name = req.query_get("name").unwrap_or_default();
+    match attach_dir(ctx, req).and_then(|dir| crate::artifact_file::discard_file_in(&dir, &name)) {
+        Ok(()) => respond_json(stream, 200, "{\"ok\":true}"),
+        Err(e) => respond_json(stream, 400, &err_json(&e)),
     }
 }
 
@@ -1487,6 +2016,7 @@ fn terminal_route(stream: &mut TcpStream, req: &Request, ctx: &Ctx, id: &str, re
             }
         }
         _ if !ours => respond_json(stream, 404, "{\"error\":\"no such terminal\"}"),
+        ("GET", ["read"]) => terminal_read(stream, req, ctx, terminals, id, who),
         ("POST", ["input"]) => match serde_json::from_slice::<TerminalInput>(&req.body) {
             Ok(i) => done(stream, terminals.write(id, &i.data)),
             Err(_) => respond_json(stream, 400, "{\"error\":\"bad body\"}"),
@@ -1505,6 +2035,82 @@ fn terminal_route(stream: &mut TcpStream, req: &Request, ctx: &Ctx, id: &str, re
         },
         _ => respond_json(stream, 404, "{\"error\":\"not found\"}"),
     }
+}
+
+/// The agent a terminal pane runs, from the layout it lives in: the desktop
+/// window's, or the account's own. A browser names its own shells
+/// `w<browser>-<pane>` (see the web client's `shellOf`), so the pane is the
+/// part after the last dash. Only a RUNNING agent counts — one that has exited
+/// left a shell behind, and the shell is what is there now.
+fn terminal_agent(ctx: &Ctx, id: &str, who: &Principal) -> Option<(String, String, Option<String>)> {
+    let pane = if id.starts_with('w') { id.rsplit('-').next().unwrap_or(id) } else { id };
+    let layout = match who {
+        Principal::User { name, .. } => crate::web_accounts::read_layout(&ctx.env, name)?,
+        Principal::Token => crate::web_accounts::read_desktop_layout(&ctx.env)?.1,
+    };
+    let layout: serde_json::Value = serde_json::from_str(&layout).ok()?;
+    fn find<'a>(n: &'a serde_json::Value, pane: &str) -> Option<&'a serde_json::Value> {
+        if n["kind"] == "leaf" {
+            return (n["id"].as_str() == Some(pane)).then_some(n);
+        }
+        n["children"].as_array()?.iter().find_map(|c| find(c, pane))
+    }
+    let leaf = layout["groups"].as_array()?.iter().find_map(|g| find(&g["tree"], pane))?;
+    let c = &leaf["content"];
+    let agent = &c["agent"];
+    if c["kind"] != "terminal" || agent["running"].as_bool() != Some(true) {
+        return None;
+    }
+    Some((
+        agent["kind"].as_str()?.to_string(),
+        agent["sessionId"].as_str()?.to_string(),
+        c["cwd"].as_str().map(str::to_string),
+    ))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+}
+
+/// `GET /v1/terminals/{id}/read?turns=N&lines=N`: what the terminal is doing,
+/// as text. An agent in it is read from its own transcript (the last `turns`
+/// turns, and whether one is still open); a plain shell from its recent output
+/// (the last `lines` lines).
+fn terminal_read(
+    stream: &mut TcpStream,
+    req: &Request,
+    ctx: &Ctx,
+    terminals: &Arc<dyn Terminals>,
+    id: &str,
+    who: &Principal,
+) {
+    let num = |k: &str, default: usize, max: usize| {
+        req.query_get(k).and_then(|v| v.parse::<usize>().ok()).unwrap_or(default).clamp(1, max)
+    };
+    if let Some((agent, session, cwd)) = terminal_agent(ctx, id, who) {
+        if let Some(t) = home_dir().and_then(|h| crate::terminal_read::transcript(&h, &agent, &session, num("turns", 3, 50))) {
+            let payload = serde_json::json!({
+                "kind": "agent", "agent": t.agent, "session": session, "cwd": cwd,
+                "busy": t.busy, "entries": t.entries,
+            });
+            return respond_json(stream, 200, &payload.to_string());
+        }
+    }
+    let Some(rx) = terminals.subscribe(id) else {
+        return respond_json(stream, 404, "{\"error\":\"no such terminal\"}");
+    };
+    // `subscribe` replays the recent output first: take that, not what follows
+    // — and stop within a second even for a shell that never goes quiet.
+    let mut raw = String::new();
+    let until = Instant::now() + Duration::from_secs(1);
+    while let Ok(chunk) = rx.recv_timeout(Duration::from_millis(150)) {
+        raw.push_str(&chunk);
+        if Instant::now() > until {
+            break;
+        }
+    }
+    let text = crate::terminal_read::screen_text(&raw, num("lines", 40, 1000));
+    respond_json(stream, 200, &serde_json::json!({ "kind": "shell", "text": text }).to_string());
 }
 
 /// A shell's output as server-sent events: `data:` carries a JSON string per
@@ -1571,6 +2177,264 @@ fn events(stream: &mut TcpStream, ctx: &Ctx, directory: &str) {
                 let _ = stream.flush();
             }
             Err(_) => break,
+        }
+    }
+}
+
+// ---- one stream per browser tab ---------------------------------------------
+//
+// A browser opens at most six connections to one host and port — over plain
+// HTTP/1.1, which is what a LAN address gets — shared by every tab. A tab used
+// to hold one stream per folder it showed and one per terminal pane, so two
+// tabs of a real workbench took all six, and from then on every other request
+// from that browser (loading a thread, sending, even opening the page) waited
+// forever. Now a tab holds ONE: `GET /v1/mux` streams everything it follows,
+// each frame tagged with the tab's own key, and `POST /v1/mux/:id` changes what
+// that is.
+
+/// One tab's stream: where its frames go, and a stop switch per subscription.
+struct Mux {
+    tx: Sender<String>,
+    subs: HashMap<String, Arc<AtomicBool>>,
+}
+
+#[derive(serde::Deserialize)]
+struct MuxChange {
+    #[serde(default)]
+    add: Vec<MuxSub>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct MuxSub {
+    key: String,
+    #[serde(flatten)]
+    what: MuxWhat,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum MuxWhat {
+    /// The sidecar's events for one folder — what `/event?directory=` streams.
+    Events { directory: Option<String> },
+    /// A shell's output — what `/v1/terminals/:id/output` streams.
+    Terminal { id: String },
+}
+
+/// One frame: `{"k": key, <field>: value}`. Fields: `open` (it is flowing),
+/// `d` (an event's data, or a chunk of output), `exit` (the shell ended),
+/// `gone` (it cannot be, or can no longer be, followed).
+fn mux_frame(key: &str, field: &str, value: serde_json::Value) -> String {
+    let mut m = serde_json::Map::new();
+    m.insert("k".into(), serde_json::Value::String(key.into()));
+    m.insert(field.into(), value);
+    format!("data: {}\n\n", serde_json::Value::Object(m))
+}
+
+/// A tab's key for one of its subscriptions: short, and safe to echo back.
+fn valid_mux_key(key: &str) -> bool {
+    !key.is_empty() && key.len() <= 64 && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// `GET /v1/mux`: the first frame names the stream (`{"mux": id}`), then every
+/// subscription's frames follow. Holds this connection until the tab goes;
+/// then every subscription stops with it.
+fn mux_open(stream: &mut TcpStream, ctx: &Ctx) {
+    let id = random_hex(16);
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    ctx.shared.muxes.lock().unwrap().insert(id.clone(), Mux { tx, subs: HashMap::new() });
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+    let hello = format!("data: {}\n\n", serde_json::json!({ "mux": id }));
+    if stream.write_all(head.as_bytes()).is_ok() && stream.write_all(hello.as_bytes()).is_ok() {
+        let _ = stream.flush();
+        let mut idle = 0;
+        loop {
+            let frame = match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(frame) => frame,
+                Err(RecvTimeoutError::Timeout) => {
+                    // A closed tab is noticed within a second, not at the next
+                    // failed write, so its subscriptions let go at once.
+                    if peer_closed(stream) {
+                        break;
+                    }
+                    idle += 1;
+                    if idle < 15 {
+                        continue;
+                    }
+                    ": keepalive\n\n".to_string()
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            idle = 0;
+            if stream.write_all(frame.as_bytes()).is_err() {
+                break;
+            }
+            let _ = stream.flush();
+        }
+    }
+    if let Some(mux) = ctx.shared.muxes.lock().unwrap().remove(&id) {
+        for stop in mux.subs.values() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Has the other end of a stream gone? The tab never writes after its
+/// request, so a readable end-of-stream means it closed.
+fn peer_closed(stream: &TcpStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let closed = match stream.peek(&mut [0u8; 1]) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+    };
+    let _ = stream.set_nonblocking(false);
+    closed
+}
+
+/// `POST /v1/mux/:id` — `{"add": [{key, kind, …}], "remove": [key]}`. Adding a
+/// key that is already there replaces it. A subscription that cannot be
+/// followed (a terminal that is not this client's) answers with its own `gone`
+/// frame rather than failing the rest.
+fn mux_change(stream: &mut TcpStream, req: &Request, ctx: &Ctx, id: &str, who: &Principal) {
+    let Ok(change) = serde_json::from_slice::<MuxChange>(&req.body) else {
+        return respond_json(stream, 400, "{\"error\":\"bad body\"}");
+    };
+    if !change.add.iter().map(|s| s.key.as_str()).chain(change.remove.iter().map(String::as_str)).all(valid_mux_key) {
+        return respond_json(stream, 400, "{\"error\":\"bad key\"}");
+    }
+    let mut muxes = ctx.shared.muxes.lock().unwrap();
+    let Some(mux) = muxes.get_mut(id) else {
+        return respond_json(stream, 404, "{\"error\":\"no such stream\"}");
+    };
+    for key in &change.remove {
+        if let Some(stop) = mux.subs.remove(key) {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+    for sub in change.add {
+        if let Some(old) = mux.subs.remove(&sub.key) {
+            old.store(true, Ordering::Relaxed);
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        mux.subs.insert(sub.key.clone(), stop.clone());
+        let (tx, ctx) = (mux.tx.clone(), ctx.clone());
+        match sub.what {
+            MuxWhat::Events { directory } => {
+                let dir = directory.filter(|d| !d.is_empty()).unwrap_or_else(|| ws_dir(&ctx));
+                std::thread::spawn(move || mux_events(&ctx, &sub.key, &dir, &tx, &stop));
+            }
+            MuxWhat::Terminal { id: tid } => {
+                // The same rule as `terminal_route`: the token reaches every
+                // shell, an account only the ones the gateway opened.
+                let ours = matches!(who, Principal::Token)
+                    || ctx.shared.remote_terminals.lock().unwrap().contains(&tid);
+                let rx = ctx
+                    .terminals()
+                    .filter(|_| valid_terminal_id(&tid) && ours)
+                    .and_then(|t| t.subscribe(&tid));
+                match rx {
+                    Some(rx) => {
+                        std::thread::spawn(move || mux_terminal(&ctx, &sub.key, rx, &tx, &stop));
+                    }
+                    None => {
+                        let _ = tx.send(mux_frame(&sub.key, "gone", serde_json::Value::Bool(true)));
+                    }
+                }
+            }
+        }
+    }
+    respond_json(stream, 200, "{\"ok\":true}");
+}
+
+/// Forward one folder's sidecar events into a tab's stream, an event per
+/// frame. Stops at the next event after `stop` — the sidecar's heartbeat
+/// arrives every ten seconds, so an unfollowed folder lets go soon.
+fn mux_events(ctx: &Ctx, key: &str, directory: &str, tx: &Sender<String>, stop: &AtomicBool) {
+    let send = |field: &str, v: serde_json::Value| tx.send(mux_frame(key, field, v)).is_ok();
+    let gone = || send("gone", serde_json::Value::Bool(true));
+    let Some((base, pw)) = endpoint(ctx) else {
+        gone();
+        return;
+    };
+    // No timeout, as for `events`: an idle event stream must not be cut.
+    let Ok(client) = reqwest::blocking::Client::builder().build() else {
+        gone();
+        return;
+    };
+    let resp = client
+        .get(format!("{base}{}", with_query("/event", &[("directory", directory)])))
+        .basic_auth("opencode", Some(pw))
+        .send();
+    let mut resp = match resp {
+        Ok(r) if r.status().is_success() => r,
+        _ => {
+            gone();
+            return;
+        }
+    };
+    if !send("open", serde_json::Value::Bool(true)) {
+        return;
+    }
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = match resp.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        pending.extend(buf[..n].iter().filter(|b| **b != b'\r'));
+        while let Some(end) = pending.windows(2).position(|w| w == b"\n\n") {
+            let block: Vec<u8> = pending.drain(..end + 2).collect();
+            let text = String::from_utf8_lossy(&block);
+            let data: Vec<&str> = text
+                .lines()
+                .filter_map(|l| l.strip_prefix("data:"))
+                .map(|l| l.strip_prefix(' ').unwrap_or(l))
+                .collect();
+            if !data.is_empty() && !send("d", serde_json::Value::String(data.join("\n"))) {
+                return;
+            }
+        }
+    }
+    if !stop.load(Ordering::Relaxed) {
+        gone();
+    }
+}
+
+/// Forward a shell's output into a tab's stream, as `terminal_output` does on
+/// a connection of its own.
+fn mux_terminal(ctx: &Ctx, key: &str, rx: Receiver<String>, tx: &Sender<String>, stop: &AtomicBool) {
+    let send = |field: &str, v: serde_json::Value| tx.send(mux_frame(key, field, v)).is_ok();
+    if !send("open", serde_json::Value::Bool(true)) {
+        return;
+    }
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(chunk) => {
+                if !send("d", serde_json::Value::String(chunk)) {
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                send("exit", serde_json::Value::Bool(true));
+                return;
+            }
+        }
+        // Access withdrawn (switch off, read-only, gateway stopped).
+        if ctx.terminals().is_none() {
+            send("gone", serde_json::Value::Bool(true));
+            return;
         }
     }
 }
@@ -1804,6 +2668,7 @@ fn reason(status: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         409 => "Conflict",
+        413 => "Payload Too Large",
         500 => "Internal Server Error",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
@@ -1811,7 +2676,15 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
+thread_local! {
+    /// The status this thread last answered with — one request per connection,
+    /// one connection per thread — so `handle` can audit how a change ended
+    /// without every handler reporting it.
+    static LAST_STATUS: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
+}
+
 fn respond(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) {
+    LAST_STATUS.with(|s| s.set(status));
     let head = format!(
         "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         reason(status),
@@ -2331,12 +3204,219 @@ mod tests {
         assert_eq!(body_len, expected, "body truncated: got {body_len} of {expected}");
     }
 
+    /// An agent messaging other sessions and terminals through `osd` is held to
+    /// AGENT_SEND_LIMIT per conversation: past it, 429. Typing without Enter
+    /// sends nothing and is not counted; another conversation, or a person (no
+    /// origin header), is not affected.
+    #[test]
+    fn an_agent_may_send_only_so_many_messages() {
+        let (env, dir) = env_with_recorded_port("agentsends", None);
+        let fake = Arc::new(FakeTerminals::default());
+        let state = GatewayState::default().with_terminals(fake.clone());
+        let mut p = read_persisted(&env);
+        p.enabled = true;
+        write_persisted(&env, &p).unwrap();
+        let port = start_at(&env, &state, &p, None).unwrap();
+        set_gateway_config(&env, &state, true, false, "full".into(), None, true).unwrap();
+        assert_eq!(call(port, "POST", "/v1/terminals/t1", r#"{"cwd":null,"cols":80,"rows":24}"#).0, 200);
+        let from = |origin: &str| format!("Bearer t\r\nX-OSD-Origin-Session: {origin}");
+        let a = from("ses_a");
+        let enter = r#"{"data":"ls\r"}"#;
+        for _ in 0..AGENT_SEND_LIMIT {
+            assert_eq!(call_as(port, "POST", "/v1/terminals/t1/input", Some(&a), enter).0, 200);
+        }
+        assert_eq!(call_as(port, "POST", "/v1/terminals/t1/input", Some(&a), r#"{"data":"ls"}"#).0, 200, "no Enter");
+        let (status, body) = call_as(port, "POST", "/v1/terminals/t1/input", Some(&a), enter);
+        assert_eq!(status, 429);
+        assert!(body.contains("ask the user"), "{body}");
+        // A prompt to a session counts the same way.
+        assert_eq!(call_as(port, "POST", "/v1/sessions/ses_x/prompt", Some(&a), r#"{"text":"hi"}"#).0, 429);
+        assert_eq!(call_as(port, "POST", "/v1/terminals/t1/input", Some(&from("ses_b")), enter).0, 200);
+        assert_eq!(call(port, "POST", "/v1/terminals/t1/input", enter).0, 200);
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Changes through either door are recorded with who made them; keys typed
+    /// into a terminal become one line at Enter; no password reaches the log;
+    /// only the token may read it.
+    #[test]
+    fn changes_are_audited_and_only_the_owner_reads_the_log() {
+        let (env, dir) = env_with_recorded_port("audit", None);
+        crate::web_accounts::set_password(&env, "hana", "a long password").unwrap();
+        let fake = Arc::new(FakeTerminals::default());
+        let state = GatewayState::default().with_terminals(fake.clone());
+        let mut p = read_persisted(&env);
+        p.enabled = true;
+        write_persisted(&env, &p).unwrap();
+        let port = start_at(&env, &state, &p, None).unwrap();
+        set_gateway_config(&env, &state, true, false, "full".into(), None, true).unwrap();
+
+        assert_eq!(call_as(port, "POST", "/v1/login", None, r#"{"name":"hana","password":"wrong one here"}"#).0, 401);
+        let (_, login) = call_as(port, "POST", "/v1/login", None, r#"{"name":"hana","password":"a long password"}"#);
+        let hana = format!("Bearer {}", serde_json::from_str::<serde_json::Value>(&login).unwrap()["token"].as_str().unwrap());
+
+        assert_eq!(call(port, "POST", "/v1/terminals/t1", r#"{"cwd":null,"cols":80,"rows":24}"#).0, 200);
+        for key in ["l", "x", "\\u007f", "s", "\\r"] {
+            assert_eq!(call(port, "POST", "/v1/terminals/t1/input", &format!(r#"{{"data":"{key}"}}"#)).0, 200);
+        }
+        call(port, "POST", "/v1/terminals/t1/resize", r#"{"cols":100,"rows":30}"#);
+        // An agent's message, through /v1; the runtime is not running here, so it fails — and that is recorded too.
+        let agent = "Bearer t\r\nX-OSD-Origin-Session: ses_b";
+        call_as(port, "POST", "/v1/sessions/ses_a/prompt", Some(agent), r#"{"text":"what is the batch code?"}"#);
+
+        assert_eq!(call_as(port, "GET", "/v1/audit", Some(&hana), "").0, 403);
+        let (status, body) = call(port, "GET", "/v1/audit", "");
+        assert_eq!(status, 200, "{body}");
+        let log: Vec<crate::audit::Entry> = serde_json::from_str(&body).unwrap();
+        let seen: Vec<(&str, &str, Option<&str>)> =
+            log.iter().rev().map(|e| (e.actor.as_str(), e.action.as_str(), e.detail.as_deref())).collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("account:hana", "login.failed", None),
+                ("account:hana", "login", None),
+                ("admin", "terminal.open", None),
+                ("admin", "terminal.input", Some("ls⏎")),
+                ("admin", "session.prompt", Some("what is the batch code?")),
+            ]
+        );
+        assert_eq!(log[0].via.as_deref(), Some("ses_b"));
+        assert_eq!(log[0].target.as_deref(), Some("ses_a"));
+        assert_eq!(log[4].status, 401, "the failed sign-in");
+        let raw = std::fs::read_to_string(crate::audit::utc_month_file_for_tests(&env)).unwrap();
+        assert!(!raw.contains("long password") && !raw.contains("wrong one"), "{raw}");
+        let one = call(port, "GET", "/v1/audit?action=terminal&limit=5", "").1;
+        assert_eq!(serde_json::from_str::<Vec<crate::audit::Entry>>(&one).unwrap().len(), 2);
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `osd screen new | add | close`: the token edits the window's Screens in
+    /// place (and the window hears of it at once), an account its own; both
+    /// are audited, and so is a script overwriting the window's layout whole.
+    #[test]
+    fn screens_are_added_to_and_closed_in_place() {
+        let (env, dir) = env_with_recorded_port("screens", None);
+        crate::web_accounts::set_password(&env, "ines", "a long password").unwrap();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = seen.clone();
+        let state = GatewayState::default().with_desktop_layout_listener(Arc::new(move |j: &str| sink.lock().unwrap().push(j.to_string())));
+        let mut p = read_persisted(&env);
+        p.enabled = true;
+        write_persisted(&env, &p).unwrap();
+        let port = start_at(&env, &state, &p, None).unwrap();
+        let mine = r#"{"activeGroupId":"g1","groups":[{"id":"g1","name":"","tree":{"kind":"leaf","id":"p1","sessionId":"ses_a"},"focusedLeafId":"p1","zoomedLeafId":null}]}"#;
+        crate::web_accounts::write_desktop_layout(&env, mine).unwrap();
+
+        let (status, body) = call(port, "POST", "/v1/screens", r#"{"name":"Six","panes":[{"session":"s1"},{"terminal":{"cwd":"/repo"}}]}"#);
+        assert_eq!(status, 200, "{body}");
+        let made: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!((made["id"].as_str(), made["panes"].as_array().unwrap().len()), (Some("g2"), 2));
+        let layout = |env: &Env| serde_json::from_str::<serde_json::Value>(&crate::web_accounts::read_desktop_layout(env).unwrap().1).unwrap();
+        let l = layout(&env);
+        assert_eq!(l["groups"][0]["tree"]["sessionId"], "ses_a", "the window's Screen is untouched");
+        assert_eq!(l["groups"][1]["name"], "Six");
+        assert_eq!(seen.lock().unwrap().len(), 1, "the window hears of it");
+
+        assert_eq!(call(port, "POST", "/v1/screens/g2/panes", r#"{"session":"s2"}"#).0, 200);
+        assert_eq!(call(port, "POST", "/v1/screens/g9/panes", r#"{"session":"s2"}"#).0, 404);
+        assert_eq!(call(port, "POST", "/v1/screens/g2/panes", r#"{"nothing":1}"#).0, 400);
+        assert_eq!(call(port, "DELETE", "/v1/screens/g2", "").0, 200);
+        assert_eq!(layout(&env)["groups"].as_array().unwrap().len(), 1);
+
+        // An account edits its own Screens, never the window's.
+        let (_, login) = call_as(port, "POST", "/v1/login", None, r#"{"name":"ines","password":"a long password"}"#);
+        let ines = format!("Bearer {}", serde_json::from_str::<serde_json::Value>(&login).unwrap()["token"].as_str().unwrap());
+        assert_eq!(call_as(port, "POST", "/v1/screens", Some(&ines), r#"{"panes":[{"session":"s3"}]}"#).0, 200);
+        assert_eq!(layout(&env)["groups"].as_array().unwrap().len(), 1);
+        let own: serde_json::Value = serde_json::from_str(&crate::web_accounts::read_layout(&env, "ines").unwrap()).unwrap();
+        assert_eq!(own["groups"][0]["tree"]["sessionId"], "s3");
+
+        // A script overwriting the window's layout whole is on the record; a browser saving it is not.
+        call(port, "PUT", "/v1/layout/desktop", mine);
+        let browser = "Bearer t\r\nUser-Agent: Mozilla/5.0";
+        call_as(port, "PUT", "/v1/layout/desktop", Some(browser), mine);
+        let actions: Vec<String> = crate::audit::query(&env, &crate::audit::Filter::default()).unwrap().into_iter().map(|e| e.action).collect();
+        assert_eq!(actions.iter().filter(|a| *a == "layout.replace").count(), 1, "{actions:?}");
+        for a in ["screen.new", "screen.add", "screen.close"] {
+            assert!(actions.iter().any(|x| x == a), "{a} in {actions:?}");
+        }
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The window can be asked to show one of its Screens — only by the
+    /// token, only a Screen it has; requests about a session's folder must
+    /// name one inside the workspace; a rename needs something to change.
+    #[test]
+    fn show_screen_and_folder_scoped_requests() {
+        let (env, dir) = env_with_recorded_port("showscreen", None);
+        crate::web_accounts::set_password(&env, "jon", "a long password").unwrap();
+        let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = shown.clone();
+        let state = GatewayState::default().with_show_screen_listener(Arc::new(move |id: &str| sink.lock().unwrap().push(id.to_string())));
+        let mut p = read_persisted(&env);
+        p.enabled = true;
+        write_persisted(&env, &p).unwrap();
+        let port = start_at(&env, &state, &p, None).unwrap();
+        crate::web_accounts::write_desktop_layout(&env, r#"{"activeGroupId":"g1","groups":[{"id":"g1","name":"","tree":null,"focusedLeafId":null,"zoomedLeafId":null}]}"#).unwrap();
+
+        assert_eq!(call(port, "POST", "/v1/screens/g1/show", "{}").0, 200);
+        assert_eq!(call(port, "POST", "/v1/screens/g9/show", "{}").0, 404);
+        let (_, login) = call_as(port, "POST", "/v1/login", None, r#"{"name":"jon","password":"a long password"}"#);
+        let jon = format!("Bearer {}", serde_json::from_str::<serde_json::Value>(&login).unwrap()["token"].as_str().unwrap());
+        assert_eq!(call_as(port, "POST", "/v1/screens/g1/show", Some(&jon), "{}").0, 403);
+        assert_eq!(*shown.lock().unwrap(), vec!["g1".to_string()]);
+
+        let outside = enc(&std::env::temp_dir().to_string_lossy());
+        assert_eq!(call(port, "GET", &format!("/v1/questions?dir={outside}"), "").0, 400);
+        assert_eq!(call(port, "POST", &format!("/v1/permissions/r1/reply?dir={outside}"), r#"{"reply":"once"}"#).0, 400);
+        assert_eq!(call(port, "PATCH", "/v1/sessions/ses_x", "{}").0, 400);
+        assert_eq!(call(port, "GET", "/v1/sessions/find?q=", "").0, 400);
+        assert_eq!(call(port, "GET", "/v1/sessions/find?q=anything", "").1, "[]", "no runtime database yet: nothing found");
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A terminal's agent is found on its pane: the desktop window's for the
+    /// token, the account's own Screens for an account (where a browser names
+    /// the shell `w<browser>-<pane>`). One that has exited does not count.
+    #[test]
+    fn a_terminal_agent_is_found_on_its_pane() {
+        let (ctx, root) = ctx_with_base("tagent");
+        let layout = |pane: &str, running: bool| {
+            serde_json::json!({ "groups": [{ "id": "g1", "name": "", "tree": { "kind": "split", "dir": "row", "sizes": [0.5, 0.5], "children": [
+                { "kind": "leaf", "id": "p1", "sessionId": "ses_a" },
+                { "kind": "leaf", "id": pane, "sessionId": null, "content": { "kind": "terminal", "cwd": "/repo",
+                  "agent": { "kind": "claude", "sessionId": "abc-1", "running": running } } }
+            ]}}]})
+            .to_string()
+        };
+        crate::web_accounts::write_desktop_layout(&ctx.env, &layout("p9", true)).unwrap();
+        let want = Some(("claude".to_string(), "abc-1".to_string(), Some("/repo".to_string())));
+        assert_eq!(terminal_agent(&ctx, "p9", &Principal::Token), want);
+        assert_eq!(terminal_agent(&ctx, "p1", &Principal::Token), None, "a conversation pane");
+
+        crate::web_accounts::set_password(&ctx.env, "gus", "a long password").unwrap();
+        crate::web_accounts::write_layout(&ctx.env, "gus", &layout("p4", true)).unwrap();
+        let gus = Principal::User { name: "gus".into(), session: String::new() };
+        assert_eq!(terminal_agent(&ctx, "wk3j9x2m1q8z0-p4", &gus), want);
+        assert_eq!(terminal_agent(&ctx, "p9", &gus), None, "not the window's panes");
+
+        crate::web_accounts::write_desktop_layout(&ctx.env, &layout("p9", false)).unwrap();
+        assert_eq!(terminal_agent(&ctx, "p9", &Principal::Token), None, "exited");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// A host's shells, faked: echoes input back as output, records what was
     /// closed. `desktop` stands in for a terminal the desktop window owns.
     #[derive(Default)]
     struct FakeTerminals {
         live: Mutex<HashMap<String, Vec<std::sync::mpsc::Sender<String>>>>,
         closed: Mutex<Vec<String>>,
+        /// Everything each shell has printed, replayed to a new subscriber.
+        history: Mutex<HashMap<String, String>>,
     }
 
     impl Terminals for FakeTerminals {
@@ -2350,6 +3430,7 @@ mod tests {
             let mut live = self.live.lock().unwrap();
             let subs = live.get_mut(id).ok_or("no such terminal")?;
             subs.retain(|tx| tx.send(format!("echo:{data}")).is_ok());
+            self.history.lock().unwrap().entry(id.to_string()).or_default().push_str(&format!("echo:{data}"));
             Ok(())
         }
         fn resize(&self, _id: &str, _cols: u16, _rows: u16) -> Result<(), String> {
@@ -2364,6 +3445,9 @@ mod tests {
             let mut live = self.live.lock().unwrap();
             let subs = live.get_mut(id)?;
             let (tx, rx) = std::sync::mpsc::channel();
+            if let Some(past) = self.history.lock().unwrap().get(id) {
+                let _ = tx.send(past.clone());
+            }
             subs.push(tx);
             Some(rx)
         }
@@ -2415,6 +3499,12 @@ mod tests {
         let (status, body) = call_as(port, "POST", "/v1/terminals/desktop-pane", token, open);
         assert_eq!((status, body.as_str()), (200, r#"{"created":false}"#));
         assert_eq!(call_as(port, "POST", "/v1/terminals/desktop-pane/input", token, r#"{"data":"x"}"#).0, 200);
+        // A shell with no agent in it is read from its recent output.
+        let (status, body) = call_as(port, "GET", "/v1/terminals/desktop-pane/read", token, "");
+        assert_eq!(status, 200, "{body}");
+        let read: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!((read["kind"].as_str(), read["text"].as_str()), (Some("shell"), Some("echo:x")));
+        assert_eq!(call_as(port, "GET", "/v1/terminals/desktop-pane/read", Some(&account), "").0, 404);
         // An account reaches only what it opened.
         assert_eq!(call_as(port, "POST", "/v1/terminals/desktop-pane", Some(&account), open).0, 409);
         assert_eq!(call_as(port, "POST", "/v1/terminals/desktop-pane/input", Some(&account), r#"{"data":"x"}"#).0, 404);
@@ -2612,10 +3702,13 @@ mod tests {
                 terminal: AtomicBool::new(false),
                 remote_terminals: Mutex::new(HashSet::new()),
                 tickets: Mutex::new(HashMap::new()),
+                muxes: Mutex::new(HashMap::new()),
+                agent_sends: Mutex::new(HashMap::new()),
             }),
             assets: Arc::new(NoAssets),
             terminals: None,
             on_desktop_layout: None,
+            on_show_screen: None,
             on_sessions_changed: None,
         };
         (ctx, root)
@@ -2653,6 +3746,26 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// The host's active folder may be any folder (a picked one, or
+    /// `osd server --workspace`); `fs_base` issues tickets there, so redemption
+    /// must honour them — else every web preview and image send there is a 403.
+    #[test]
+    #[cfg(unix)]
+    fn a_ticket_for_a_file_in_an_active_folder_outside_the_base_redeems() {
+        let (ctx, root) = ctx_with_base("active");
+        let picked = root.join("picked-folder");
+        std::fs::create_dir_all(&picked).unwrap();
+        let file = picked.join("shot.png");
+        std::fs::write(&file, b"png").unwrap();
+        assert!(redeem_verify(&ctx, &file).is_err(), "not active yet");
+        crate::runtime::set_workspace(&ctx.env, picked.to_string_lossy().to_string()).unwrap();
+        assert!(redeem_verify(&ctx, &file).is_ok());
+        let sibling = root.join("secret.txt");
+        std::fs::write(&sibling, b"no").unwrap();
+        assert!(redeem_verify(&ctx, &sibling).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// An in-place project lives OUTSIDE the base workspace, and `fs_base`
     /// issues tickets for files in it — so redemption must accept any file under
     /// that project's root, not only the root itself.
@@ -2677,5 +3790,179 @@ mod tests {
         std::fs::write(&sibling, b"no").unwrap();
         assert!(redeem_verify(&ctx, &sibling).is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The web composer's attachments: an upload lands at the root of the
+    /// session folder under a free name, a removed chip deletes only what was
+    /// uploaded, and nothing can write outside a session folder.
+    #[test]
+    #[cfg(unix)]
+    fn web_uploads_land_in_the_session_folder_and_nowhere_else() {
+        let (env, dir) = env_with_recorded_port("upload", None);
+        std::fs::create_dir_all(dir.join("runtime")).unwrap();
+        let base = dir.join("base");
+        std::fs::create_dir_all(base.join("ses1")).unwrap();
+        crate::runtime::set_workspace_base(&env, base.to_string_lossy().to_string()).unwrap();
+        let ses = base.join("ses1").canonicalize().unwrap();
+        let ses_q = enc(&ses.to_string_lossy());
+        let state = GatewayState::default();
+        let mut p = read_persisted(&env);
+        p.enabled = true;
+        write_persisted(&env, &p).unwrap();
+        let port = start_at(&env, &state, &p, None).unwrap();
+        let name_of = |body: &str| {
+            serde_json::from_str::<serde_json::Value>(body).unwrap()["name"].as_str().unwrap().to_string()
+        };
+
+        let up = format!("/v1/fs/upload?name=fig.png&dir={ses_q}");
+        let (s1, b1) = call(port, "POST", &up, "png-bytes");
+        assert_eq!((s1, name_of(&b1)), (200, "fig.png".to_string()));
+        let (s2, b2) = call(port, "POST", &up, "second");
+        assert_eq!((s2, name_of(&b2)), (200, "fig-1.png".to_string()), "a second upload must not overwrite");
+        assert_eq!(std::fs::read(ses.join("fig.png")).unwrap(), b"png-bytes");
+
+        // A name carrying a path keeps only its file name: it cannot climb out.
+        let (s, b) = call(port, "POST", &format!("/v1/fs/upload?name=..%2F..%2Fescape.txt&dir={ses_q}"), "x");
+        assert_eq!((s, name_of(&b)), (200, "escape.txt".to_string()));
+        assert!(!dir.join("escape.txt").exists() && !base.join("escape.txt").exists());
+
+        // Only session folders: not the base folder, not anywhere else.
+        assert_eq!(call(port, "POST", "/v1/fs/upload?name=a.txt&root=base", "x").0, 400);
+        let outside = enc(&dir.to_string_lossy());
+        assert_eq!(call(port, "POST", &format!("/v1/fs/upload?name=a.txt&dir={outside}"), "x").0, 400);
+        assert!(!dir.join("a.txt").exists());
+
+        // Removing a chip deletes the upload; a nested name is refused.
+        std::fs::create_dir_all(ses.join("sub")).unwrap();
+        std::fs::write(ses.join("sub/keep.txt"), b"mine").unwrap();
+        assert_eq!(call(port, "POST", &format!("/v1/fs/discard?name=fig-1.png&dir={ses_q}"), "").0, 200);
+        assert!(!ses.join("fig-1.png").exists() && ses.join("fig.png").exists());
+        assert_eq!(call(port, "POST", &format!("/v1/fs/discard?name=sub%2Fkeep.txt&dir={ses_q}"), "").0, 400);
+        assert!(ses.join("sub/keep.txt").exists());
+
+        // Too large is refused before the body is read.
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let head = format!(
+            "POST {up} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer t\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            MAX_UPLOAD + 1
+        );
+        c.write_all(head.as_bytes()).unwrap();
+        let mut buf = String::new();
+        let _ = c.read_to_string(&mut buf);
+        assert!(buf.starts_with("HTTP/1.1 413"), "{buf}");
+
+        // A mention is located like on the desktop: by path, else by name in a
+        // subfolder; a file that is not there is `null`, not a broken chip.
+        let path_of = |body: &str| serde_json::from_str::<serde_json::Value>(body).unwrap()["path"].clone();
+        let (s, b) = call(port, "GET", &format!("/v1/fs/locate?path=keep.txt&dir={ses_q}"), "");
+        assert_eq!((s, path_of(&b)), (200, serde_json::json!("sub/keep.txt")));
+        let (s, b) = call(port, "GET", &format!("/v1/fs/locate?path=gone.html&dir={ses_q}"), "");
+        assert_eq!((s, path_of(&b)), (200, serde_json::Value::Null));
+        assert_eq!(call(port, "GET", &format!("/v1/fs/locate?path=a.txt&dir={outside}"), "").0, 400);
+
+        // A read-only token cannot write.
+        set_gateway_config(&env, &state, true, false, "read-only".into(), None, false).unwrap();
+        assert_eq!(call(port, "POST", &up, "x").0, 403);
+        assert_eq!(call(port, "POST", &format!("/v1/fs/discard?name=fig.png&dir={ses_q}"), "").0, 403);
+        assert!(ses.join("fig.png").exists());
+
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A tab's one stream carries its shells' output (and its folders'
+    /// events), each frame under the tab's own key; removing a key stops it;
+    /// what a client may not follow answers `gone` on its own key.
+    #[test]
+    fn a_tab_follows_everything_over_one_stream() {
+        let (env, dir) = env_with_recorded_port("mux", None);
+        let fake = Arc::new(FakeTerminals::default());
+        fake.open("desktop-pane", None, 80, 24).unwrap();
+        let state = GatewayState::default().with_terminals(fake.clone());
+        let mut p = read_persisted(&env);
+        p.enabled = true;
+        write_persisted(&env, &p).unwrap();
+        let port = start_at(&env, &state, &p, None).unwrap();
+        set_gateway_config(&env, &state, true, false, "full".into(), None, true).unwrap();
+        crate::web_accounts::set_password(&env, "erin", "a long password").unwrap();
+        let (_, login) = call_as(port, "POST", "/v1/login", None, r#"{"name":"erin","password":"a long password"}"#);
+        let account = format!(
+            "Bearer {}",
+            serde_json::from_str::<serde_json::Value>(&login).unwrap()["token"].as_str().unwrap()
+        );
+
+        // Open the stream and collect its frames as they come.
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(b"GET /v1/mux HTTP/1.1\r\nAuthorization: Bearer t\r\n\r\n").unwrap();
+        let frames = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        {
+            let frames = frames.clone();
+            let reader = BufReader::new(s.try_clone().unwrap());
+            std::thread::spawn(move || {
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Some(json) = line.strip_prefix("data: ") {
+                        frames.lock().unwrap().push(serde_json::from_str(json).unwrap());
+                    }
+                }
+            });
+        }
+        let wait_for = |pred: &dyn Fn(&serde_json::Value) -> bool| {
+            for _ in 0..100 {
+                if frames.lock().unwrap().iter().any(pred) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(wait_for(&|f| f["mux"].is_string()));
+        let id = frames.lock().unwrap()[0]["mux"].as_str().unwrap().to_string();
+        let change = |body: &str| call(port, "POST", &format!("/v1/mux/{id}"), body).0;
+
+        // A shell's output arrives under the key the tab gave it.
+        assert_eq!(change(r#"{"add":[{"key":"t1","kind":"terminal","id":"desktop-pane"}]}"#), 200);
+        assert!(wait_for(&|f| f["k"] == "t1" && f["open"] == true));
+        fake.write("desktop-pane", "ls").unwrap();
+        assert!(wait_for(&|f| f["k"] == "t1" && f["d"] == "echo:ls"));
+
+        // An account does not reach the window's shell: `gone`, nothing else.
+        assert_eq!(
+            call_as(port, "POST", &format!("/v1/mux/{id}"), Some(&account), r#"{"add":[{"key":"t2","kind":"terminal","id":"desktop-pane"}]}"#).0,
+            200
+        );
+        assert!(wait_for(&|f| f["k"] == "t2" && f["gone"] == true));
+
+        // No runtime here, so a folder's events cannot be followed: `gone`.
+        assert_eq!(change(r#"{"add":[{"key":"e1","kind":"events","directory":"/tmp"}]}"#), 200);
+        assert!(wait_for(&|f| f["k"] == "e1" && f["gone"] == true));
+
+        // Removed: the next output is not forwarded.
+        assert_eq!(change(r#"{"remove":["t1"]}"#), 200);
+        std::thread::sleep(Duration::from_millis(1300));
+        fake.write("desktop-pane", "pwd").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!frames.lock().unwrap().iter().any(|f| f["d"] == "echo:pwd"));
+
+        // Bad input and unknown streams are refused.
+        assert_eq!(change(r#"{"add":[{"key":"bad key!","kind":"terminal","id":"x"}]}"#), 400);
+        assert_eq!(call(port, "POST", "/v1/mux/nope", r#"{"add":[]}"#).0, 404);
+
+        // A read-only token can still change what it follows.
+        set_gateway_config(&env, &state, true, false, "read-only".into(), None, true).unwrap();
+        assert_eq!(change(r#"{"remove":[]}"#), 200);
+
+        // The tab goes (the reader holds a clone, so close it outright): its
+        // stream is forgotten within about a second.
+        s.shutdown(std::net::Shutdown::Both).unwrap();
+        for _ in 0..30 {
+            if call(port, "POST", &format!("/v1/mux/{id}"), r#"{"remove":[]}"#).0 == 404 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(call(port, "POST", &format!("/v1/mux/{id}"), r#"{"remove":[]}"#).0, 404);
+
+        stop(&env, &state);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1,5 +1,6 @@
 import { memo } from "react";
 import type { ArtifactBlock, FigureAnnotation, ThreadBlock } from "@ai4s/shared";
+import type { MessageSender } from "@/lib/messageSenders";
 import {
   AgentMessage,
   DataTable,
@@ -40,6 +41,9 @@ export interface BlockHandlers {
   /** Reload a session whose history failed to load — the error line's Retry
    *  action (#139). Present only in the live session. */
   onRetryHistory?: () => void;
+  /** Who sent a user message, when it was not the owner (a web account, or an
+   *  agent of another conversation) — from the audit log. */
+  senderOf?: (text: string) => MessageSender | undefined;
 }
 
 export function renderBlock(
@@ -58,6 +62,7 @@ export function renderBlock(
         <UserMessage
           key={i}
           block={block}
+          sender={handlers?.senderOf?.(block.text)}
           onEdit={handlers?.onEditMessage}
           onRevert={handlers?.onRevertMessage}
         />
@@ -72,6 +77,7 @@ export function renderBlock(
           usage={block.usage}
           contextLimit={contextLimit}
           onOpenArtifact={handlers?.onArtifactOpen}
+          directory={workspaceDirectory}
         />
       );
     case "reasoning":

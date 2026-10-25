@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { gatewayOrigin, setGatewayToken } from "@/lib/webMode";
+import logo from "@/assets/logo.webp";
 
 /** Pre-auth screen for the gateway-served web client, before the real app
  *  boots. An account (name + password, made in the desktop's Settings) is the
@@ -61,70 +62,95 @@ export function WebTokenGate({ onConnect }: { onConnect: () => void }) {
   };
 
   const field =
-    "mt-3 h-10 w-full rounded-input border border-border bg-surface-2 px-3 text-sm outline-none focus:border-accent";
+    "h-10 w-full rounded-input border border-border bg-surface px-3 text-sm text-text outline-none transition-colors placeholder:text-muted/60 focus:border-text/40";
+  const label = "mb-1.5 block text-xs text-muted";
   const onEnter = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") void submit();
   };
 
+  // No card: the page IS the form. Left-aligned, the app's own brand mark on
+  // top, one column of type — the same quiet register as the workbench behind it.
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-bg p-6 text-text">
+    <div className="flex min-h-screen w-full items-center justify-center bg-bg px-6 py-12 text-text">
       <form
-        className="w-full max-w-sm rounded-card border border-border bg-surface p-7 shadow-xl"
+        className="w-full max-w-[340px] pb-[8vh]"
         onSubmit={(e) => {
           e.preventDefault();
           void submit();
         }}
       >
-        <h1 className="text-lg font-semibold">{t("remote.title")}</h1>
-        <p className="mt-1 text-sm leading-relaxed text-muted">
+        <div className="flex items-center gap-2">
+          <img src={logo} alt="" className="h-6 w-6" />
+          {/* eslint-disable-next-line i18next/no-literal-string -- product brand name, not translated across locales (see AGENTS.md) */}
+          <span className="font-serif text-[17px] font-semibold">Open Science</span>
+        </div>
+
+        <h1 className="mt-12 text-[22px] font-semibold leading-tight">
+          {useToken ? t("remote.token") : t("remote.signIn")}
+        </h1>
+        <p className="mt-2 text-[13px] leading-relaxed text-muted">
           {useToken ? t("remote.connectPrompt") : t("remote.signInPrompt")}
         </p>
-        {useToken ? (
-          <input
-            type="password"
-            autoFocus
-            autoComplete="off"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            onKeyDown={onEnter}
-            placeholder={t("remote.token")}
-            aria-label={t("remote.token")}
-            className={field}
-          />
-        ) : (
-          <>
-            <input
-              autoFocus
-              autoComplete="username"
-              autoCapitalize="none"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={onEnter}
-              placeholder={t("remote.accountName")}
-              aria-label={t("remote.accountName")}
-              className={field}
-            />
-            <input
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={onEnter}
-              placeholder={t("remote.password")}
-              aria-label={t("remote.password")}
-              className="mt-2 h-10 w-full rounded-input border border-border bg-surface-2 px-3 text-sm outline-none focus:border-accent"
-            />
-          </>
-        )}
+
+        <div className="mt-8 space-y-4">
+          {useToken ? (
+            <div>
+              {/* The heading already names the field. */}
+              <input
+                aria-label={t("remote.token")}
+                type="password"
+                autoFocus
+                autoComplete="off"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                onKeyDown={onEnter}
+                className={field}
+              />
+            </div>
+          ) : (
+            <>
+              <div>
+                <label htmlFor="gate-name" className={label}>
+                  {t("remote.accountName")}
+                </label>
+                <input
+                  id="gate-name"
+                  autoFocus
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={onEnter}
+                  className={field}
+                />
+              </div>
+              <div>
+                <label htmlFor="gate-password" className={label}>
+                  {t("remote.password")}
+                </label>
+                <input
+                  id="gate-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={onEnter}
+                  className={field}
+                />
+              </div>
+            </>
+          )}
+        </div>
+
         {error && (
-          <p className="mt-2 text-sm text-error" role="alert">
+          <p className="mt-3 text-[13px] text-error" role="alert">
             {error}
           </p>
         )}
         <button
           type="submit"
           disabled={busy || !ready}
-          className="mt-4 h-10 w-full rounded-input bg-accent text-sm font-medium text-white transition-opacity disabled:opacity-50"
+          className="mt-6 h-10 w-full rounded-input bg-text text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-30"
         >
           {useToken ? t("remote.connect") : t("remote.signIn")}
         </button>
@@ -134,7 +160,7 @@ export function WebTokenGate({ onConnect }: { onConnect: () => void }) {
             setUseToken((v) => !v);
             setError("");
           }}
-          className="mt-3 w-full text-center text-[13px] text-muted hover:text-text"
+          className="mt-5 text-[13px] text-muted underline-offset-4 hover:text-text hover:underline"
         >
           {useToken ? t("remote.useAccount") : t("remote.useToken")}
         </button>

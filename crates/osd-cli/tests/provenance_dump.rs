@@ -40,7 +40,7 @@ fn migrate_requires_apply_and_legacy_source() {
 #[test]
 fn dump_reads_committed_migrated_provenance_and_fails_closed() {
     let root = workspace();
-    osd_core::ledger::migrate_v1(&root).unwrap();
+    osd_core::ledger_v1::migrate_v1(&root).unwrap();
     osd_core::provenance::append_record(
         &root,
         "figure.svg",
@@ -86,7 +86,7 @@ fn dump_reads_committed_migrated_provenance_and_fails_closed() {
 #[test]
 fn export_writes_a_complete_offline_snapshot_without_changing_workspace() {
     let root = workspace();
-    osd_core::ledger::migrate_v1(&root).unwrap();
+    osd_core::ledger_v1::migrate_v1(&root).unwrap();
     osd_core::provenance::append_record(
         &root,
         "figure.svg",

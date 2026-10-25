@@ -33,9 +33,15 @@ pub fn state_for(app: &AppHandle) -> GatewayState {
     let on_desktop_layout = Arc::new(move |json: &str| {
         let _ = layout_emitter.emit("gateway:desktop-layout", json.to_string());
     });
+    // A client asked the window to show one of its Screens (`osd screen show`).
+    let show_emitter = app.clone();
+    let on_show_screen = Arc::new(move |id: &str| {
+        let _ = show_emitter.emit("gateway:show-screen", id.to_string());
+    });
     GatewayState::new(assets, Some(on_sessions_changed))
         .with_terminals(Arc::new(crate::terminal::GatewayTerminals(app.clone())))
         .with_desktop_layout_listener(on_desktop_layout)
+        .with_show_screen_listener(on_show_screen)
 }
 
 /// Bring the remote-access gateway back up if the user left it enabled.
@@ -98,6 +104,12 @@ pub fn web_account_set(app: AppHandle, name: String, password: String) -> Result
 #[tauri::command]
 pub fn web_account_delete(app: AppHandle, name: String) -> Result<(), String> {
     osd_core::web_accounts::delete(&env_of(&app), &name)
+}
+
+/// Who did what through the gateway (Settings › Remote access › Audit), newest first.
+#[tauri::command(async)]
+pub fn audit_query(app: AppHandle, filter: osd_core::audit::Filter) -> Result<Vec<osd_core::audit::Entry>, String> {
+    osd_core::audit::query(&env_of(&app), &filter)
 }
 
 /// The window's Screens, which token clients mirror and accounts can copy.

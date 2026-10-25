@@ -127,7 +127,7 @@ export function DocxView({ bytes, scrollKey }: { bytes: ArrayBuffer; scrollKey: 
   return (
     <div ref={wrapRef} onScroll={onScroll} className="h-full overflow-auto">
       <RenderState error={error} loading={loading} />
-      <div ref={hostRef} />
+      <div ref={hostRef} className="select-text" />
     </div>
   );
 }
@@ -203,7 +203,7 @@ export function XlsxView({ bytes, scrollKey }: { bytes: ArrayBuffer; scrollKey: 
         </div>
       )}
       <div ref={wrapRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto">
-        <div ref={hostRef} />
+        <div ref={hostRef} className="select-text" />
       </div>
       <div className="border-t border-border px-4 py-1.5 text-xs text-muted">
         {sheet?.truncated ? t("office.truncatedPrefix") : ""}{t("office.embeddedChartsNote")}
@@ -266,7 +266,7 @@ export function PptxView({ bytes, scrollKey }: { bytes: ArrayBuffer; scrollKey: 
   return (
     <div ref={wrapRef} onScroll={onScroll} className="h-full overflow-auto">
       <RenderState error={error} loading={loading} />
-      <div ref={hostRef} />
+      <div ref={hostRef} className="select-text" />
     </div>
   );
 }

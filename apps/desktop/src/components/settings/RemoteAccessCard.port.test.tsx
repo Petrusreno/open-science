@@ -16,6 +16,7 @@ vi.mock("@/lib/tauri", () => ({
   listWebAccounts: async () => [...accounts.names],
   setWebAccount: (name: string, password: string) => accounts.set(name, password),
   deleteWebAccount: (name: string) => accounts.remove(name),
+  queryAudit: async () => [],
 }));
 
 const accounts = vi.hoisted(() => {
@@ -141,14 +142,14 @@ describe("Settings → Remote Access, accounts", () => {
     await userEvent.type(screen.getByLabelText("Password"), "-but-now-long");
     await userEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(accounts.set).toHaveBeenCalledWith("dana", "short-but-now-long");
-    expect(await screen.findByText("dana")).toBeInTheDocument();
+    expect(await screen.findByText("dana", { selector: "li span" })).toBeInTheDocument();
   });
 
   it("changes a password in place and deletes after confirming", async () => {
     accounts.names = ["dana"];
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<RemoteAccessCard />);
-    await screen.findByText("dana");
+    await screen.findByText("dana", { selector: "li span" });
     await userEvent.click(screen.getByRole("button", { name: "Change password" }));
     await userEvent.type(screen.getByLabelText("New password"), "another long one");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));

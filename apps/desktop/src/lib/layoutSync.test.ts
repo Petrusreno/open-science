@@ -138,6 +138,80 @@ describe("the token's Screens are the desktop window's, live", () => {
     expect(puts()[0][1]?.body).toContain("Renamed on the web");
   });
 
+  it("shares the Screens but not where each view is looking", async () => {
+    let served = { rev: 10, layout: { groups: desktop, activeGroupId: "g1" } as unknown };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") return json({ rev: 20 });
+      const since = new URL(url).searchParams.get("since");
+      return since === String(served.rev) ? new Response(null, { status: 204 }) : json(served);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    const puts = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT");
+
+    // A view's first look starts where the layout is.
+    await mirrorDesktopLayout();
+    expect(useLayoutStore.getState().activeGroupId).toBe("g1");
+
+    // Switching Screen, or focus, here is this view's own: nothing is sent.
+    useLayoutStore.getState().setActiveGroup("g2");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(puts()).toHaveLength(0);
+
+    // Another view renames a Screen and is looking at g1, the left pane: this
+    // one takes the rename and stays where it was.
+    served = {
+      rev: 11,
+      layout: {
+        groups: [{ ...desktop[0], name: "Renamed elsewhere", focusedLeafId: "p2" }, desktop[1]],
+        activeGroupId: "g1",
+      },
+    };
+    useLayoutStore.getState().setActiveGroup("g1");
+    useLayoutStore.getState().focusLeaf("p3");
+    useLayoutStore.getState().setActiveGroup("g2");
+    await vi.advanceTimersByTimeAsync(1000);
+    const s = useLayoutStore.getState();
+    expect(s.groups[0].name).toBe("Renamed elsewhere");
+    expect(s.activeGroupId).toBe("g2");
+    expect(s.groups[0].focusedLeafId).toBe("p3");
+    // Taking it is not a change of ours to send back.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(puts()).toHaveLength(0);
+  });
+
+  it("opens on the conversation its link names, not wherever the layout was", async () => {
+    const served = { rev: 10, layout: { groups: desktop, activeGroupId: "g2" } };
+    vi.stubGlobal("fetch", vi.fn(async () => json(served)));
+    window.history.pushState({}, "", "/live/ses_1");
+    try {
+      await mirrorDesktopLayout();
+      const s = useLayoutStore.getState();
+      // ses_1 already has a Screen: go there, on its pane.
+      expect(s.activeGroupId).toBe("g1");
+      expect(s.focusedLeafId).toBe("p2");
+      expect(s.groups).toHaveLength(2);
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("opens a linked conversation that has no Screen in a preview Screen of its own", async () => {
+    const served = { rev: 10, layout: { groups: desktop, activeGroupId: "g1" } };
+    vi.stubGlobal("fetch", vi.fn(async (_u: string, init?: RequestInit) => (init?.method === "PUT" ? json({ rev: 11 }) : json(served))));
+    window.history.pushState({}, "", "/live/ses_9");
+    try {
+      await mirrorDesktopLayout();
+      const s = useLayoutStore.getState();
+      expect(s.groups).toHaveLength(3);
+      expect(leaves(s.tree!).map((l) => l.sessionId)).toEqual(["ses_9"]);
+      // The Screens that were there are untouched — nobody's pane was swapped.
+      expect(leaves(s.groups[0].tree!).map((l) => l.sessionId)).toEqual(["ses_1", null]);
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
   it("gives a window that has published nothing this browser's Screens", async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
       init?.method === "PUT" ? json({ rev: 1 }) : json({ rev: 0, layout: null }),

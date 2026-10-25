@@ -591,6 +591,12 @@ pub fn ensure_history_guard_plugin(existing: &str, plugin_path: &str) -> Option<
     ensure_named_plugin(existing, plugin_path, "history-guard.ts")
 }
 
+/// The plugin that puts the session an agent's command runs for into its
+/// environment (`OSD_ORIGIN_SESSION`).
+pub fn ensure_origin_plugin(existing: &str, plugin_path: &str) -> Option<String> {
+    ensure_named_plugin(existing, plugin_path, "origin.ts")
+}
+
 /// Project memory: OpenCode resolves a relative `instructions` entry against
 /// the session's working directory, so this one entry gives every project its
 /// own memory file without any per-project config.

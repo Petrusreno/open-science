@@ -6,6 +6,7 @@ import type {
   McpOAuthStart,
   McpServer,
   OAuthAuthorization,
+  EventStreamOpener,
   OpenCodeClientOptions,
   OpenCodePart,
   OpenCodeRawEvent,
@@ -258,6 +259,9 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   private readonly directory: string | null;
   private abort: AbortController | null = null;
   private es: EventSource | null = null;
+  /** Closes a stream opened through `eventStream` (see OpenCodeClientOptions). */
+  private closeStream: (() => void) | null = null;
+  private readonly eventStream: EventStreamOpener | null;
   /** Pending self-heal of a dead event stream (see reconnectSoon). */
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** True between close() and the next connect() — stops self-healing. */
@@ -267,6 +271,9 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   private readonly requestTimeoutMs: number;
   /** messageID → role, learned from message.updated, to skip echoed user parts. */
   private readonly roles = new Map<string, string>();
+  /** Each user message's text parts, by part id in arrival order, so a
+   *  message of several parts is emitted whole (see `user.message`). */
+  private readonly userTexts = new Map<string, Map<string, string>>();
   /** partID → accumulated text of a streaming text part. OpenCode publishes the
    *  full part only at text-start (empty) and text-end; every token in between
    *  arrives as a message.part.delta that must be summed here — otherwise the
@@ -295,6 +302,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     this.directory = opts.directory ?? null;
     this.connectTimeoutMs = opts.connectTimeoutMs ?? 5000;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 15000;
+    this.eventStream = opts.eventStream ?? null;
   }
 
   private headers(json = false): Record<string, string> {
@@ -325,6 +333,59 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       this.reconnectTimer = null;
     }
     this.setStatus("connecting");
+
+    // Someone else carries the stream: the same open / message / error rules
+    // as the EventSource below, reconnection included.
+    const opener = this.eventStream;
+    if (opener) {
+      return new Promise((resolve, reject) => {
+        let opened = false;
+        let finished = false;
+        let stop: (() => void) | null = null;
+        const release = () => {
+          stop?.();
+          if (this.closeStream === stop) this.closeStream = null;
+        };
+        const timer = setTimeout(() => {
+          if (finished) return;
+          finished = true;
+          this.setStatus("error");
+          release();
+          reject(new Error("Timed out opening OpenCode event stream"));
+        }, this.connectTimeoutMs);
+        stop = opener(this.directory, {
+          onOpen: () => {
+            if (finished) return;
+            opened = true;
+            finished = true;
+            clearTimeout(timer);
+            this.setStatus("ready");
+            resolve();
+          },
+          onMessage: (data) => {
+            try {
+              this.normalize(JSON.parse(data) as OpenCodeRawEvent);
+            } catch {
+              /* ignore malformed frame */
+            }
+          },
+          onError: () => {
+            if (!opened) {
+              if (finished) return;
+              finished = true;
+              clearTimeout(timer);
+              this.setStatus("error");
+              release();
+              reject(new Error("Could not open OpenCode event stream"));
+            } else if (this.closeStream === stop) {
+              release();
+              this.reconnectSoon();
+            }
+          },
+        });
+        this.closeStream = stop;
+      });
+    }
 
     // Prefer EventSource in a real webview/browser (reliable SSE, incl. macOS
     // WKWebView) — auth rides along as ?auth_token=, since EventSource cannot
@@ -429,6 +490,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     }
     this.es?.close();
     this.es = null;
+    this.closeStream?.();
+    this.closeStream = null;
     this.abort?.abort();
     this.abort = null;
     this.setStatus("offline");
@@ -1516,8 +1579,31 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           part.type !== "compaction" &&
           part.messageID &&
           this.roles.get(String(part.messageID)) === "user"
-        )
+        ) {
+          // Its words are surfaced, though, because the message may not be
+          // ours: another agent, another tab, the CLI or a web account can
+          // send to this conversation, and dropping the part left their
+          // message invisible until a reload. The app matches it to its own
+          // echo. Synthetic parts (a `!` shell turn's bookkeeping) are not words.
+          const tp = part as { id?: string; text?: string; synthetic?: boolean };
+          if (part.type === "text" && !tp.synthetic && tp.id && part.sessionID) {
+            const mid = String(part.messageID);
+            let texts = this.userTexts.get(mid);
+            if (!texts) {
+              this.userTexts.set(mid, (texts = new Map()));
+              // Only a message still arriving needs its parts; keep the recent ones.
+              if (this.userTexts.size > 200) this.userTexts.delete(this.userTexts.keys().next().value!);
+            }
+            texts.set(tp.id, tp.text ?? "");
+            this.emit({
+              type: "user.message",
+              sessionId: String(part.sessionID),
+              messageID: mid,
+              text: [...texts.values()].join(""),
+            });
+          }
           return;
+        }
         const sessionId = String(part.sessionID ?? "");
         if (part.type === "text") {
           const t = part as { id: string; text: string };

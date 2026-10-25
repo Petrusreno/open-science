@@ -15,7 +15,7 @@ import type {
 } from "@ai4s/shared";
 import { MessageMeta } from "./MessageMeta";
 import { cn } from "@/lib/cn";
-import { MarkdownViewer } from "@/components/markdown-viewer/MarkdownViewer";
+import { LinkFolder, MarkdownViewer } from "@/components/markdown-viewer/MarkdownViewer";
 import { extractArtifactRefs, refToArtifactBlock } from "@/lib/artifacts";
 import { resolveArtifactPath } from "@/lib/artifactFile";
 import { useThrottledValue } from "@/lib/useThrottledValue";
@@ -23,6 +23,9 @@ import { splitStreamingMarkdown } from "@/lib/markdownSegments";
 import { HSCROLL_ATTR } from "@/lib/wheelChain";
 import { HOVER_HOST } from "@/lib/hoverTracking";
 import { RunningDot } from "./RunningDot";
+import type { MessageSender } from "@/lib/messageSenders";
+import { SenderBadge } from "./SenderBadge";
+import { useRuntimeStore } from "@/lib/runtime";
 
 /** Streaming markdown throttle interval, ms (#157). The re-parse cost is
  *  linear in the message length, so the window scales with it: 90ms for short
@@ -62,8 +65,11 @@ export const UserMessage = memo(function UserMessage({
   block,
   onEdit,
   onRevert,
+  sender,
 }: {
   block: UserMessageBlock;
+  /** Who sent it, when it was not the owner (see lib/messageSenders). */
+  sender?: MessageSender;
   onEdit?: (messageID: string, newText: string) => void | Promise<void>;
   onRevert?: (messageID: string, text: string) => void | Promise<void>;
 }) {
@@ -167,7 +173,8 @@ export const UserMessage = memo(function UserMessage({
 
   return (
     <div {...{ [HOVER_HOST]: "" }} className="relative flex flex-col items-end">
-      <div className="w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-card bg-surface-2 px-4 py-2.5 text-[15px] leading-relaxed text-text">
+      {sender && <SenderBadge sender={sender} className="mb-1" />}
+      <div className="w-fit max-w-[85%] select-text whitespace-pre-wrap break-words rounded-card bg-surface-2 px-4 py-2.5 text-[15px] leading-relaxed text-text">
         {block.text}
       </div>
       <div
@@ -234,6 +241,7 @@ export const AgentMessage = memo(function AgentMessage({
   usage,
   contextLimit,
   onOpenArtifact,
+  directory,
 }: {
   markdown: string;
   /** Turn timings and token accounting, when the runtime reported them —
@@ -243,6 +251,8 @@ export const AgentMessage = memo(function AgentMessage({
   usage?: MessageUsage;
   contextLimit?: number;
   onOpenArtifact?: (a: ArtifactBlock) => void;
+  /** The session's folder, where the files it mentions are looked up. */
+  directory?: string;
 }) {
   const { t } = useTranslation(["session", "common"]);
   const [copied, setCopied] = useState(false);
@@ -279,7 +289,7 @@ export const AgentMessage = memo(function AgentMessage({
       setRefs([]);
       return;
     }
-    void Promise.all(mentionedKey.split("\n").map((p) => resolveArtifactPath(p).catch(() => null))).then(
+    void Promise.all(mentionedKey.split("\n").map((p) => resolveArtifactPath(p, directory).catch(() => null))).then(
       (resolved) => {
         if (cancelled) return;
         setRefs([...new Set(resolved.filter((p): p is string => p !== null))]);
@@ -288,7 +298,19 @@ export const AgentMessage = memo(function AgentMessage({
     return () => {
       cancelled = true;
     };
-  }, [mentionedKey]);
+  }, [mentionedKey, directory]);
+
+  // An answer about another conversation names it (`ses_…`) and writes paths
+  // inside ITS folder. Keyed by the folders, so streaming text does not hand
+  // every link a new list to look up again.
+  const linkFoldersKey = useMemo(() => {
+    const { sessions } = useRuntimeStore.getState();
+    const named = [...new Set(shown.match(/\bses_[A-Za-z0-9]{8,}/g) ?? [])]
+      .map((id) => sessions.find((x) => x.id === id)?.directory)
+      .filter((d): d is string => !!d);
+    return [...new Set([directory, ...named].filter((d): d is string => !!d))].join("\n");
+  }, [directory, shown]);
+  const linkFolders = useMemo(() => (linkFoldersKey ? linkFoldersKey.split("\n") : undefined), [linkFoldersKey]);
 
   const copy = async () => {
     try {
@@ -304,11 +326,15 @@ export const AgentMessage = memo(function AgentMessage({
     // Marked so a text selection inside an ANSWER (never a tool log or the
     // user's own message) can offer follow-up actions — see SelectionActions.
     <div {...{ [HOVER_HOST]: "" }} data-agent-message className="relative">
-      {segments ? (
-        <StreamingMarkdown segments={segments} />
-      ) : (
-        <MarkdownViewer links>{shown}</MarkdownViewer>
-      )}
+      {/* Paths in the answer are this conversation's files — or those of the
+          conversations it names (see LinkFolder). */}
+      <LinkFolder.Provider value={linkFolders}>
+        {segments ? (
+          <StreamingMarkdown segments={segments} />
+        ) : (
+          <MarkdownViewer links>{shown}</MarkdownViewer>
+        )}
+      </LinkFolder.Provider>
       {refs.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
           {refs.map((path) => (

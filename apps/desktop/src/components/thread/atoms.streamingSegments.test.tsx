@@ -7,11 +7,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  *  arrive later. (DOM node identity cannot prove this — a re-render with
  *  identical output leaves the same nodes behind.) */
 const { viewerRenders } = vi.hoisted(() => ({ viewerRenders: [] as string[] }));
-vi.mock("@/components/markdown-viewer/MarkdownViewer", () => ({
+vi.mock("@/components/markdown-viewer/MarkdownViewer", async () => ({
   MarkdownViewer: ({ children }: { children: string }) => {
     viewerRenders.push(children);
     return <div data-md>{children}</div>;
   },
+  LinkFolder: (await import("react")).createContext<string | undefined>(undefined),
 }));
 
 import { AgentMessage } from "./atoms";

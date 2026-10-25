@@ -53,20 +53,35 @@ export async function previewUrl(path: string, root?: FileRoot, dir?: string): P
 /** Resolve a file mentioned in an agent message to a real workspace-relative
  *  path. Agent prose may name a file without its directory ("index.html" for
  *  "canvas-project/index.html"); the backend finds it by basename. Returns
- *  null when no such file exists; echoes the path back in browser dev. */
-export async function resolveArtifactPath(path: string): Promise<string | null> {
-  if (!isTauri) return path;
-  const inflight = resolvedPaths.get(path);
+ *  null when no such file exists; echoes the path back in browser dev. In the
+ *  web client `dir` is the session's folder (the desktop's lookup uses its
+ *  active one). */
+export async function resolveArtifactPath(path: string, dir?: string): Promise<string | null> {
+  if (!isTauri && !isGatewayWeb) return path;
+  const key = isGatewayWeb ? `${dir ?? ""}\n${path}` : path;
+  const inflight = resolvedPaths.get(key);
   if (inflight) return inflight;
-  const lookup = (async () => {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<string | null>("resolve_artifact", { path });
-  })();
-  resolvedPaths.set(path, lookup);
+  const lookup = isGatewayWeb
+    ? locateOnGateway(path, dir)
+    : (async () => {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<string | null>("resolve_artifact", { path });
+      })();
+  resolvedPaths.set(key, lookup);
   // A failed lookup must not be remembered as an answer — drop it so the next
   // mention can try again.
-  lookup.catch(() => resolvedPaths.delete(path));
+  lookup.catch(() => resolvedPaths.delete(key));
   return lookup;
+}
+
+async function locateOnGateway(path: string, dir?: string): Promise<string | null> {
+  const t = gatewayToken();
+  const res = await fetch(
+    `${gatewayOrigin()}/v1/fs/locate?path=${encodeURIComponent(path)}${dir ? `&dir=${encodeURIComponent(dir)}` : ""}`,
+    { headers: t ? { authorization: `Bearer ${t}` } : {} },
+  );
+  if (!res.ok) throw new Error(`locate ${res.status}`);
+  return ((await res.json()) as { path: string | null }).path;
 }
 
 /**
@@ -188,6 +203,46 @@ export async function listDir(rel: string, root?: FileRoot, dir?: string): Promi
   if (!isTauri) return [];
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<DirEntry[]>("list_dir", { rel, root });
+}
+
+/** Largest file the gateway accepts as an upload (its `MAX_UPLOAD`). */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+/** Gateway POST carrying the token; throws with the gateway's own reason
+ *  (read-only token, folder outside the workspace, too large). */
+async function gatewayFsPost(path: string, body?: Blob): Promise<Response> {
+  const t = gatewayToken();
+  const res = await fetch(`${gatewayOrigin()}${path}`, {
+    method: "POST",
+    headers: t ? { Authorization: `Bearer ${t}` } : {},
+    body,
+  });
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((j: { error?: string }) => j.error)
+      .catch(() => null);
+    throw new Error(detail ?? `HTTP ${res.status}`);
+  }
+  return res;
+}
+
+/** Web client: put a file the composer was given (paste / drop / picker) at the
+ *  root of the session folder `dir` (the host's active one when omitted), under
+ *  a free name — where the desktop copies one. Returns the name written. */
+export async function uploadToWorkspace(name: string, data: Blob, dir?: string): Promise<string> {
+  if (data.size > MAX_UPLOAD_BYTES) {
+    throw new Error(`${name}: larger than ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`);
+  }
+  const query = `name=${encodeURIComponent(name)}${dir ? `&dir=${encodeURIComponent(dir)}` : ""}`;
+  const res = await gatewayFsPost(`/v1/fs/upload?${query}`, data);
+  return ((await res.json()) as { name: string }).name;
+}
+
+/** Web client: delete an upload whose chip was removed before sending. */
+export async function discardUpload(name: string, dir?: string): Promise<void> {
+  const query = `name=${encodeURIComponent(name)}${dir ? `&dir=${encodeURIComponent(dir)}` : ""}`;
+  await gatewayFsPost(`/v1/fs/discard?${query}`);
 }
 
 /** Write text to a root-relative path (desktop only; throws in browser). */

@@ -9,6 +9,7 @@ mod account;
 mod auth;
 mod client;
 mod commands;
+mod screens;
 mod server;
 
 use args::Args;
@@ -23,9 +24,42 @@ osd — Open Science Desktop without a window
   osd session ls
   osd session new [--project NAME | --directory DIR] [--title T]
   osd session send <id> <prompt…> [--model provider/model] [--agent A] [--wait]
-  osd session show <id>
+  osd session show <id> [--last N]  the conversation, or its last N turns
+  osd session status <id>           working or idle
+  osd session wait <id>             until its current turn ends (whoever started
+                                    it), then its answer
+  osd session find <words…>         the conversations that mention them
+  osd session rename <id> <title…>
+  osd session archive|unarchive <id>
+  osd session move <id> --project NAME
   osd session abort <id>
   osd session rm <id>
+
+  osd screen ls                     every Screen and what is in it: sessions,
+                                    terminals (and the agent in each), with
+                                    the ids the other commands take
+  osd screen new [SESSION_ID…] [--sessions N] [--terminals N [--run CMD]]
+                 [--name NAME] [--project NAME | --directory DIR]
+                                    a new Screen, split evenly among its panes
+                                    (--sessions starts new conversations;
+                                    --run is typed into each new terminal)
+  osd screen add <SCREEN> [SESSION_ID | --new | --terminal [--run CMD]]
+                                    one more pane, beside the others
+  osd screen show <SCREEN>          bring it up in the desktop window
+  osd screen close <SCREEN>         close it (the conversations are kept)
+  osd term read <id> [--turns N] [--lines N]
+                                    what a terminal is doing: the agent's own
+                                    conversation (Claude Code, Codex), or a
+                                    shell's recent output
+  osd term send <id> <text…> [--wait] [--no-enter] [--timeout S]
+                                    type into it (Enter included); --wait
+                                    returns the agent's reply
+
+  osd audit [--account NAME] [--session ID] [--action A] [--since 2026-10-01]
+            [--until DATE] [--limit N]
+                                    who did what through the gateway (the
+                                    desktop's owner only): messages, deletions,
+                                    terminal input, sign-ins
 
   osd project ls
   osd project new <name>
@@ -38,13 +72,18 @@ osd — Open Science Desktop without a window
 
   osd fs ls [path]                  browse the workspace
   osd fs get <path> [--output F]    read one file
+  osd fs put <file> [--session ID | --directory DIR] [--name N]
+                                    put a file into a session's folder
 
   osd model                         the default model every turn uses
   osd model ls                      what this machine can actually serve
   osd model set <provider/model>
 
-  osd permission ls                 what the agent is waiting to be allowed
-  osd permission allow|once|deny <id>
+  osd permission ls [--session ID]  what an agent is waiting to be allowed
+  osd permission allow|once|deny <id> [--session ID]
+  osd question ls [--session ID]    what an agent asked and is waiting on
+  osd question answer <id> <answer…> one per question: an option or your words
+  osd question reject <id>          let it go on without an answer
   osd approval                      whether the agent has to ask at all
   osd approval set full|approve     `full` never asks — for unattended machines
 

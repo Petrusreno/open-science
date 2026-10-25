@@ -33,46 +33,12 @@ import { FileContextMenu } from "@/components/files/FileContextMenu";
 import { PaneTitlebarInset, PANE_HEADER, PANE_ICON_BUTTON } from "@/components/inspector/RightPane";
 import { cn } from "@/lib/cn";
 import { useOverlayTitlebar } from "@/lib/store";
+import { GLOBAL_FILES_LOCATION, rememberDirectory, rememberedDirectory } from "@/lib/filesLocation";
 
 const EXT_LANG: Record<string, string> = {
   py: "python", r: "r", jl: "julia", sh: "bash", tex: "latex", md: "markdown",
 };
 
-const FILE_LOCATIONS_KEY = "openscience.files.locations.v1";
-const GLOBAL_FILES_LOCATION = "base";
-
-function safeDirectory(value: unknown): string {
-  if (typeof value !== "string" || value.startsWith("/") || value.includes("\\")) return "";
-  return value.split("/").some((part) => part === "..") ? "" : value;
-}
-
-function fileLocations(): Record<string, string> {
-  if (typeof window === "undefined") return {};
-  try {
-    const value = JSON.parse(window.localStorage.getItem(FILE_LOCATIONS_KEY) ?? "{}") as unknown;
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    return Object.fromEntries(
-      Object.entries(value).map(([key, dir]) => [key, safeDirectory(dir)]),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function rememberedDirectory(key: string): string {
-  return fileLocations()[key] ?? "";
-}
-
-function rememberDirectory(key: string, dir: string): void {
-  if (typeof window === "undefined") return;
-  const locations = fileLocations();
-  locations[key] = safeDirectory(dir);
-  try {
-    window.localStorage.setItem(FILE_LOCATIONS_KEY, JSON.stringify(locations));
-  } catch {
-    // Browsing still works when storage is unavailable or full.
-  }
-}
 
 function iconFor(entry: DirEntry) {
   if (entry.link) return <FolderSymlink size={15} className="text-accent" />;

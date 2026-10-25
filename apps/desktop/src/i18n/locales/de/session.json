@@ -35,7 +35,8 @@
     "splitRightShort": "Rechts teilen",
     "splitDownShort": "Unten teilen",
     "defaultProject": "Standard",
-    "projectMenu": "Projekt wechseln"
+    "projectMenu": "Projekt wechseln",
+    "panes": "Bereiche in diesem Screen"
   },
   "composer": {
     "placeholder": {
@@ -77,20 +78,6 @@
     },
     "send": {
       "aria": "Senden"
-    },
-    "agent": {
-      "aria": "Agentenmodus",
-      "title": "Erst planen oder direkt umsetzen",
-      "menuAria": "Agentenmodi",
-      "menuTitle": "Wie soll der Agent arbeiten?",
-      "build": {
-        "label": "Umsetzen",
-        "description": "Bearbeitet Dateien und führt Befehle aus"
-      },
-      "plan": {
-        "label": "Planen",
-        "description": "Nur lesen: recherchiert und schreibt zuerst einen Plan"
-      }
     },
     "approval": {
       "aria": "Genehmigungsmodus",
@@ -146,17 +133,44 @@
       "removeAria": "Verweis auf {{title}} entfernen"
     },
     "compact": {
-      "aria": "Kontext komprimieren",
-      "title": "Fasst frühere Turns zusammen; die nächste Antwort nutzt den komprimierten Kontext",
       "confirmTitle": "Kontext verdichten?",
       "confirmBody": "Die bisherigen Züge werden durch eine Zusammenfassung ersetzt, damit die nächste Antwort in einem begrenzten Kontext läuft. Das vollständige Originalgespräch bleibt lokal gespeichert.",
-      "confirmAction": "Verdichten"
-    }
+      "confirmAction": "Verdichten",
+      "empty": "Noch kein Gespräch zum Komprimieren",
+      "justCompacted": "Gerade komprimiert – seitdem nichts Neues",
+      "small": "Erst {{used}} Kontext belegt; komprimiert wird ab {{threshold}}"
+    },
+    "builtin": {
+      "plan": "Planmodus: erst recherchieren und planen, keine Dateien ändern. /plan off beendet",
+      "compact": "Kontext komprimieren: frühere Unterhaltung zusammenfassen"
+    },
+    "planMode": {
+      "label": "Planmodus",
+      "title": "Der Agent recherchiert und schreibt einen Plan; er ändert keine Dateien. Shift+Tab oder /plan off beendet",
+      "exitAria": "Planmodus beenden"
+    },
+    "queue": {
+      "aria": "Wartende Nachrichten",
+      "edit": "Wartende Nachricht bearbeiten",
+      "save": "Speichern",
+      "cancelEdit": "Bearbeiten abbrechen",
+      "remove": "Wartende Nachricht entfernen",
+      "steer": "Jetzt einschieben",
+      "sendNow": "Jetzt senden",
+      "add": "Nachricht einreihen",
+      "addTitle": "Nach diesem Durchgang senden (Enter) · Cmd/Strg+Enter schiebt sie jetzt ein"
+    },
+    "busyCommand": "Warte, bis dieser Durchgang fertig ist, bevor du einen Befehl ausführst."
   },
   "localCommand": {
-    "newDescription": "Chat-Kontext in diesem Ordner leeren",
-    "clearDescription": "Wie /new; Dateien bleiben in diesem Ordner",
-    "cleared": "Chat-Kontext geleert. Dateien bleiben im selben Ordner."
+    "newDescription": "Neues Gespräch in diesem Ordner",
+    "clearDescription": "Kontext leeren; frühere Nachrichten bleiben oben sichtbar",
+    "clearedLabel": "Kontext geleert",
+    "clearedHint": "Das Modell sieht die Nachrichten oberhalb nicht mehr",
+    "openEarlier": "Diese Sitzung öffnen",
+    "olderCleared_one": "{{count}} früheres geleertes Gespräch",
+    "olderCleared_other": "{{count}} frühere geleerte Gespräche",
+    "showOlder": "Anzeigen"
   },
   "starters": {
     "newSession": "Neue Sitzung",
@@ -243,7 +257,10 @@
       "starting": "Runtime wird gestartet…",
       "disconnected": "Zum Chatten verbinden",
       "waiting": "Warte auf die Antwort…",
-      "readOnly": "Nur-Lese-Zugriff — nur Ansicht"
+      "readOnly": "Nur-Lese-Zugriff — nur Ansicht",
+      "queue": "Enter reiht für danach ein, Cmd/Strg+Enter schiebt jetzt ein",
+      "steerQueue": "Cmd/Strg+Enter schiebt alle wartenden Nachrichten jetzt ein",
+      "compacting": "Kontext wird komprimiert…"
     }
   },
   "tool": {
@@ -416,7 +433,13 @@
       "body": "Dies setzt die Unterhaltung auf diese Nachricht zurück und verwirft sie sowie alle nachfolgenden Nachrichten samt der in diesen Runden vorgenommenen Dateiänderungen. Das lässt sich nicht rückgängig machen.",
       "edit": "Bearbeiten & erneut senden",
       "revert": "Hierher zurücksetzen"
-    }
+    },
+    "sentByAgentFull": "Gesendet vom Agenten in „{{session}}“ ({{id}}). Klicken, um seinen Verweis für einen Agenten zu kopieren.",
+    "sentByAccount": "Gesendet vom Konto {{account}}",
+    "sentByAgentLabel": "Gesendet vom Agenten in",
+    "sentByAccountLabel": "Gesendet vom Konto",
+    "clickToCopyRef": "Klicken, um den Verweis für einen Agenten zu kopieren",
+    "from": "Von"
   },
   "historyRepair": {
     "reason": {
@@ -527,7 +550,8 @@
       "close": "Suche schließen",
       "none": "keine Treffer",
       "find": "Suchen…"
-    }
+    },
+    "recentInput": "Letzte Eingaben von außen:"
   },
   "splitInto": {
     "session": "Sitzung"
@@ -595,8 +619,10 @@
       "night": "Noch wach"
     },
     "count_one": "{{count}} Sitzung",
-    "count_other": "{{count}} Sitzungen",
-    "countDefault_one": "{{count}} Sitzung ohne Projekt",
-    "countDefault_other": "{{count}} Sitzungen ohne Projekt"
+    "count_other": "{{count}} Sitzungen"
+  },
+  "reference": {
+    "copy": "Verweis für einen Agenten kopieren",
+    "copied": "Verweis kopiert – einem Agenten einfügen"
   }
 }

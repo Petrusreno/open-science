@@ -8,7 +8,7 @@ set -euo pipefail
 # chronology; 1.18.17 hardened compaction again. Below those, a long session
 # eventually built a message array the AI SDK rejected outright with
 # "The messages do not match the ModelMessage[] schema" (issue #114).
-OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.32}"
+OPENCODE_VERSION="${OPENCODE_VERSION:-1.19.4}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT_DIR="$ROOT/apps/desktop/src-tauri/binaries"
 mkdir -p "$OUT_DIR"
@@ -42,6 +42,10 @@ case "$ASSET" in
 esac
 
 # The archive contains an `opencode` (or opencode.exe) binary.
+# Remove the old sidecar first: cp over a signed macOS binary reuses its inode,
+# the kernel keeps the old code signature cached, and the new binary is
+# SIGKILLed on exec.
+rm -f "$OUT_DIR/opencode-$TRIPLE" "$OUT_DIR/opencode-$TRIPLE.exe"
 if [ -f "$TMP/opencode.exe" ]; then
   cp "$TMP/opencode.exe" "$OUT_DIR/opencode-$TRIPLE.exe"
 else

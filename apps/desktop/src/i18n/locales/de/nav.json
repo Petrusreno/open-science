@@ -226,12 +226,13 @@
   },
   "newPicker": {
     "title": "Neue Sitzung",
-    "subtitle": "Wähle das Projekt, zu dem sie gehört",
     "search": "Projekte suchen…",
     "current": "Aktuell",
-    "noProject": "In keinem Projekt",
     "newProject": "Neues Projekt…",
     "hintCreate": "erstellen",
     "hintQuick": "direkt hier, ohne Nachfrage"
+  },
+  "web": {
+    "manyTabs": "In {{count}} Tabs geöffnet. Ein Browser erlaubt nur wenige Verbindungen zu einer Adresse, jeder weitere Tab bremst alle – schließen Sie die, die Sie nicht brauchen."
   }
 }

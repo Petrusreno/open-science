@@ -1,3 +1,4 @@
+import { useToastStore } from "@/lib/toast";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -327,34 +328,155 @@ describe("approval menu dismissal", () => {
   });
 });
 
-describe("agent mode switch (Build / Plan)", () => {
+describe("plan mode (/plan, Shift+Tab, the chip)", () => {
+  const input = () => screen.getByLabelText("Ask anything");
+  const run = (line: string) => {
+    // A known name followed by a space chips; Enter then runs it.
+    fireEvent.change(input(), { target: { value: line.includes(" ") ? line : `${line} ` } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+  };
+
   it("is absent unless the surface provides it (runtime without a plan agent)", () => {
-    render(<Composer onSend={vi.fn()} />);
-    expect(screen.queryByLabelText("Agent mode")).toBeNull();
+    render(<Composer onSend={vi.fn()} onRunCommand={vi.fn()} />);
+    fireEvent.change(input(), { target: { value: "/pl" } });
+    expect(screen.queryByRole("option", { name: /\/plan/ })).toBeNull();
+    expect(screen.queryByLabelText("Leave plan mode")).toBeNull();
   });
 
-  it("shows the current mode and switches on pick", () => {
+  it("/plan enters, /plan off leaves — neither reaches the runtime", () => {
     const onChange = vi.fn();
-    render(<Composer onSend={vi.fn()} agentMode="build" onAgentModeChange={onChange} />);
-    const button = screen.getByLabelText("Agent mode");
-    expect(button.textContent).toContain("Build");
-
-    fireEvent.click(button);
-    fireEvent.mouseDown(screen.getByRole("menuitemradio", { name: /Plan/ }));
-    expect(onChange).toHaveBeenCalledWith("plan");
-    expect(screen.queryByRole("menuitemradio", { name: /Plan/ })).toBeNull();
+    const onRunCommand = vi.fn();
+    render(
+      <Composer onSend={vi.fn()} onRunCommand={onRunCommand} agentMode="build" onAgentModeChange={onChange} />,
+    );
+    run("/plan");
+    expect(onChange).toHaveBeenLastCalledWith("plan");
+    run("/plan off");
+    expect(onChange).toHaveBeenLastCalledWith("build");
+    expect(onRunCommand).not.toHaveBeenCalled();
   });
 
-  it("plan mode tints the composer border and pill blue (read-only must be unmistakable)", () => {
-    const { container } = render(
-      <Composer onSend={vi.fn()} agentMode="plan" onAgentModeChange={vi.fn()} />,
+  it("/plan <task> enters plan mode first, then sends the task", () => {
+    const calls: string[] = [];
+    render(
+      <Composer
+        onSend={(t) => calls.push(`send:${t}`)}
+        onRunCommand={vi.fn()}
+        agentMode="build"
+        onAgentModeChange={(m) => calls.push(`mode:${m}`)}
+      />,
     );
-    expect(container.firstElementChild?.className).toContain("border-link/60");
-    expect(screen.getByLabelText("Agent mode").className).toContain("text-link");
+    run("/plan migrate the parser");
+    expect(calls).toEqual(["mode:plan", "send:migrate the parser"]);
+  });
+
+  it("Shift+Tab flips the mode", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<Composer onSend={vi.fn()} agentMode="build" onAgentModeChange={onChange} />);
+    fireEvent.keyDown(input(), { key: "Tab", shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith("plan");
+    rerender(<Composer onSend={vi.fn()} agentMode="plan" onAgentModeChange={onChange} />);
+    fireEvent.keyDown(input(), { key: "Tab", shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith("build");
+  });
+
+  it("shows a blue chip only while on, and its × leaves (read-only must be unmistakable)", () => {
+    const onChange = vi.fn();
+    const { container, rerender } = render(
+      <Composer onSend={vi.fn()} agentMode="build" onAgentModeChange={onChange} />,
+    );
+    expect(screen.queryByLabelText("Leave plan mode")).toBeNull();
+    rerender(<Composer onSend={vi.fn()} agentMode="plan" onAgentModeChange={onChange} />);
+    expect(container.firstElementChild?.className).toContain("ring-link/60");
+    fireEvent.click(screen.getByLabelText("Leave plan mode"));
+    expect(onChange).toHaveBeenCalledWith("build");
   });
 });
 
-// A narrow pane could not fit "Approve for me · Build · GPT-5.6 sol · High" as
+describe("commands that take no arguments", () => {
+  const input = () => screen.getByLabelText("Ask anything");
+  const clear = { name: "clear", source: "local", immediate: true };
+
+  it("run on Enter from the palette — no chip, no second Enter", () => {
+    const onRunCommand = vi.fn();
+    render(<Composer onSend={vi.fn()} onRunCommand={onRunCommand} commands={[clear]} />);
+    fireEvent.change(input(), { target: { value: "/cle" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onRunCommand).toHaveBeenCalledWith("clear", "");
+    expect((input() as HTMLTextAreaElement).value).toBe("");
+    expect(screen.queryByLabelText("Remove command")).toBeNull();
+  });
+
+  it("only complete on Tab, so a stray Tab never wipes a conversation", () => {
+    const onRunCommand = vi.fn();
+    render(<Composer onSend={vi.fn()} onRunCommand={onRunCommand} commands={[clear]} />);
+    fireEvent.change(input(), { target: { value: "/cle" } });
+    fireEvent.keyDown(input(), { key: "Tab" });
+    expect(onRunCommand).not.toHaveBeenCalled();
+  });
+
+  it("/compact asks straight away", () => {
+    render(<Composer onSend={vi.fn()} onRunCommand={vi.fn()} onCompactContext={vi.fn()} />);
+    fireEvent.change(input(), { target: { value: "/comp" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(screen.getByRole("alertdialog", { name: "Compact the context?" })).toBeInTheDocument();
+  });
+});
+
+describe("typing while the agent works", () => {
+  const input = () => screen.getByLabelText("Ask anything");
+
+  it("Enter queues, Cmd/Ctrl+Enter sends now (steer)", () => {
+    const onSend = vi.fn();
+    const onQueue = vi.fn();
+    render(<Composer onSend={onSend} onQueue={onQueue} working onStop={vi.fn()} />);
+    fireEvent.change(input(), { target: { value: "after this" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onQueue).toHaveBeenCalledWith("after this");
+    expect(onSend).not.toHaveBeenCalled();
+
+    fireEvent.change(input(), { target: { value: "right now" } });
+    fireEvent.keyDown(input(), { key: "Enter", metaKey: true });
+    expect(onSend).toHaveBeenCalledWith("right now");
+  });
+
+  it("keeps Stop and adds a queue button once there is text", () => {
+    const onQueue = vi.fn();
+    render(<Composer onSend={vi.fn()} onQueue={onQueue} working onStop={vi.fn()} />);
+    expect(screen.queryByLabelText("Queue message")).toBeNull();
+    fireEvent.change(input(), { target: { value: "next" } });
+    fireEvent.click(screen.getByLabelText("Queue message"));
+    expect(onQueue).toHaveBeenCalledWith("next");
+    expect(screen.getByLabelText("Stop")).toBeInTheDocument();
+  });
+
+  it("Cmd/Ctrl+Enter on an empty input steers the whole queue", () => {
+    const onSteerQueued = vi.fn();
+    render(<Composer onSend={vi.fn()} onQueue={vi.fn()} onSteerQueued={onSteerQueued} working />);
+    fireEvent.keyDown(input(), { key: "Enter", ctrlKey: true });
+    expect(onSteerQueued).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a runtime command mid-turn and keeps what was typed", () => {
+    const onRunCommand = vi.fn();
+    render(
+      <Composer
+        onSend={vi.fn()}
+        onQueue={vi.fn()}
+        working
+        onRunCommand={onRunCommand}
+        commands={[{ name: "review" }]}
+      />,
+    );
+    fireEvent.change(input(), { target: { value: "/review " } });
+    fireEvent.change(input(), { target: { value: "src" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onRunCommand).not.toHaveBeenCalled();
+    expect((input() as HTMLTextAreaElement).value).toBe("src");
+  });
+});
+
+// A narrow pane could not fit "Approve for me · Plan mode · GPT-5.6 sol · High" as
 // words, so the toolbar wrapped and ate the composer's height.
 describe("Composer toolbar in a narrow pane", () => {
   /** jsdom has no layout: give the action row `width` of room, and every item
@@ -386,8 +508,8 @@ describe("Composer toolbar in a narrow pane", () => {
 
   it("keeps the labels when there is room", () => {
     withWidth(900);
-    render(<Composer onSend={vi.fn()} agentMode="build" onAgentModeChange={vi.fn()} />);
-    expect(screen.getByLabelText("Agent mode").textContent).toContain("Build");
+    render(<Composer onSend={vi.fn()} approvalMode="approve" onApprovalModeChange={vi.fn()} />);
+    expect(screen.getByLabelText("Approval mode").textContent).toContain("Approve for me");
   });
 
   it("drops the labels but keeps the control reachable when narrow", () => {
@@ -395,21 +517,19 @@ describe("Composer toolbar in a narrow pane", () => {
     render(
       <Composer
         onSend={vi.fn()}
-        agentMode="build"
+        agentMode="plan"
         onAgentModeChange={vi.fn()}
         approvalMode="approve"
         onApprovalModeChange={vi.fn()}
       />,
     );
-    const agent = screen.getByLabelText("Agent mode");
     const approval = screen.getByLabelText("Approval mode");
     // The words are gone …
-    expect(agent.textContent).not.toContain("Build");
     expect(approval.textContent).not.toContain("Approve for me");
-    // … but the buttons are still there, still named, and still work.
-    expect(agent).toBeInTheDocument();
-    fireEvent.click(agent);
-    expect(screen.getByRole("menuitemradio", { name: /Plan/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("Leave plan mode").parentElement?.textContent).not.toContain("Plan mode");
+    // … but the controls are still there, still named, and still work.
+    fireEvent.click(approval);
+    expect(screen.getByRole("menuitemradio", { name: /Full access/ })).toBeInTheDocument();
   });
 });
 
@@ -447,22 +567,26 @@ describe("Composer per-pane draft (#91)", () => {
     expect(input().value).toBe("");
   });
 
-  describe("compacting the context", () => {
+  describe("compacting the context (/compact)", () => {
+    const compact = () => {
+      fireEvent.change(input(), { target: { value: "/compact " } });
+      fireEvent.keyDown(input(), { key: "Enter" });
+    };
+
     it("asks before compacting — the click alone does nothing", async () => {
       const onCompactContext = vi.fn();
-      render(<Composer onSend={vi.fn()} onCompactContext={onCompactContext} />);
+      render(<Composer onSend={vi.fn()} onRunCommand={vi.fn()} onCompactContext={onCompactContext} />);
 
-      await userEvent.click(screen.getByRole("button", { name: "Compress context" }));
+      compact();
 
-      // The whole point: one click next to Send used to rewrite what the agent
-      // can see for the rest of the conversation.
+      // It rewrites what the agent can see for the rest of the conversation.
       expect(onCompactContext).not.toHaveBeenCalled();
       expect(screen.getByRole("alertdialog", { name: "Compact the context?" })).toBeInTheDocument();
     });
 
     it("says what compaction does, including what it does NOT lose", async () => {
-      render(<Composer onSend={vi.fn()} onCompactContext={vi.fn()} />);
-      await userEvent.click(screen.getByRole("button", { name: "Compress context" }));
+      render(<Composer onSend={vi.fn()} onRunCommand={vi.fn()} onCompactContext={vi.fn()} />);
+      compact();
 
       expect(
         screen.getByText(/The full original conversation is still stored locally/),
@@ -471,8 +595,8 @@ describe("Composer per-pane draft (#91)", () => {
 
     it("compacts once the reader confirms, and closes", async () => {
       const onCompactContext = vi.fn();
-      render(<Composer onSend={vi.fn()} onCompactContext={onCompactContext} />);
-      await userEvent.click(screen.getByRole("button", { name: "Compress context" }));
+      render(<Composer onSend={vi.fn()} onRunCommand={vi.fn()} onCompactContext={onCompactContext} />);
+      compact();
 
       await userEvent.click(screen.getByRole("button", { name: "Compact" }));
 
@@ -482,13 +606,37 @@ describe("Composer per-pane draft (#91)", () => {
 
     it("cancels without compacting", async () => {
       const onCompactContext = vi.fn();
-      render(<Composer onSend={vi.fn()} onCompactContext={onCompactContext} />);
-      await userEvent.click(screen.getByRole("button", { name: "Compress context" }));
+      render(<Composer onSend={vi.fn()} onRunCommand={vi.fn()} onCompactContext={onCompactContext} />);
+      compact();
 
       await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
       expect(onCompactContext).not.toHaveBeenCalled();
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+
+    it("refuses with the reason instead of asking, and is not sent as a prompt", () => {
+      const onCompactContext = vi.fn();
+      const onSend = vi.fn();
+      const reason = "Only 42k of context in use; compacting starts at 100k";
+      render(
+        <Composer
+          onSend={onSend}
+          onRunCommand={vi.fn()}
+          onCompactContext={onCompactContext}
+          compactRefusal={() => reason}
+        />,
+      );
+      // The palette says why before it is even picked.
+      fireEvent.change(input(), { target: { value: "/comp" } });
+      expect(screen.getByRole("option", { name: new RegExp(reason) })).toBeInTheDocument();
+
+      compact();
+      expect(useToastStore.getState().toasts.slice(-1)[0]).toMatchObject({ tone: "info", message: reason });
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(onCompactContext).not.toHaveBeenCalled();
+      expect(onSend).not.toHaveBeenCalled();
+      expect(input().value).toBe("");
     });
   });
 });

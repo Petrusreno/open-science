@@ -323,6 +323,56 @@ describe("AcpRuntime", () => {
     expect(runtime.getStatus()).toBe("offline");
   });
 
+  it("reports a mid-prompt death once, not once per listener", async () => {
+    const { runtime, events, sessionId } = await connected((msg, a) => {
+      if (msg.method === "session/prompt") setTimeout(() => a.die("agent exited"), 0);
+    });
+    await runtime.sendPrompt(sessionId, "hello");
+    expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "session.idle")).toHaveLength(1);
+  });
+
+  it("fails a prompt sent after the agent exited instead of hanging", async () => {
+    const { runtime, agent, events, sessionId } = await connected();
+    agent.die("agent exited");
+    // Must settle: a prompt has no timeout, so a write into the dead pipe would
+    // leave the thread on "Working…" forever.
+    await runtime.sendPrompt(sessionId, "still there?");
+    expect(events.find((e) => e.type === "error")).toMatchObject({ message: "the agent connection is closed" });
+    expect(last(events)).toEqual({ type: "session.idle", sessionId });
+  });
+
+  it("answers the cancelled turn's pending permission requests", async () => {
+    const { runtime, agent, events, sessionId } = await connected();
+    agent.request(99, "session/request_permission", {
+      sessionId,
+      toolCall: { toolCallId: "call_2", kind: "execute", title: "Run tests" },
+      options: [{ optionId: "allow-once", kind: "allow_once", name: "Allow" }],
+    });
+    await vi.waitFor(() => expect(events.some((e) => e.type === "permission.asked")).toBe(true));
+
+    await runtime.abortSession(sessionId);
+
+    await vi.waitFor(() => expect(agent.sent.find((m) => m.id === 99)?.result).toEqual({ outcome: { outcome: "cancelled" } }));
+    expect(await runtime.listPermissions()).toEqual([]);
+    expect(events.some((e) => e.type === "permission.resolved")).toBe(true);
+  });
+
+  it("takes down the dialogs of an agent that exited", async () => {
+    const { runtime, agent, events, sessionId } = await connected();
+    agent.request(99, "session/request_permission", {
+      sessionId,
+      toolCall: { toolCallId: "call_2", kind: "execute", title: "Run tests" },
+      options: [{ optionId: "allow-once", kind: "allow_once", name: "Allow" }],
+    });
+    await vi.waitFor(() => expect(events.some((e) => e.type === "permission.asked")).toBe(true));
+
+    agent.die("agent exited");
+
+    expect(await runtime.listPermissions()).toEqual([]);
+    expect(events.some((e) => e.type === "permission.resolved")).toBe(true);
+  });
+
   it("reports a stop reason that is neither completion nor cancellation", async () => {
     const { runtime, events, sessionId } = await connected((msg, a) => {
       if (msg.method === "session/prompt") a.reply(msg.id, { stopReason: "max_tokens" });
@@ -458,6 +508,19 @@ describe("AcpRuntime", () => {
     // filtering would hide every conversation outside the current folder.
     const listed = agent.sent.filter((m) => m.method === "session/list");
     expect(listed.map((m) => m.params)).toEqual([{}, { cursor: "page-2" }]);
+  });
+
+  it("replays a listed session in its own folder", async () => {
+    const { runtime, agent } = await connected((msg, a) => {
+      if (msg.method === "session/list") a.reply(msg.id, { sessions: [{ sessionId: "old-1", cwd: "/ws/other" }] });
+      if (msg.method === "session/load") a.reply(msg.id, {});
+    });
+    await runtime.listSessions();
+    await runtime.getMessages("old-1");
+    expect(agent.sent.find((m) => m.method === "session/load")?.params).toMatchObject({
+      sessionId: "old-1",
+      cwd: "/ws/other",
+    });
   });
 
   it("keeps the sidebar when listing fails", async () => {
@@ -625,8 +688,10 @@ describe("pickPermissionOption", () => {
     expect(pickPermissionOption(options, "reject")).toBe("r1");
   });
 
-  it("falls back to allow_always for a one-off only when there is no allow_once", () => {
-    expect(pickPermissionOption([{ optionId: "a2", kind: "allow_always" }], "once")).toBe("a2");
+  it("never widens a one-off into allow_always", () => {
+    // "once" with no allow_once option cancels; granting "always" would hand the
+    // agent more than the user agreed to.
+    expect(pickPermissionOption([{ optionId: "a2", kind: "allow_always" }], "once")).toBeUndefined();
   });
 
   it("never substitutes another option for a missing allow", () => {

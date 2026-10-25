@@ -6,11 +6,13 @@ import { draftKeyFor, useRuntimeStore } from "@/lib/runtime";
 import { startPaneDrag } from "@/lib/dragPane";
 import { extOf } from "@/lib/artifacts";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
+import { TerminalSenders } from "@/components/terminal/TerminalSenders";
 import { InlineName } from "@/components/ui/InlineName";
 import { NotebookEditor } from "@/components/notebook/NotebookEditor";
 import { FilesPage } from "@/app/routes/FilesPage";
 import { FilePreviewInspector } from "@/components/inspector/FilePreviewInspector";
 import { HOVER_REVEAL } from "@/components/inspector/RightPane";
+import { useIsMobile } from "@/lib/useIsMobile";
 import { cn } from "@/lib/cn";
 
 /**
@@ -42,6 +44,7 @@ export function ContentPane({
   const dockSession = useLayoutStore((s) => s.dockSession);
   const aimDraft = useRuntimeStore((s) => s.aimDraft);
   const [renaming, setRenaming] = useState(false);
+  const isMobile = useIsMobile();
 
   /** Split into a CONVERSATION, aimed at the folder the pane works in — the
    *  same path the session header's split button takes, so a session opened
@@ -61,7 +64,8 @@ export function ContentPane({
           <header
             className={cn(
               "flex h-8 shrink-0 select-none items-center gap-1.5 px-2.5",
-              solo && HOVER_REVEAL,
+              // A phone has no pointer to wait for.
+              solo && !isMobile && HOVER_REVEAL,
             )}
           >
             <TerminalIcon size={13} strokeWidth={1.5} className="shrink-0 text-muted" />
@@ -99,6 +103,7 @@ export function ContentPane({
               </span>
             )}
             <div className="flex-1" />
+            <TerminalSenders leafId={leafId} />
             <button
               onClick={onClose}
               className="rounded-md p-1 text-muted transition-colors hover:bg-border hover:text-error"
@@ -111,6 +116,7 @@ export function ContentPane({
             <TerminalPane
               leafId={leafId}
               cwd={content.cwd}
+              name={content.name}
               command={content.command}
               agent={content.agent}
               // Splitting from the terminal's own menu puts the new pane BESIDE

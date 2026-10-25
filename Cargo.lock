@@ -1959,6 +1959,8 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2845,7 +2847,9 @@ name = "osd-core"
 version = "0.6.0"
 dependencies = [
  "argon2",
+ "base64 0.22.1",
  "getrandom 0.4.3",
+ "image",
  "notify",
  "reqwest",
  "rusqlite",

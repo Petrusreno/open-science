@@ -167,6 +167,8 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
           this.emit({ type: "error", sessionId: id, message: reason ?? "the agent exited" });
           this.emit({ type: "session.idle", sessionId: id });
         }
+        // No one is left to answer: close the dialogs the dead agent opened.
+        this.dropPermissions();
       },
     });
   }
@@ -457,16 +459,16 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
     // Register the session BEFORE loading: the replay carries its selectors and
     // title, which have nowhere to land otherwise — this session exists on the
     // agent (it came from `session/list`), this client just never made it.
-    if (!state) {
-      const remembered = this.known.get(sessionId);
-      this.sessions.set(sessionId, this.blankState(remembered?.cwd ?? this.cwd, remembered?.title));
-    }
+    // The folder the session BELONGS to (from session/list), not the one the
+    // app happens to be standing in.
+    const cwd = state?.cwd ?? this.known.get(sessionId)?.cwd ?? this.cwd;
+    if (!state) this.sessions.set(sessionId, this.blankState(cwd, this.known.get(sessionId)?.title));
     const collector = new ReplayCollector();
     this.replays.set(sessionId, collector);
     try {
       await this.peer.request("session/load", {
         sessionId,
-        cwd: state?.cwd ?? this.cwd,
+        cwd,
         // Reconnected per load, exactly as on `session/new`: the spec has the
         // Client restate them, and a session reopened without its connectors
         // would answer the next prompt with fewer tools than it had before.
@@ -619,6 +621,8 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
       }
       this.emit({ type: "session.idle", sessionId });
     } catch (err) {
+      // Already ended and reported by the peer's onClose (the agent died).
+      if (!state.promptRunning) return;
       state.promptRunning = false;
       const explained = this.explainAuthRequired(err);
       this.emit({
@@ -634,6 +638,9 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
     // A notification, not a request: ACP's `session/cancel` has no response, and
     // the turn's own `session/prompt` settles with stopReason "cancelled".
     this.peer.notify("session/cancel", { sessionId });
+    // The spec has the Client answer every pending permission request of the
+    // cancelled turn with "cancelled".
+    this.dropPermissions(sessionId);
   }
 
   async revert(_sessionId: string, _messageID: string, _partID?: string): Promise<void> {
@@ -728,6 +735,17 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
         : { outcome: { outcome: "cancelled" } },
     );
     this.emit({ type: "permission.resolved", sessionId: entry.event.sessionId, requestId });
+  }
+
+  /** Answer pending permission requests (of one session, or all) with
+   *  "cancelled" and take their dialogs down. */
+  private dropPermissions(sessionId?: string): void {
+    for (const [requestId, entry] of this.permissions) {
+      if (sessionId !== undefined && entry.event.sessionId !== sessionId) continue;
+      this.permissions.delete(requestId);
+      entry.resolve({ outcome: { outcome: "cancelled" } });
+      this.emit({ type: "permission.resolved", sessionId: entry.event.sessionId, requestId });
+    }
   }
 
   // ---- inbound ----
@@ -1012,15 +1030,15 @@ function permissionResources(call?: AcpToolCallUpdate): string[] {
  * ACP does not name its options: the agent sends a list and we must pick an
  * `optionId` from it, so the mapping goes through each option's `kind`
  * ("allow_once" | "allow_always" | "reject_once" | "reject_always"). Falling
- * back to position would be wrong in the one case that matters — picking
- * "always allow" when the user said "once".
+ * back to position — or to `allow_always` — would be wrong in the one case
+ * that matters: granting "always" when the user said "once".
  */
 export function pickPermissionOption(
   options: AcpPermissionRequest["options"],
   reply: PermissionReply,
 ): string | undefined {
   const wanted =
-    reply === "once" ? ["allow_once", "allow_always"] : reply === "always" ? ["allow_always"] : ["reject_once", "reject_always"];
+    reply === "once" ? ["allow_once"] : reply === "always" ? ["allow_always"] : ["reject_once", "reject_always"];
   for (const kind of wanted) {
     const hit = (options ?? []).find((o) => o.kind === kind);
     if (hit) return hit.optionId;

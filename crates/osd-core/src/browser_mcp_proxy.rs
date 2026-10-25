@@ -33,6 +33,8 @@ const APP_OWNED_ARGUMENTS: &[&str] = &[
 /// The one tool that actually launches Chrome.
 const OPEN_TOOL: &str = "agent_browser_open";
 
+const SCREENSHOT_TOOL: &str = "agent_browser_screenshot";
+
 /// Prepended to `agent_browser_open`'s description, and deliberately one
 /// sentence: a tool description is resident context, paid for on every request
 /// of every conversation. It carries only the decision — reach for something
@@ -137,6 +139,7 @@ fn run_inner(mut args: Vec<OsString>) -> Result<(), String> {
         }
 
         let mut fresh_open_lease: Option<String> = None;
+        let mut screenshot_lease: Option<String> = None;
         if method == Some("tools/call") {
             let name = request
                 .pointer("/params/name")
@@ -214,6 +217,9 @@ fn run_inner(mut args: Vec<OsString>) -> Result<(), String> {
                         continue;
                     }
                 }
+                if name == SCREENSHOT_TOOL {
+                    screenshot_lease = Some(lease.to_string());
+                }
             }
         }
 
@@ -262,6 +268,11 @@ fn run_inner(mut args: Vec<OsString>) -> Result<(), String> {
                         }),
                         true,
                     );
+                }
+            }
+            if is_requested_response && response.pointer("/result/isError") != Some(&json!(true)) {
+                if let Some(lease) = screenshot_lease.as_deref() {
+                    scale_screenshot_to_css_pixels(&agent_browser, lease, &mut response);
                 }
             }
             write_json_line(&mut stdout, &response)?;
@@ -589,6 +600,92 @@ fn close_browser_session(agent_browser: &OsString, lease: &str) -> Result<(), St
     .map(|_| ())
 }
 
+/// The headed browser screenshots at the display's device pixel ratio — 2× on
+/// a Retina Mac, so a 1512-point window arrives as 3024 px and a full page as
+/// 6048 px. Every image stays in the history and is resent on every step, and
+/// a provider that does not cache images pays for each one again: DeepSeek took
+/// ~15 s to first token per 2000-px screenshot (measured 2026-10-25), and one
+/// conversation with four of them waited 230 s per step. So the image the model
+/// receives is scaled back to CSS pixels (1×), which is what the page lays out
+/// in anyway. The file written at `path` keeps the full resolution. Any failure
+/// leaves the original image in place: a slow screenshot beats a missing one.
+fn scale_screenshot_to_css_pixels(agent_browser: &OsString, lease: &str, response: &mut Value) {
+    let Some(content) = response
+        .pointer_mut("/result/content")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    if !content.iter().any(is_image_content) {
+        return;
+    }
+    let ratio = match device_pixel_ratio(agent_browser, lease) {
+        Ok(ratio) => ratio,
+        Err(error) => {
+            eprintln!("browser MCP proxy: kept the full-size screenshot: {error}");
+            return;
+        }
+    };
+    if ratio <= 1.0 {
+        return;
+    }
+    for item in content.iter_mut().filter(|item| is_image_content(item)) {
+        let Some(data) = item.get("data").and_then(Value::as_str) else {
+            continue;
+        };
+        match scale_image(data, 1.0 / ratio) {
+            Ok(scaled) => item["data"] = json!(scaled),
+            Err(error) => eprintln!("browser MCP proxy: kept the full-size screenshot: {error}"),
+        }
+    }
+}
+
+fn is_image_content(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("image")
+}
+
+fn device_pixel_ratio(agent_browser: &OsString, lease: &str) -> Result<f64, String> {
+    run_agent_json(
+        agent_browser,
+        &[
+            "--namespace",
+            BROWSER_NAMESPACE,
+            "--session",
+            lease,
+            "--json",
+            "eval",
+            "window.devicePixelRatio",
+        ],
+    )?
+    .pointer("/data/result")
+    .and_then(Value::as_f64)
+    .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+    .ok_or_else(|| "agent-browser returned no device pixel ratio".to_string())
+}
+
+/// Scale a base64 PNG or JPEG by `factor`, keeping its format.
+fn scale_image(data: &str, factor: f64) -> Result<String, String> {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let bytes = engine
+        .decode(data)
+        .map_err(|e| format!("invalid base64 image: {e}"))?;
+    let format = image::guess_format(&bytes).map_err(|e| format!("unknown image format: {e}"))?;
+    let decoded = image::load_from_memory_with_format(&bytes, format)
+        .map_err(|e| format!("could not decode screenshot: {e}"))?;
+    let scale = |side: u32| ((f64::from(side) * factor).round() as u32).max(1);
+    let scaled = decoded.resize_exact(
+        scale(decoded.width()),
+        scale(decoded.height()),
+        image::imageops::FilterType::Triangle,
+    );
+    let mut encoded = io::Cursor::new(Vec::new());
+    scaled
+        .write_to(&mut encoded, format)
+        .map_err(|e| format!("could not encode screenshot: {e}"))?;
+    Ok(engine.encode(encoded.into_inner()))
+}
+
 fn run_agent_json(agent_browser: &OsString, args: &[&str]) -> Result<Value, String> {
     let output = quiet_command(agent_browser)
         .args(args)
@@ -738,5 +835,43 @@ mod tests {
             request.pointer("/params/arguments"),
             Some(&json!({ "session": "osd-ses_current" }))
         );
+    }
+
+    fn encoded(width: u32, height: u32, format: image::ImageFormat) -> String {
+        use base64::Engine;
+        let mut bytes = io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(width, height)
+            .write_to(&mut bytes, format)
+            .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    }
+
+    fn decoded(data: &str) -> (image::ImageFormat, u32, u32) {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap();
+        let format = image::guess_format(&bytes).unwrap();
+        let image = image::load_from_memory(&bytes).unwrap();
+        (format, image.width(), image.height())
+    }
+
+    /// A Retina screenshot (ratio 2) comes back at CSS size in its own format.
+    #[test]
+    fn screenshots_scale_to_css_pixels_and_keep_their_format() {
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
+            let scaled = scale_image(&encoded(3024, 1656, format), 0.5).unwrap();
+            assert_eq!(decoded(&scaled), (format, 1512, 828));
+        }
+        // A fractional ratio (Windows at 150%) rounds, never collapses to 0.
+        let scaled = scale_image(&encoded(3, 1, image::ImageFormat::Png), 1.0 / 1.5).unwrap();
+        assert_eq!(decoded(&scaled), (image::ImageFormat::Png, 2, 1));
+    }
+
+    /// The caller keeps the original image whenever scaling fails.
+    #[test]
+    fn unreadable_screenshot_data_is_an_error_not_a_panic() {
+        assert!(scale_image("not base64!", 0.5).is_err());
+        assert!(scale_image("aGVsbG8=", 0.5).is_err());
     }
 }

@@ -4,6 +4,8 @@ description = "Open Science Desktop — the server core: workspace, OpenCode sid
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# std::fs::File::lock (the cross-process ledger lock) is stable since 1.89.
+rust-version = "1.89"
 
 [dependencies]
 serde.workspace = true
@@ -16,6 +18,10 @@ getrandom.workspace = true
 notify = "6"
 argon2 = "0.5"
 sha2 = "0.10"
+# Browser screenshots are scaled to CSS pixels before the model sees them
+# (browser_mcp_proxy.rs). Both were already in the lockfile.
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # System proxy on Windows is read through WinHTTP (manual proxy, bypass list
 # and PAC evaluation) rather than by parsing the registry — see system_proxy.rs.

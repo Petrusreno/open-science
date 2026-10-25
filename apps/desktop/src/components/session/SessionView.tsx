@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -33,12 +33,17 @@ import { useIsMobile } from "@/lib/useIsMobile";
 import { queryRuns } from "@/lib/runs";
 import { CONTENT_FONT_DEFAULT, useOverlayTitlebar, useUiStore } from "@/lib/store";
 import { overlayTitlebarStyle } from "@/lib/titlebar";
+import { copyReference, sessionReference } from "@/lib/agentReference";
+import { useMessageSenders } from "@/lib/messageSenders";
 import { useCompactWidth } from "@/lib/useCompactWidth";
 import { fileInspectorFromBlock } from "@/lib/artifacts";
 import { useChatScroll } from "@/lib/scrollMemory";
 import { useWheelChain } from "@/lib/wheelChain";
 import { BlockList, type BlockHandlers } from "@/components/thread/BlockList";
 import { TurnNavigator } from "@/components/thread/TurnNavigator";
+import { ClearedHistory } from "@/components/thread/ClearedHistory";
+import { formatTokens } from "@/components/thread/MessageMeta";
+import { compactRefusal } from "@/lib/compactGate";
 import { TrajectoryPane } from "@/components/thread/TrajectoryPane";
 import { IconBranchOutlineRegular } from "@/components/icons/dsh";
 import { SubagentPane } from "@/components/thread/SubagentPane";
@@ -46,6 +51,7 @@ import { SelectionActions } from "@/components/thread/SelectionActions";
 import { Elapsed } from "@/components/thread/ToolGroup";
 import { LiveLine, latestLine } from "@/components/thread/LiveLine";
 import { Composer } from "@/components/thread/Composer";
+import { QueueDock } from "@/components/thread/QueueDock";
 import { GoalPill } from "@/components/thread/GoalPill";
 import { GOAL_RESUME_NUDGE } from "@/lib/goalPrompts";
 import { baseName } from "@/components/thread/WorkspaceChip";
@@ -201,6 +207,9 @@ export function SessionView({
   // of those repaints.
   const contextLimit = useRuntimeStore((s) => contextLimitFor(s, key));
   const compacting = useRuntimeStore((s) => !!s.compactingSessions[key]);
+  const queued = useRuntimeStore((s) => !!eid && (s.queuedPrompts[eid]?.length ?? 0) > 0);
+  const enqueuePrompt = useRuntimeStore((s) => s.enqueuePrompt);
+  const sendQueuedPrompt = useRuntimeStore((s) => s.sendQueuedPrompt);
   const compactContext = useRuntimeStore((s) => s.compactContext);
   const serverUrl = useRuntimeStore((s) => s.serverUrl);
   const sessions = useRuntimeStore((s) => s.sessions);
@@ -303,10 +312,26 @@ export function SessionView({
       if (focused) navigate("/live");
     } else bindIfCreated(created);
   };
+  // Why /compact would not run on this pane now, in words (null = it would).
+  const compactRefusalText = (blocks: ThreadBlocks | undefined): string | null => {
+    const r = compactRefusal(blocks, contextLimit);
+    if (!r) return null;
+    if (r.kind === "small")
+      return t("composer.compact.small", { used: formatTokens(r.used), threshold: formatTokens(r.threshold) });
+    return t(r.kind === "empty" ? "composer.compact.empty" : "composer.compact.justCompacted");
+  };
+  // Show another session in this pane (the earlier half of a /clear).
+  const onOpenSession = useCallback(
+    (id: string) => {
+      bindSession(leafId, id);
+      if (focused) navigate(`/live/${id}`);
+    },
+    [bindSession, leafId, focused, navigate],
+  );
   const composerCommands = useMemo(() => {
     const local = [
-      { name: "new", description: t("localCommand.newDescription"), source: "local" },
-      { name: "clear", description: t("localCommand.clearDescription"), source: "local" },
+      { name: "new", description: t("localCommand.newDescription"), source: "local", immediate: true },
+      { name: "clear", description: t("localCommand.clearDescription"), source: "local", immediate: true },
     ];
     const localNames = new Set(local.map((c) => c.name));
     return [...local, ...commands.filter((c) => !localNames.has(c.name))];
@@ -387,6 +412,7 @@ export function SessionView({
   // repaints.
   const threadLoaded = useRuntimeStore((s) => !!s.threads[key]?.loaded);
   const blocksCount = useRuntimeStore((s) => s.threads[key]?.blocks.length ?? 0);
+  const hasCleared = useRuntimeStore((s) => !!s.clearedFrom[key]);
   const historyLoading = connected && !!eid && !threadLoaded;
   const title = sessions.find((s) => s.id === eid)?.title;
   const working = sending || running;
@@ -604,6 +630,18 @@ export function SessionView({
   const paneMenu = (
     <>
       <ContextMenuItem onSelect={() => setFinding(true)}>{t("find.find")}</ContextMenuItem>
+      {eid && (
+        <ContextMenuItem
+          onSelect={() =>
+            void copyReference(
+              sessionReference({ id: eid, title, directory: sessionDir ?? undefined }),
+              t("reference.copied"),
+            )
+          }
+        >
+          {t("reference.copy")}
+        </ContextMenuItem>
+      )}
       <ContextMenuItem disabled={!eid} onSelect={() => setRenaming(true)}>
         {t("live.header.rename")}
       </ContextMenuItem>
@@ -674,7 +712,8 @@ export function SessionView({
             !(sidebarCollapsed && asTitlebar) && "h-8",
             // The Screen's only pane: the whole row waits for the pointer —
             // unless it hosts the sidebar button, or has trouble to report.
-            solo && !chromeAsTitlebar && !trouble && HOVER_REVEAL,
+            // A phone has no pointer to wait for.
+            solo && !chromeAsTitlebar && !trouble && !isMobile && HOVER_REVEAL,
           )}
         >
           {showSidebarExpand && (
@@ -988,6 +1027,7 @@ export function SessionView({
               sessionDir={sessionDir ?? undefined}
               contextLimit={contextLimit}
               onSend={onSend}
+              onOpenSession={onOpenSession}
               roomForStarters={roomForStarters}
             />
           </div>
@@ -997,7 +1037,7 @@ export function SessionView({
         )}
         </div>
 
-        {!atLatest && blocksCount > 0 && (
+        {!atLatest && (blocksCount > 0 || hasCleared) && (
           <div
             className="pointer-events-none absolute inset-x-0 z-20 flex justify-center"
             style={{ bottom: composerH + 18 }}
@@ -1065,58 +1105,77 @@ export function SessionView({
                 onPermission={(id, reply) => void replyPermission(id, reply)}
               />
             )}
-            <Composer
-              onSend={onSend}
-              onRunShell={(c) => void onRunShell(c)}
-              onRunCommand={(n, a) => void onRunCommand(n, a)}
-              onInteract={pinEphemeral}
-              commands={composerCommands}
-              disabled={!connected || working || webReadOnly}
-              working={running}
-              onStop={() => void interrupt(sid ?? undefined)}
-              placeholder={
-                webReadOnly
-                  ? t("live.placeholder.readOnly")
-                  : working
-                    ? t("live.placeholder.waiting")
-                    : connecting
-                      ? t("live.placeholder.starting")
-                      : !connected
-                        ? t("live.placeholder.disconnected")
-                        : planAvailable && agentMode === "plan"
-                          ? t("composer.placeholder.plan")
-                          : t("composer.placeholder.default")
-              }
-              // Both switches belong to the OpenCode runtime: the approval mode is
-              // its config (an ACP agent asks for permission on its own terms),
-              // and the model picker sends a per-turn model ACP v1 has no way to
-              // honour — the agent owns its model. Withheld rather than shown
-              // doing nothing (#14).
-              approvalMode={acp ? undefined : approvalMode}
-              onApprovalModeChange={acp ? undefined : (mode) => void setApprovalMode(mode)}
-              agentMode={planAvailable ? agentMode : undefined}
-              onAgentModeChange={planAvailable ? (mode) => setAgentMode(mode, key) : undefined}
-              showModelPicker={connected && !webReadOnly && !acp}
-              // The ACP agent's own selectors stand in for the model picker: the
-              // agent owns its model list, and `session/set_config_option` is how
-              // v1 changes it.
-              configOptions={acp && !webReadOnly ? (acpConfigOptions[key] ?? []) : undefined}
-              onConfigOption={
-                acp && sid
-                  ? (configId, value) => void setAcpConfigOption(sid, configId, value)
-                  : undefined
-              }
-              modelSessionId={key}
-              onCompactContext={connected && !webReadOnly && eid ? () => void compactContext(eid) : undefined}
-              compacting={compacting}
-              // Only the pane the user is looking at may take a prepared draft.
-              acceptsHandoff={focused}
-              visible={laidOut}
-              draftKey={draftKey}
-              showWorkspaceChip={eid === null}
-              sessionDir={sessionDir ?? undefined}
-              currentSessionId={eid}
-            />
+            {/* One unit: the queue strip sits flush on the composer's top edge,
+                outside the space-y gap. */}
+            <div>
+              {eid && <QueueDock sessionId={eid} />}
+              <Composer
+                onSend={onSend}
+                // Typing on while the agent works: Enter queues for after the
+                // turn, Cmd/Ctrl+Enter steers in now (the plain send above).
+                onQueue={eid ? (text, files) => enqueuePrompt(eid, text, files) : undefined}
+                onSteerQueued={eid ? () => sendQueuedPrompt(eid) : undefined}
+                onRunShell={(c) => void onRunShell(c)}
+                onRunCommand={(n, a) => void onRunCommand(n, a)}
+                onInteract={pinEphemeral}
+                commands={composerCommands}
+                disabled={!connected || sending || compacting || webReadOnly}
+                working={running}
+                onStop={() => void interrupt(sid ?? undefined)}
+                placeholder={
+                  webReadOnly
+                    ? t("live.placeholder.readOnly")
+                    : compacting
+                      ? t("live.placeholder.compacting")
+                      : running
+                      ? t(queued ? "live.placeholder.steerQueue" : "live.placeholder.queue")
+                      : sending
+                      ? t("live.placeholder.waiting")
+                      : connecting
+                        ? t("live.placeholder.starting")
+                        : !connected
+                          ? t("live.placeholder.disconnected")
+                          : planAvailable && agentMode === "plan"
+                            ? t("composer.placeholder.plan")
+                            : t("composer.placeholder.default")
+                }
+                // Both switches belong to the OpenCode runtime: the approval mode is
+                // its config (an ACP agent asks for permission on its own terms),
+                // and the model picker sends a per-turn model ACP v1 has no way to
+                // honour — the agent owns its model. Withheld rather than shown
+                // doing nothing (#14).
+                approvalMode={acp ? undefined : approvalMode}
+                onApprovalModeChange={acp ? undefined : (mode) => void setApprovalMode(mode)}
+                agentMode={planAvailable ? agentMode : undefined}
+                onAgentModeChange={planAvailable ? (mode) => setAgentMode(mode, key) : undefined}
+                showModelPicker={connected && !webReadOnly && !acp}
+                // The ACP agent's own selectors stand in for the model picker: the
+                // agent owns its model list, and `session/set_config_option` is how
+                // v1 changes it.
+                configOptions={acp && !webReadOnly ? (acpConfigOptions[key] ?? []) : undefined}
+                onConfigOption={
+                  acp && sid
+                    ? (configId, value) => void setAcpConfigOption(sid, configId, value)
+                    : undefined
+                }
+                modelSessionId={key}
+                onCompactContext={
+                  connected && !webReadOnly
+                    ? () => {
+                        if (eid) void compactContext(eid);
+                      }
+                    : undefined
+                }
+                compactRefusal={() => compactRefusalText(eid ? useRuntimeStore.getState().threads[key]?.blocks : undefined)}
+                // Only the pane the user is looking at may take a prepared draft.
+                acceptsHandoff={focused}
+                visible={laidOut}
+                draftKey={draftKey}
+                showWorkspaceChip={eid === null}
+                sessionDir={sessionDir ?? undefined}
+                currentSessionId={eid}
+              />
+            </div>
           </div>
         </div>
           </>
@@ -1271,6 +1330,7 @@ function ThreadColumn({
   sessionDir,
   contextLimit,
   onSend,
+  onOpenSession,
   roomForStarters,
 }: {
   k: string;
@@ -1287,10 +1347,15 @@ function ThreadColumn({
   sessionDir: string | undefined;
   contextLimit: number | undefined;
   onSend: (text: string, attachments?: string[]) => Promise<void>;
+  onOpenSession: (id: string) => void;
   roomForStarters: boolean;
 }) {
   const { t } = useTranslation("session");
   const thread = useRuntimeStore((s) => s.threads[k]);
+  // Who sent what, when it was not the owner — refreshed as messages arrive.
+  const userMessages = thread?.blocks.filter((b) => b.kind === "user").length ?? 0;
+  const senderOf = useMessageSenders(eid, userMessages);
+  const threadHandlers = useMemo(() => ({ ...handlers, senderOf }), [handlers, senderOf]);
   const step = useRuntimeStore((s) => (eid ? (s.stepCounts[eid] ?? 0) : 0));
   const retryNotice = useRuntimeStore((s) => (eid ? s.retryNotices[eid] : undefined));
   const backgroundReview = useRuntimeStore((s) =>
@@ -1299,6 +1364,8 @@ function ThreadColumn({
   const cancelAutoReview = useRuntimeStore((s) => s.cancelAutoReview);
   const historyLoading = connected && !!eid && !thread?.loaded;
   const isEmpty = !thread || thread.blocks.length === 0;
+  // The conversation /clear cleared, kept above this one.
+  const clearedFrom = useRuntimeStore((s) => s.clearedFrom[k]);
   // Scan backwards in place: copying + reversing the whole block list ran on
   // every render of a live pane, allocating a fresh array per streamed token.
   const currentTool = working ? findLastRunningTool(thread?.blocks) : undefined;
@@ -1320,14 +1387,17 @@ function ThreadColumn({
     running && lastBlock?.kind === "reasoning" ? latestLine(lastBlock.text) : undefined;
   return (
     <>
-      {connected && isEmpty && !eid && !webReadOnly && (
+      {connected && isEmpty && !eid && !clearedFrom && !webReadOnly && (
         <WorkflowStarters onPick={(p) => void onSend(p)} showCards={roomForStarters} />
+      )}
+      {clearedFrom && (
+        <ClearedHistory from={clearedFrom} connected={connected} handlers={handlers} onOpen={onOpenSession} />
       )}
       {historyLoading && <ThreadSkeleton />}
       {!historyLoading && thread && (
         <BlockList
           blocks={thread.blocks}
-          handlers={handlers}
+          handlers={threadHandlers}
           workspaceDirectory={sessionDir}
           contextLimit={contextLimit}
         />

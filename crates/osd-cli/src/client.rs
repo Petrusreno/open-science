@@ -17,6 +17,11 @@ pub struct Client {
     /// How this connection was found, for `osd status` and for error messages
     /// that would otherwise leave the user guessing which server they hit.
     pub origin: String,
+    /// The conversation this `osd` runs for, when an agent runs it (set by the
+    /// runtime's origin plugin): sent as `X-OSD-Origin-Session`, so the gateway
+    /// can say which agent did what and keep agents from messaging each other
+    /// without end.
+    via: Option<String>,
 }
 
 impl Client {
@@ -45,11 +50,20 @@ impl Client {
     /// app is open, which is the common case on a laptop.
     pub fn connect(args: &Args) -> Result<Client, String> {
         let (base, token, origin) = resolve(args)?;
-        let http = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(120))
+        let mut builder = reqwest::blocking::Client::builder().timeout(Duration::from_secs(120));
+        // reqwest honours HTTP_PROXY but not loopback: with a local proxy set and
+        // NO_PROXY not naming 127.0.0.1, the request to THIS machine's gateway
+        // went to the proxy, which answered 502.
+        if is_loopback(&base) {
+            builder = builder.no_proxy();
+        }
+        let http = builder
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Client { base: base.trim_end_matches('/').to_string(), token, http, origin })
+        let via = std::env::var("OSD_ORIGIN_SESSION")
+            .ok()
+            .filter(|s| !s.is_empty() && s.len() <= 128 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+        Ok(Client { base: base.trim_end_matches('/').to_string(), token, http, origin, via })
     }
 
     pub fn get(&self, path: &str) -> Result<Value, String> {
@@ -76,6 +90,16 @@ impl Client {
         )
     }
 
+    /// POST a file's bytes as the body (`osd fs put`).
+    pub fn post_bytes(&self, path: &str, bytes: Vec<u8>) -> Result<Value, String> {
+        self.json(
+            self.http
+                .post(self.url(path))
+                .header("Content-Type", "application/octet-stream")
+                .body(bytes),
+        )
+    }
+
     pub fn delete(&self, path: &str) -> Result<Value, String> {
         self.json(self.http.delete(self.url(path)))
     }
@@ -86,6 +110,7 @@ impl Client {
             .http
             .get(self.url(path))
             .bearer_auth(&self.token)
+            .headers(self.via_header())
             .send()
             .map_err(|e| self.unreachable(e))?;
         let status = res.status();
@@ -96,12 +121,24 @@ impl Client {
         Ok(bytes)
     }
 
+    fn via_header(&self) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        if let Some(v) = self.via.as_deref().and_then(|v| reqwest::header::HeaderValue::from_str(v).ok()) {
+            h.insert("x-osd-origin-session", v);
+        }
+        h
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base, path)
     }
 
     fn json(&self, req: reqwest::blocking::RequestBuilder) -> Result<Value, String> {
-        let res = req.bearer_auth(&self.token).send().map_err(|e| self.unreachable(e))?;
+        let res = req
+            .bearer_auth(&self.token)
+            .headers(self.via_header())
+            .send()
+            .map_err(|e| self.unreachable(e))?;
         let status = res.status();
         let bytes = res.bytes().map_err(|e| e.to_string())?.to_vec();
         if !status.is_success() {
@@ -148,6 +185,20 @@ fn check_url(base: &str) -> Result<String, String> {
     Err(format!(
         "{base:?} is not a gateway address — it needs a scheme, e.g. http://{base}"
     ))
+}
+
+/// Whether `base` points at this machine (127.0.0.0/8, ::1, localhost).
+fn is_loopback(base: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base) else { return false };
+    match url.host_str() {
+        Some("localhost") => true,
+        Some(host) => host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()),
+        None => false,
+    }
 }
 
 fn resolve(args: &Args) -> Result<(String, String, String), String> {
@@ -241,4 +292,19 @@ pub fn save_login(base: &str, token: &str) -> Result<PathBuf, String> {
     // The token is a credential for the whole workbench.
     osd_core::runtime::tighten_private(&path);
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback;
+
+    #[test]
+    fn loopback_gateways_skip_the_proxy() {
+        assert!(is_loopback("http://127.0.0.1:4098"));
+        assert!(is_loopback("http://localhost:4098/"));
+        assert!(is_loopback("http://[::1]:4098"));
+        assert!(!is_loopback("https://osd.example.com"));
+        assert!(!is_loopback("http://100.68.102.13:4098"));
+        assert!(!is_loopback("not a url"));
+    }
 }

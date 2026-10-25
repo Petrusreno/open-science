@@ -35,7 +35,8 @@
     "splitRightShort": "Split right",
     "splitDownShort": "Split down",
     "defaultProject": "Default",
-    "projectMenu": "Switch project"
+    "projectMenu": "Switch project",
+    "panes": "Panes in this Screen"
   },
   "composer": {
     "placeholder": {
@@ -77,20 +78,6 @@
     },
     "send": {
       "aria": "Send"
-    },
-    "agent": {
-      "aria": "Agent mode",
-      "title": "Plan first or build right away",
-      "menuAria": "Agent modes",
-      "menuTitle": "How should the agent work?",
-      "build": {
-        "label": "Build",
-        "description": "Edits files and runs commands"
-      },
-      "plan": {
-        "label": "Plan",
-        "description": "Read-only: researches and writes a plan file first"
-      }
     },
     "approval": {
       "aria": "Approval mode",
@@ -146,17 +133,44 @@
       "removeAria": "Remove the reference to {{title}}"
     },
     "compact": {
-      "aria": "Compress context",
-      "title": "Summarize the earlier turns so the next reply runs on a bounded context",
       "confirmTitle": "Compact the context?",
       "confirmBody": "The earlier turns are replaced with a summary so the next reply runs on a bounded context. The full original conversation is still stored locally.",
-      "confirmAction": "Compact"
-    }
+      "confirmAction": "Compact",
+      "empty": "No conversation to compact yet",
+      "justCompacted": "Just compacted — nothing new to compact since",
+      "small": "Only {{used}} of context in use; compacting starts at {{threshold}}"
+    },
+    "builtin": {
+      "plan": "Plan mode: research and write a plan before changing files. /plan off leaves",
+      "compact": "Compress context: summarize the earlier conversation"
+    },
+    "planMode": {
+      "label": "Plan mode",
+      "title": "The agent researches and writes a plan; it does not edit files. Shift+Tab or /plan off leaves",
+      "exitAria": "Leave plan mode"
+    },
+    "queue": {
+      "aria": "Queued messages",
+      "edit": "Edit queued message",
+      "save": "Save",
+      "cancelEdit": "Cancel editing",
+      "remove": "Remove queued message",
+      "steer": "Steer in now",
+      "sendNow": "Send now",
+      "add": "Queue message",
+      "addTitle": "Queue for after this turn (Enter) · Cmd/Ctrl+Enter steers it in now"
+    },
+    "busyCommand": "Wait for this turn to finish before running a command."
   },
   "localCommand": {
-    "newDescription": "Clear chat context in this folder",
-    "clearDescription": "Same as /new; files stay in this folder",
-    "cleared": "Chat context cleared. Files stay in the same folder."
+    "newDescription": "New conversation in this folder",
+    "clearDescription": "Clear the context; earlier messages stay visible above",
+    "clearedLabel": "Context cleared",
+    "clearedHint": "The model no longer sees the messages above",
+    "openEarlier": "Open that session",
+    "olderCleared_one": "{{count}} earlier cleared conversation",
+    "olderCleared_other": "{{count}} earlier cleared conversations",
+    "showOlder": "Show"
   },
   "starters": {
     "newSession": "New session",
@@ -243,7 +257,10 @@
       "starting": "Starting the runtime…",
       "disconnected": "Connect to chat",
       "waiting": "Waiting for the reply…",
-      "readOnly": "Read-only access — viewing only"
+      "readOnly": "Read-only access — viewing only",
+      "queue": "Enter queues for after this turn, Cmd/Ctrl+Enter steers in now",
+      "steerQueue": "Cmd/Ctrl+Enter steers all queued messages in now",
+      "compacting": "Compressing context…"
     }
   },
   "tool": {
@@ -416,7 +433,13 @@
       "body": "This rolls the conversation back to this message and discards it and every message after it, along with the file changes those turns made. This can't be undone.",
       "edit": "Edit & resend",
       "revert": "Revert here"
-    }
+    },
+    "sentByAgentFull": "Sent by the agent in “{{session}}” ({{id}}). Click to copy its reference for an agent.",
+    "sentByAccount": "Sent by the account {{account}}",
+    "sentByAgentLabel": "Sent by the agent in",
+    "sentByAccountLabel": "Sent by the account",
+    "clickToCopyRef": "Click to copy its reference for an agent",
+    "from": "From"
   },
   "historyRepair": {
     "reason": {
@@ -527,7 +550,8 @@
       "close": "Close find",
       "none": "no results",
       "find": "Find…"
-    }
+    },
+    "recentInput": "Recent input from outside:"
   },
   "splitInto": {
     "session": "Session"
@@ -595,8 +619,10 @@
       "night": "Working late"
     },
     "count_one": "{{count}} session",
-    "count_other": "{{count}} sessions",
-    "countDefault_one": "{{count}} session in no project",
-    "countDefault_other": "{{count}} sessions in no project"
+    "count_other": "{{count}} sessions"
+  },
+  "reference": {
+    "copy": "Copy reference for an agent",
+    "copied": "Reference copied — paste it to an agent"
   }
 }

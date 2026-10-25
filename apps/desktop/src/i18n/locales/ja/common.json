@@ -18,6 +18,7 @@
     "copyLink": "リンクをコピー",
     "copyPath": "パスをコピー",
     "copied": "コピーしました",
-    "click": "クリック"
+    "click": "クリック",
+    "showInFiles": "ファイルで表示"
   }
 }

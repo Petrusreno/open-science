@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 export interface Toast {
   id: number;
-  tone: "success" | "error";
+  tone: "success" | "error" | "info";
   message: string;
 }
 
@@ -28,4 +28,6 @@ export const useToastStore = create<ToastState>((set) => ({
 export const toast = {
   success: (message: string) => useToastStore.getState().push("success", message),
   error: (message: string) => useToastStore.getState().push("error", message),
+  /** Neither good nor bad news: why something the user asked for did not run. */
+  info: (message: string) => useToastStore.getState().push("info", message),
 };

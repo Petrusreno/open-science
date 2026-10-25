@@ -82,7 +82,7 @@ capabilities only, not heavy computation.
 ### 5.1 Choice: OpenCode (bundled)
 
 The agent runtime is **OpenCode** (`anomalyco/opencode`, MIT), pinned to a stable
-release (`OPENCODE_VERSION`, currently 1.18.12). It is distributed as a **single
+release (`OPENCODE_VERSION`, currently 1.19.4). It is distributed as a **single
 binary**, which makes it ideal to bundle as a desktop sidecar — no Python/Node runtime
 to package. It supports MCP, skills, and agents, is model-agnostic (BYOK), and serves as
 an open-source coding/agent runtime in the spirit of Claude Code.
@@ -525,7 +525,7 @@ layer, and provenance/reviewer as the real moat of an open-source Claude Science
 ### Opt-in transactional local ledger v1
 
 The default remains JSONL. An integrator can explicitly call
-`osd_core::ledger::migrate_v1(workspace)` or run
+`osd_core::ledger_v1::migrate_v1(workspace)` or run
 `osd ledger migrate --workspace DIR --apply` while the workspace is quiescent
 and all writers use the current core. The command requires an existing legacy
 source or active ledger and rejects unknown options. There is deliberately no

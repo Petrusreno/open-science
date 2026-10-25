@@ -18,6 +18,7 @@
     "copyLink": "링크 복사",
     "copyPath": "경로 복사",
     "copied": "복사됨",
-    "click": "클릭"
+    "click": "클릭",
+    "showInFiles": "파일에서 보기"
   }
 }

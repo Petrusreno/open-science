@@ -10,8 +10,9 @@
 // workspace note already points at it.
 
 import type { PromptFile } from "@ai4s/sdk";
-import { readArtifact, toDataUrl } from "./artifactFile";
+import { previewUrl, readArtifact, toDataUrl } from "./artifactFile";
 import { previewKindForName } from "./artifacts";
+import { isGatewayWeb } from "./webMode";
 
 /** Formats a vision model can be expected to accept. */
 const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp)$/i;
@@ -41,11 +42,15 @@ export interface AttachmentParts {
  * Omitting a CSV is the design; omitting a PNG is a failure, and the two are
  * reported differently — see `dropped`.
  */
-export async function imageAttachmentParts(names: string[]): Promise<AttachmentParts> {
+export async function imageAttachmentParts(
+  names: string[],
+  dir?: string,
+): Promise<AttachmentParts> {
   if (names.length === 0) return { parts: [], dropped: [] };
   const resolved = await Promise.all(
     names.map(async (filename): Promise<PromptFile | null> => {
       try {
+        if (isGatewayWeb) return await readImageFromGateway(filename, dir);
         const file = await readArtifact(filename);
         if (!file || file.encoding !== "base64") return null;
         if (!IMAGE_MIME.test(file.mime)) return null;
@@ -62,4 +67,21 @@ export async function imageAttachmentParts(names: string[]): Promise<AttachmentP
       (name, i) => resolved[i] === null && previewKindForName(name) === "image",
     ),
   };
+}
+
+/** The web client has no disk to read: fetch the image from the session folder
+ *  `dir` through the gateway (a one-file ticket), with the same checks. */
+async function readImageFromGateway(filename: string, dir?: string): Promise<PromptFile | null> {
+  const url = await previewUrl(filename, undefined, dir);
+  const res = url ? await fetch(url) : null;
+  if (!res?.ok) return null;
+  const blob = await res.blob();
+  if (!IMAGE_MIME.test(blob.type) || blob.size > MAX_IMAGE_BYTES) return null;
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+  return { filename, mime: blob.type, url: dataUrl };
 }

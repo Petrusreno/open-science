@@ -157,6 +157,7 @@ pub fn run() {
             gateway::web_accounts_list,
             gateway::web_account_set,
             gateway::web_account_delete,
+            gateway::audit_query,
             gateway::publish_desktop_layout,
             gateway::regenerate_gateway_token,
             runtime::stop_runtime,

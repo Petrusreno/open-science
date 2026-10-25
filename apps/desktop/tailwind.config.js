@@ -38,6 +38,9 @@ export default {
       boxShadow: {
         card: "0 1px 2px rgba(40, 39, 35, 0.04), 0 4px 16px rgba(40, 39, 35, 0.05)",
         pop: "0 8px 30px rgba(40, 39, 35, 0.14)",
+        // The composer capsule: a wider, fainter tier than `card`, so the
+        // input floats over the thread without a drawn border.
+        composer: "0 2px 6px rgba(40, 39, 35, 0.04), 0 12px 32px rgba(40, 39, 35, 0.08)",
       },
     },
   },

@@ -168,6 +168,15 @@ body {
   overscroll-behavior: contain;
 }
 
+/* …except across the axis a box does not scroll. A wide table, a code block or
+   a tab strip scrolls sideways only, and `contain` on its vertical axis stopped every
+   vertical swipe that started on it from reaching the conversation: on a phone
+   the thread could not be scrolled past a table. (The trackpad has the same
+   trap for another reason — see lib/wheelChain.) */
+.overflow-x-auto:not(.overflow-y-auto):not(.overflow-auto) {
+  overscroll-behavior-y: auto;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -298,6 +307,20 @@ body {
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* A strip that scrolls sideways (the Screen bar, the phone's pane row): no
+   scrollbar at rest — on a phone it ate a strip of an already short bar and
+   read as a second border — and a thin one while a finger or wheel is moving
+   it (`data-scrolling`, set by `useTransientScrollbar`). */
+.scrollbar-transient:not([data-scrolling]) {
+  scrollbar-width: none;
+}
+.scrollbar-transient:not([data-scrolling])::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-transient[data-scrolling] {
+  scrollbar-width: thin;
 }
 
 /* One-shot attention pulse for the reasoning-effort slider when a model that
@@ -513,14 +536,24 @@ body {
   }
 }
 
-/* App chrome is not a document. Right-clicking a sidebar row or a Screen tab
-   used to select its label (WebKit selects the word under the cursor before
-   opening its menu), leaving stray highlight behind. Chrome opts out of
-   selection via `select-none`; editable fields always opt back IN, since a
-   `user-select:none` ancestor would otherwise make their own text unselectable. */
+/* Text selection is opt-in. The app is chrome around documents: right-clicking
+   a row or a tab must not select its label (WebKit selects the word under the
+   cursor before opening its menu), and a drag out of an answer must not sweep
+   up the meta row, the composer and its buttons. So nothing is selectable by
+   default; content opts back in — elements that are always content here, and
+   anything else (an answer, a message, a document preview) with `select-text`
+   on its container. */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
 input,
 textarea,
-[contenteditable="true"] {
+[contenteditable]:not([contenteditable="false"]),
+.cm-editor,
+pre,
+code,
+table {
   user-select: text;
   -webkit-user-select: text;
 }

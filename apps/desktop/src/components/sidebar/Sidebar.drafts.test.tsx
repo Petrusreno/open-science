@@ -100,7 +100,7 @@ describe("new sessions show in the sidebar at once", () => {
 
     for (let i = 0; i < 2; i++) {
       await user.click(rail.getByRole("button", { name: "New" }));
-      await user.click(await screen.findByRole("option", { name: /In no project/ }));
+      await user.click(await screen.findByRole("option", { name: /^Default/ }));
     }
     expect(selectActiveProjectId(useLayoutStore.getState())).toBe("");
     expect(draftScreens().filter((g) => g.projectId === "")).toHaveLength(1);

@@ -58,6 +58,7 @@
       "../../../runtime/goal-plugin": "goal-plugin/",
       "../../../runtime/browser-plugin": "browser-plugin/",
       "../../../runtime/history-plugin": "history-plugin/",
+      "../../../runtime/origin-plugin": "origin-plugin/",
       "../../../runtime/tools": "tools/",
         "../../../runtime/computer": "computer/",
         "computer-use": "computer-use/",

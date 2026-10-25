@@ -618,7 +618,7 @@ export function ModelPicker({
         aria-expanded={open}
         className={cn(
           "flex h-7 min-w-0 items-center rounded-full text-xs text-muted hover:bg-surface-2 hover:text-text",
-          compact ? "gap-0.5 px-1.5" : "max-w-[190px] gap-1.5 px-2.5",
+          compact ? "gap-0.5 px-1.5" : "gap-1.5 px-2.5",
         )}
         onClick={() => setOpen((o) => !o)}
       >

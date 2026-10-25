@@ -101,6 +101,9 @@ export class JsonRpcPeer {
     this.unsubscribes.push(transport.onLine((line) => this.receive(line)));
     this.unsubscribes.push(
       transport.onClose((reason) => {
+        // Closed for good: a request written after this would wait forever on
+        // a pipe nobody reads (a prompt has no timeout).
+        this.closed = true;
         this.failAll(reason ?? "the agent connection closed");
         this.handlers.onClose?.(reason);
       }),

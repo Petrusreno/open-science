@@ -732,6 +732,21 @@ fn deploy_history_guard_plugin(env: &Env) -> Option<PathBuf> {
     Some(dst)
 }
 
+/// Deploy the plugin that names the session an agent's command runs for
+/// (`OSD_ORIGIN_SESSION`), so `osd` calls from inside a conversation say where
+/// they come from.
+fn deploy_origin_plugin(env: &Env) -> Option<PathBuf> {
+    let src = env.resource("origin-plugin/origin.ts").filter(|p| p.is_file())?;
+    let config_dir = xdg_config_home(env).ok()?.join("opencode");
+    let dst = config_dir.join("origin.ts");
+    std::fs::create_dir_all(&config_dir).ok()?;
+    if let Err(e) = std::fs::copy(&src, &dst) {
+        eprintln!("failed to deploy origin plugin: {e}");
+        return None;
+    }
+    Some(dst)
+}
+
 /// Ship app-owned custom tools into OpenCode's global tools directory. These
 /// tools expose safe, declarative host capabilities (for example, asking the
 /// UI to present an existing workspace artifact); they never hand the model a
@@ -1600,6 +1615,14 @@ fn spawn_sidecar(env: &Env, port: u16, generation: u64) -> Result<Child, String>
         if let Some(updated) =
             crate::opencode_config::ensure_history_guard_plugin(&existing, &path_str)
         {
+            write_atomic(&cfg_file, &updated)?;
+        }
+    }
+    // `osd` run by an agent says which conversation it runs for.
+    if let Some(plugin_path) = deploy_origin_plugin(env) {
+        let existing = std::fs::read_to_string(&cfg_file).unwrap_or_default();
+        let path_str = plugin_path.to_string_lossy().replace('\\', "/");
+        if let Some(updated) = crate::opencode_config::ensure_origin_plugin(&existing, &path_str) {
             write_atomic(&cfg_file, &updated)?;
         }
     }

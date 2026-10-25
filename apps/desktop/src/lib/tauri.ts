@@ -1,7 +1,7 @@
 // Thin bridge to the Tauri Rust side. In a plain browser these are no-ops so the
 // app still runs in `pnpm dev`; in the packaged desktop app they invoke Rust commands.
 
-import { isGatewayWeb, gatewayGet, gatewayPost } from "./webMode";
+import { isGatewayWeb, gatewayGet, gatewayPost, signedInAccount } from "./webMode";
 import type { Specialist } from "./specialists";
 
 export const isTauri =
@@ -455,6 +455,39 @@ export async function regenerateGatewayToken(): Promise<GatewayStatus | null> {
 }
 
 /** Web accounts: names a browser can sign in with (Settings › Remote access). */
+/** One thing done through the gateway (see osd-core `audit.rs`). */
+export interface AuditEntry {
+  time: string;
+  actor: string;
+  ip?: string;
+  via?: string;
+  action: string;
+  target?: string;
+  detail?: string;
+  status: number;
+}
+
+export interface AuditFilter {
+  actor?: string;
+  target?: string;
+  action?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+}
+
+/** The gateway's audit log, newest first: the desktop reads it from disk, a
+ *  browser signed in with the token asks the gateway. An account may not. */
+export async function queryAudit(filter: AuditFilter): Promise<AuditEntry[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<AuditEntry[]>("audit_query", { filter });
+  }
+  if (!isGatewayWeb || signedInAccount()) return [];
+  const q = new URLSearchParams(Object.entries(filter).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]));
+  return (await gatewayGet<AuditEntry[]>(`/v1/audit?${q}`)) ?? [];
+}
+
 export async function listWebAccounts(): Promise<string[]> {
   if (!isTauri) return [];
   const { invoke } = await import("@tauri-apps/api/core");
@@ -794,7 +827,16 @@ export async function workspacePath(): Promise<string | null> {
 }
 
 /** The base folder containing `projects/` and `sessions/` (desktop only). */
+let webBase: Promise<string | null> | undefined;
+
 export async function workspaceBase(): Promise<string | null> {
+  // A browser asks the gateway, once: the base folder does not move under it.
+  if (isGatewayWeb) {
+    webBase ??= gatewayGet<{ base?: string | null }>("/v1/whoami")
+      .then((w) => w?.base ?? null)
+      .catch(() => null);
+    return webBase;
+  }
   if (!isTauri) return null;
   try {
     const { invoke } = await import("@tauri-apps/api/core");

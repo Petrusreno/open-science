@@ -217,10 +217,10 @@ fn sync_index_with_active(conn: &Connection, base: &Path, active: Option<&Path>)
     }
     for p in &files {
         let root = p.parent().and_then(Path::parent).ok_or("invalid ledger source")?;
-        if p.file_name().is_some_and(|name| name == RUNS_FILE) && crate::ledger::enabled(root) {
+        if p.file_name().is_some_and(|name| name == RUNS_FILE) && crate::ledger_v1::enabled(root) {
             // Never ingest the frozen local JSONL after explicit activation.
             // Validation errors abort the query instead of serving a stale index.
-            let records = crate::ledger::runs(root)?;
+            let records = crate::ledger_v1::runs(root)?;
             let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
             for rec in records {
                 let json = serde_json::to_string(&rec).map_err(|e| e.to_string())?;

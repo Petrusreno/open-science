@@ -10,6 +10,7 @@
 // on Linux — so anything that lives here is reachable from `osd server` on a
 // headless machine, and anything that does not, is not.
 pub mod artifact_file;
+pub mod audit;
 pub mod browser_mcp_proxy;
 pub mod debug_log;
 pub mod env;
@@ -17,7 +18,8 @@ pub mod examples;
 pub mod gateway;
 pub mod git_snapshot;
 pub mod harness;
-pub mod ledger;
+mod ledger;
+pub mod ledger_v1;
 pub mod model_prices;
 pub mod model_probe;
 pub mod opencode_config;
@@ -26,9 +28,12 @@ pub mod provenance;
 pub mod runs;
 pub mod runs_index;
 pub mod runtime;
+pub mod screens;
+pub mod session_find;
 pub mod session_sync;
 pub mod specialists;
 pub mod system_proxy;
+pub mod terminal_read;
 pub mod usage;
 pub mod usage_pricing;
 pub mod web_accounts;

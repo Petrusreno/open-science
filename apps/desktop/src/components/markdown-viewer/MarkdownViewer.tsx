@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -117,10 +117,11 @@ export function MarkdownViewer({
   links?: boolean;
 }) {
   const s = STYLES[variant];
+  const folder = useContext(LinkFolder);
   const normalized = useMemo(() => normalizeMathDelimiters(children), [children]);
   const plugins = useMemo(() => pluginsFor(normalized), [normalized]);
   return (
-    <div className={cn(s.root, className)}>
+    <div className={cn("select-text", s.root, className)}>
       {/* Math (KaTeX) — $…$/$$…$$ natively, \(…\)/\[…\] via the normalization
           above. `throwOnError: false` keeps a malformed expression from
           blanking the whole message — it shows the source in red instead. Both
@@ -145,7 +146,7 @@ export function MarkdownViewer({
                 if (links) {
                   // Read now: React may reuse the event once this returns.
                   const { clientX, clientY, metaKey, ctrlKey, shiftKey } = event;
-                  void resolveLink(href).then(
+                  void resolveLink(href, "workspace", folder).then(
                     (target) =>
                       target && activateLink(target, { clientX, clientY, metaKey, ctrlKey, shiftKey }),
                   );
@@ -204,17 +205,23 @@ export function MarkdownViewer({
 /** Inline code that names something openable — a URL, or a path that exists —
  *  becomes a link: underlined on hover, the link menu on click. Anything else
  *  stays plain code; the lookup is cached, so a re-render asks nothing. */
+/** Where a piece of markdown's relative paths are looked up, in order: the
+ *  folder of the conversation it belongs to, then those of the conversations
+ *  it names (see `resolveLink`). */
+export const LinkFolder = createContext<readonly string[] | undefined>(undefined);
+
 function LinkCode({ children, className }: { children: string; className: string }) {
   const [target, setTarget] = useState<LinkTarget | null>(null);
+  const folder = useContext(LinkFolder);
   useEffect(() => {
     let live = true;
     const text = children.trim();
     if (/^https?:\/\//.test(text) || looksLikePath(cleanPath(text)))
-      void resolveLink(text).then((t) => live && setTarget(t));
+      void resolveLink(text, "workspace", folder).then((t) => live && setTarget(t));
     return () => {
       live = false;
     };
-  }, [children]);
+  }, [children, folder]);
   if (!target) return <code className={className}>{children}</code>;
   return (
     <code

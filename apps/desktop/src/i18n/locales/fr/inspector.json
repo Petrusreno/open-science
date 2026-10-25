@@ -67,6 +67,7 @@
       "code": "Code"
     },
     "loading": "Chargement de {{filename}}…",
+    "notFound": "Fichier introuvable — il a peut-être été déplacé ou supprimé.",
     "desktopOnly": "L'aperçu est disponible dans l'application de bureau.",
     "sourceDesktopOnly": "La source est disponible dans l'application de bureau.",
     "binaryNoPreview": "Ce fichier est binaire et n'a pas d'aperçu — ouvrez-le en externe.",

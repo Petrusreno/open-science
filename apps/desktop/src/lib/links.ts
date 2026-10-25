@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import type { FileRoot } from "@ai4s/shared";
-import { isTauri, openExternal } from "@/lib/tauri";
-import { openArtifactExternally, resolveArtifactPath } from "@/lib/artifactFile";
+import { isTauri, openExternal, workspaceBase } from "@/lib/tauri";
+import { listDir, openArtifactExternally, resolveArtifactPath, type DirEntry } from "@/lib/artifactFile";
+import { GLOBAL_FILES_LOCATION, rememberDirectory } from "@/lib/filesLocation";
 import { useLayoutStore } from "@/lib/layout";
 import { isGatewayWeb } from "@/lib/webMode";
 
@@ -107,14 +108,28 @@ function locateLocal(path: string, cwd?: string): Promise<LocalPath | null> {
 export async function resolveLink(
   text: string,
   from: { cwd: string | null } | "workspace" = "workspace",
+  /** The folders a relative path in this text may be in, in order: the
+   *  conversation's own when the text is one of its answers, then those of the
+   *  conversations it names — an agent reporting on another session writes
+   *  that session's paths. A path found there is a link on any machine the
+   *  workbench is reached from, the web client included. */
+  folders?: string | readonly string[],
 ): Promise<LinkTarget | null> {
   const url = cleanUrl(text);
   if (/^https?:\/\//.test(url)) return { kind: "url", url };
-  // Local files exist only on the machine the app runs on.
-  if (!isTauri || isGatewayWeb) return null;
   const path = cleanPath(text);
   if (!looksLikePath(path)) return null;
   const absolute = path.startsWith("/") || path.startsWith("~/") || /^[A-Za-z]:[\\/]/.test(path);
+  if (!absolute && from === "workspace" && folders) {
+    for (const folder of typeof folders === "string" ? [folders] : folders) {
+      const found = await inFolder(folder, path);
+      if (found) return found;
+    }
+  }
+  // A browser reaches a full path only inside the base folder, as Files does.
+  if (isGatewayWeb && path.startsWith("/")) return inFolder("/", path);
+  // Anywhere else on disk is only reachable from the machine itself.
+  if (!isTauri || isGatewayWeb) return null;
   const cwd = from === "workspace" ? undefined : (from.cwd ?? undefined);
   if (absolute || from !== "workspace") {
     if (!absolute && !cwd) return null;
@@ -127,6 +142,63 @@ export async function resolveLink(
   return inWorkspace
     ? { kind: "path", path: inWorkspace, root: "workspace", isDir: false, display: path }
     : null;
+}
+
+/** Listings of folders being looked into, briefly kept: one answer can name a
+ *  dozen files of the same folder. */
+const listings = new Map<string, { at: number; entries: Promise<DirEntry[]> }>();
+
+function listBase(dir: string): Promise<DirEntry[]> {
+  const hit = listings.get(dir);
+  if (hit && Date.now() - hit.at < 5_000) return hit.entries;
+  // eslint-disable-next-line i18next/no-literal-string -- FileRoot, not UI copy
+  const entries = listDir(dir, "base").catch(() => []);
+  listings.set(dir, { at: Date.now(), entries });
+  return entries;
+}
+
+/**
+ * `rel` inside a conversation's `folder`, as a base-relative target — the way
+ * the Files tree names things, which reads the same from the desktop and from
+ * a browser. Found by listing the folder it is in, so a folder is a link too.
+ * In a browser, a bare name ("report.html" for "out/report.html") is looked
+ * for the way the file chips under an answer are.
+ */
+async function inFolder(folder: string, rel: string): Promise<LinkTarget | null> {
+  const baseDir = await workspaceBase();
+  if (!baseDir) return null;
+  // One spelling for both sides: forward slashes, no empty or `.` segments
+  // (Windows paths arrive with backslashes and a drive letter).
+  const norm = (...paths: string[]) => {
+    const parts = paths.flatMap((p) => p.split(/[\\/]/)).filter((p) => p && p !== ".");
+    return parts.includes("..") ? null : (paths[0].startsWith("/") ? "/" : "") + parts.join("/");
+  };
+  const base = norm(baseDir);
+  const abs = norm(folder, rel);
+  if (!base || !abs || !abs.startsWith(`${base}/`)) return null;
+  const inBase = abs.slice(base.length + 1);
+  const cut = inBase.lastIndexOf("/");
+  const name = inBase.slice(cut + 1);
+  const entry = (await listBase(cut < 0 ? "" : inBase.slice(0, cut))).find((e) => e.name === name);
+  if (entry) {
+    // eslint-disable-next-line i18next/no-literal-string -- FileRoot, not UI copy
+    return { kind: "path", path: inBase, root: "base", isDir: entry.isDir, display: rel };
+  }
+  if (isGatewayWeb) {
+    const located = await resolveArtifactPath(rel, folder).catch(() => null);
+    if (located) return inFolder(folder, located);
+  }
+  return null;
+}
+
+/** Open the Files tree on a folder (or on the folder a file is in), in a new
+ *  Screen. Only a base-relative target can say where that is. */
+export function showInFiles(target: Extract<LinkTarget, { kind: "path" }>): void {
+  if (target.root !== "base") return;
+  const dir = target.isDir ? target.path : target.path.slice(0, Math.max(0, target.path.lastIndexOf("/")));
+  rememberDirectory(GLOBAL_FILES_LOCATION, dir);
+  // eslint-disable-next-line i18next/no-literal-string -- PaneContent kind, not UI copy
+  useLayoutStore.getState().addGroup({ kind: "files" });
 }
 
 /** Open a file in its own Screen — a new tab showing its contents. */
@@ -147,7 +219,10 @@ export function activateLink(
   event: Pick<MouseEvent, "clientX" | "clientY" | "metaKey" | "ctrlKey" | "shiftKey">,
 ): void {
   const mod = event.metaKey || event.ctrlKey;
-  if (mod && (event.shiftKey || target.kind === "url" || target.isDir)) {
+  // A browser has no default apps: a folder opens in the Files tree instead.
+  if (mod && isGatewayWeb && target.kind === "path" && target.isDir) {
+    showInFiles(target);
+  } else if (mod && (event.shiftKey || target.kind === "url" || target.isDir)) {
     openWithDefaultApp(target);
   } else if (mod && target.kind === "path") {
     openInApp(target);

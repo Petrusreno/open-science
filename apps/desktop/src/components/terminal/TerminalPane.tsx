@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { isTauri } from "@/lib/tauri";
+import { isMacUA, isTauri } from "@/lib/tauri";
 import { isGatewayWeb } from "@/lib/webMode";
 import { copyText } from "@/lib/clipboard";
 import { useRuntimeStore } from "@/lib/runtime";
-import { terminalTransport, terminalsAvailable } from "@/lib/terminalTransport";
+import { terminalShellId, terminalTransport, terminalsAvailable } from "@/lib/terminalTransport";
+import { copyReference, terminalReference } from "@/lib/agentReference";
 import {
   ContextMenu,
   ContextMenuItem,
@@ -26,6 +27,7 @@ import {
 import { registerTerminalLinks } from "./terminalLinks";
 import { TerminalSearch } from "./TerminalSearch";
 import { isJumpChord } from "@/components/jump-palette/JumpPalette";
+import { createKeyTranslator } from "./terminalKeys";
 
 /**
  * A real shell in a pane.
@@ -45,6 +47,7 @@ import { isJumpChord } from "@/components/jump-palette/JumpPalette";
 export function TerminalPane({
   leafId,
   cwd,
+  name,
   command,
   agent,
   onSplit,
@@ -53,6 +56,8 @@ export function TerminalPane({
 }: {
   leafId: string;
   cwd?: string;
+  /** The name the user gave this terminal, if any — for its reference. */
+  name?: string;
   /** Typed into the shell once, when this terminal is first opened. */
   command?: string;
   /** The coding agent last seen in this terminal. Still running when the app
@@ -148,12 +153,24 @@ export function TerminalPane({
       // Set before the first write: widths are fixed as text enters the buffer.
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = "11";
-      // ⌘F / Ctrl+F belongs to the app, not to the shell: xterm would otherwise
-      // pass it through and some full-screen program would act on it.
+      const translateKey = createKeyTranslator(isMacUA());
       term.attachCustomKeyEventHandler((event) => {
+        // Keys a native terminal sends differently (Shift+Enter, Option as
+        // Meta, ⌘←/→/⌫) — see terminalKeys.
+        const translated = translateKey(event);
+        if (translated === false) return false;
+        if (translated !== null) {
+          event.preventDefault();
+          term.input(translated);
+          return false;
+        }
+        // Find belongs to the app, not to the shell: xterm would otherwise pass
+        // it through and some full-screen program would act on it. ⌘F on a
+        // Mac, where Ctrl+F is the line editor's "forward one character";
+        // Ctrl+F elsewhere.
         if (
           event.type === "keydown" &&
-          (event.metaKey || event.ctrlKey) &&
+          (isMacUA() ? event.metaKey : event.ctrlKey) &&
           event.key.toLowerCase() === "f"
         ) {
           event.preventDefault();
@@ -221,8 +238,21 @@ export function TerminalPane({
       // this a dozen times per terminal; each call re-measures the DOM
       // synchronously and used to cross into Rust for a PTY ioctl, so a window
       // with a few terminals in it visibly stuttered for the whole animation.
+      //
+      // The shell hears only the grid the pane SETTLES on. Claude Code and
+      // Codex repaint their whole conversation on every width change and never
+      // clear the scrollback, so an animation that walks the width down one
+      // column per frame left a dozen stacked copies of it above the prompt.
+      // xterm still refits every frame; only the PTY waits for a quiet moment.
       let queued = 0;
+      let settle: ReturnType<typeof setTimeout> | undefined;
       let sent = { cols: term.cols, rows: term.rows };
+      const tellShell = () => {
+        settle = undefined;
+        if (term.cols === sent.cols && term.rows === sent.rows) return;
+        sent = { cols: term.cols, rows: term.rows };
+        void terminalTransport.resize(leafId, term.cols, term.rows);
+      };
       const observer = new ResizeObserver(() => {
         if (queued) return;
         queued = requestAnimationFrame(() => {
@@ -236,9 +266,8 @@ export function TerminalPane({
           )
             return;
           fit.fit();
-          if (term.cols === sent.cols && term.rows === sent.rows) return;
-          sent = { cols: term.cols, rows: term.rows };
-          void terminalTransport.resize(leafId, term.cols, term.rows);
+          clearTimeout(settle);
+          settle = setTimeout(tellShell, RESIZE_SETTLE_MS);
         });
       });
       observer.observe(container);
@@ -264,6 +293,7 @@ export function TerminalPane({
           links.dispose();
           observer.disconnect();
           if (queued) cancelAnimationFrame(queued);
+          clearTimeout(settle);
         },
       });
       if (disposed) container.remove();
@@ -312,6 +342,16 @@ export function TerminalPane({
       )}
       <ContextMenuItem onSelect={() => getTerminal(leafId)?.term.selectAll()}>
         {t("terminal.menu.selectAll")}
+      </ContextMenuItem>
+      <ContextMenuItem
+        onSelect={() =>
+          void copyReference(
+            terminalReference({ shellId: terminalShellId(leafId), name, cwd, agent }),
+            t("reference.copied"),
+          )
+        }
+      >
+        {t("reference.copy")}
       </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem
@@ -417,6 +457,10 @@ interface FindControls {
 
 /** The find bar of whichever component currently shows each terminal. */
 const findControls = new Map<string, FindControls>();
+
+/** How long the pane must hold still before the shell is told its new size:
+ *  longer than a frame, shorter than a person notices after letting go. */
+const RESIZE_SETTLE_MS = 150;
 
 /**
  * Terminal defaults, borrowed from Orca's `lib/pane-manager/pane-terminal-options.ts`

@@ -61,12 +61,13 @@ import {
   type ToolStatus,
 } from "./tauri";
 import { isGatewayWeb, gatewayToken, gatewayOrigin, setSignedInAccount } from "./webMode";
+import { followEvents } from "./gatewayMux";
 import { activeAcpAgent } from "./acpAgents";
 import { acpTransport } from "./acpTransport";
 import { hasParkedDraft } from "./composerStash";
 import { isWithin, samePath } from "./workspacePath";
 import { kernelReset } from "./kernel";
-import { moveScrollMemory } from "./scrollMemory";
+import { forgetScrollMemory, moveScrollMemory } from "./scrollMemory";
 import { deriveArtifact, deriveArtifactPresentation } from "./artifacts";
 import { DEFAULT_PROJECT, draftLeafOf, projectOf, useLayoutStore, type LayoutGroup } from "./layout";
 import { provenanceInputsFromEvent, recordProvenance } from "./provenance";
@@ -111,6 +112,10 @@ import { listProvidersWithAvailability, ZEN_PROVIDER_ID } from "./zenModels";
 import { toast } from "@/lib/toast";
 import i18n from "@/i18n";
 
+/** Web: every event stream of this tab rides its one connection (see
+ *  gatewayMux) — a browser allows six per host, shared by all its tabs. */
+const eventStream = isGatewayWeb ? followEvents : undefined;
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const URL_KEY = "ai4s.opencodeUrl";
 const HIDDEN_KEY = "ai4s.hiddenExamples";
@@ -123,6 +128,7 @@ const REASONING_KEY = "ai4s.models.variant.v1";
  *  which survives across runs). */
 const SESSION_MODELS_KEY = "ai4s.session.models.v1";
 const SESSION_VARIANTS_KEY = "ai4s.session.variants.v1";
+const CLEARED_FROM_KEY = "ai4s.session.clearedFrom.v1";
 function loadRecord<V>(key: string): Record<string, V> {
   if (typeof window === "undefined") return {};
   try {
@@ -364,6 +370,10 @@ interface RuntimeState {
   /** Per-session reasoning-effort override; absent = the global
    *  `reasoningVariant`. */
   sessionVariants: Record<string, string | null>;
+  /** `/clear` lineage: session (or draft slot) → the session it was cleared
+   *  from. The earlier conversation stays on screen above a divider, read-only
+   *  — the model never sees it. Persisted once the key is a real session. */
+  clearedFrom: Record<string, string>;
   /** Set a session's model (per-pane); no sidecar config PATCH / reconnect. */
   setSessionModel: (sessionId: string, model: string) => void;
   /** Drop a pane's explicit pick so the turn follows the agent config / default
@@ -406,7 +416,8 @@ interface RuntimeState {
   /** Blank the draft view WITHOUT unpinning the folder the next session
    *  will be created in — only an explicit New may do that (#69). */
   resetDraftView: () => void;
-  startDraftInCurrentWorkspace: (key?: string) => void;
+  /** `/new` (no `from`) and `/clear` (`from` = the session being cleared). */
+  startDraftInCurrentWorkspace: (key?: string, from?: string) => void;
   /** Projects: named shared workspaces under `<base>/projects`. Sessions group
    *  under a project by `directory`; multiple sessions share the folder. */
   projects: ProjectInfo[];
@@ -476,6 +487,18 @@ interface RuntimeState {
   /** Sessions with an active turn (send accepted, session.idle not yet seen).
    *  Drives the composer lock and the "Working…" indicator. */
   runningSessions: Record<string, true>;
+  /** Messages queued per session while its turn runs, oldest first. When a
+   *  turn ends on its own the head is sent as the next turn; a stopped or
+   *  failed turn holds the queue until the user sends or removes it. Memory
+   *  only — like an unsent draft, it does not survive a restart. */
+  queuedPrompts: Record<string, QueuedPrompt[]>;
+  enqueuePrompt: (sessionId: string, text: string, attachments?: string[]) => void;
+  editQueuedPrompt: (sessionId: string, id: string, text: string) => void;
+  removeQueuedPrompt: (sessionId: string, id: string) => void;
+  /** Send a queued message now — or, with no `id`, the whole queue as one
+   *  message. Mid-turn this steers: OpenCode picks a message sent into a
+   *  running session up at the turn's next step. */
+  sendQueuedPrompt: (sessionId: string, id?: string) => void;
   /** Current model-step number per running session (from `step.updated`), so the
    *  working indicator can show "step N" — proof the turn is progressing, not
    *  hung. Reset when a turn starts and cleared on idle. */
@@ -830,7 +853,18 @@ function blankDraft(s: RuntimeState, key: string = DRAFT_KEY) {
   delete panes[key];
   const sessionAgents = { ...s.sessionAgents };
   delete sessionAgents[key];
-  return { currentId: null, threads, panes, sessionAgents };
+  const clearedFrom = { ...s.clearedFrom };
+  delete clearedFrom[key];
+  return { currentId: null, threads, panes, sessionAgents, clearedFrom };
+}
+
+/** Persist the `/clear` lineage of real sessions only — a draft slot's entry is
+ *  carried onto the session id at its first send. */
+function saveClearedFrom(rec: Record<string, string>): void {
+  saveRecord(
+    CLEARED_FROM_KEY,
+    Object.fromEntries(Object.entries(rec).filter(([k]) => !isDraftKey(k))),
+  );
 }
 /**
  * Hand the app's own MCP connectors to the ACP agent.
@@ -895,6 +929,7 @@ export const DRAFT_KEY = "draft";
  *  panes each hold an independent draft (thread/composer/model/agent) and each
  *  create their own session on first send — instead of sharing DRAFT_KEY. */
 export const draftKeyFor = (leafId: string): string => `draft:${leafId}`;
+const isDraftKey = (key: string): boolean => key === DRAFT_KEY || key.startsWith("draft:");
 
 /**
  * Folder a pane split off `source` should start in: the folder that pane's own
@@ -988,6 +1023,15 @@ export async function startSessionScreen(projectId: string): Promise<void> {
 /** The composer's agent switch: "build" edits and runs; "plan" is OpenCode's
  *  read-only planning agent (edits denied except its plan .md file). */
 export type AgentMode = "build" | "plan";
+
+/** A message typed while its session's turn was running (Enter while busy).
+ *  `attachments` are the composer's chip names, as `sendPrompt` takes them. */
+export interface QueuedPrompt {
+  id: string;
+  text: string;
+  attachments?: string[];
+}
+let queueSeq = 0;
 /** One bounded retry for the first POSTs after a sidecar restart — the old
  *  connection occasionally dies mid-handshake ("Load failed"). */
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
@@ -1836,7 +1880,14 @@ async function performTurn(
           sessionVariants[id!] = sessionVariants[draftSrc];
           delete sessionVariants[draftSrc];
         }
+        // A /clear draft's earlier conversation stays above the new session.
+        const clearedFrom = { ...s.clearedFrom };
+        if (clearedFrom[draftSrc]) {
+          clearedFrom[id!] = clearedFrom[draftSrc];
+          delete clearedFrom[draftSrc];
+        }
         return {
+          clearedFrom,
           currentId: id,
           threads,
           panes,
@@ -1854,6 +1905,7 @@ async function performTurn(
       // a relaunch restores this pane's model, not the global default.
       saveRecord(SESSION_MODELS_KEY, get().sessionModels);
       saveRecord(SESSION_VARIANTS_KEY, get().sessionVariants);
+      saveClearedFrom(get().clearedFrom);
       moveScrollMemory(`chat:${draftSrc}`, `chat:${id}`);
       void get().refreshSessions();
     }
@@ -2656,6 +2708,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   sessionAgents: {},
   sessionModels: loadRecord<string>(SESSION_MODELS_KEY),
   sessionVariants: loadRecord<string | null>(SESSION_VARIANTS_KEY),
+  clearedFrom: loadRecord<string>(CLEARED_FROM_KEY),
   setSessionModel: (sessionId, model) =>
     set((s) => {
       const sessionModels = { ...s.sessionModels, [sessionId]: model };
@@ -2695,6 +2748,56 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   sending: false,
   sendingSessions: {},
   runningSessions: {},
+  queuedPrompts: {},
+  enqueuePrompt: (sessionId, text, attachments) =>
+    set((s) => ({
+      queuedPrompts: {
+        ...s.queuedPrompts,
+        [sessionId]: [
+          ...(s.queuedPrompts[sessionId] ?? []),
+          // A counter, not crypto.randomUUID: that is missing on a plain-http
+          // page, and the web client is opened over http from phones.
+          { id: `q${++queueSeq}`, text, ...(attachments ? { attachments } : {}) },
+        ],
+      },
+    })),
+  editQueuedPrompt: (sessionId, id, text) =>
+    set((s) => ({
+      queuedPrompts: {
+        ...s.queuedPrompts,
+        [sessionId]: (s.queuedPrompts[sessionId] ?? []).map((q) => (q.id === id ? { ...q, text } : q)),
+      },
+    })),
+  removeQueuedPrompt: (sessionId, id) =>
+    set((s) => ({
+      queuedPrompts: {
+        ...s.queuedPrompts,
+        [sessionId]: (s.queuedPrompts[sessionId] ?? []).filter((q) => q.id !== id),
+      },
+    })),
+  sendQueuedPrompt: (sessionId, id) => {
+    // A send already in flight for this session would make sendPrompt drop
+    // this one silently (one send at a time per session) — so it stays queued.
+    if (get().sendingSessions[sessionId]) return;
+    const queue = get().queuedPrompts[sessionId] ?? [];
+    // Already sent (the turn-end drain and a click can race) — never twice.
+    const items = id === undefined ? queue : queue.filter((q) => q.id === id);
+    if (items.length === 0) return;
+    const sent = new Set(items.map((q) => q.id));
+    set((s) => ({
+      queuedPrompts: {
+        ...s.queuedPrompts,
+        [sessionId]: (s.queuedPrompts[sessionId] ?? []).filter((q) => !sent.has(q.id)),
+      },
+    }));
+    const attachments = items.flatMap((q) => q.attachments ?? []);
+    void get().sendPrompt(
+      items.map((q) => q.text).join("\n\n"),
+      sessionId,
+      undefined,
+      attachments.length > 0 ? attachments : undefined,
+    );
+  },
   stepCounts: {},
   shellTurns: {},
   retryNotices: {},
@@ -3122,6 +3225,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         baseUrl,
         directory: directory ?? undefined,
         password: password ?? undefined,
+        eventStream,
       });
       opencodeClient = oc;
       client = oc;
@@ -3433,27 +3537,22 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
             },
           }));
           return;
-        case "message.agent": {
-          // A user message landed. Tag the newest still-untagged user block in
-          // this thread with its server id — the optimistic echo from a send
-          // starts id-less, and the id is what makes the row editable later.
-          // Sends are serialized, so the last untagged block is this message.
-          if (event.messageID) {
-            const mid = event.messageID;
-            set((s) => {
-              const cur = s.threads[event.sessionId];
-              if (!cur) return {};
-              const blocks = [...cur.blocks];
-              for (let i = blocks.length - 1; i >= 0; i--) {
-                const b = blocks[i];
-                if (b.kind === "user" && !b.messageID) {
-                  blocks[i] = { ...b, messageID: mid };
-                  return { threads: { ...s.threads, [event.sessionId]: { ...cur, blocks } } };
-                }
-              }
-              return {};
+        case "user.message": {
+          const text = event.text.trim();
+          // The app's own injected turns are not the user's words (see historyToThread).
+          if (!text || text === AUTO_REVIEW_PROMPT || isGoalInjectedPrompt(text)) return;
+          set((s) => {
+            const cur = s.threads[event.sessionId];
+            if (!cur) return {};
+            const blocks = foldUserMessage(cur.blocks, event.messageID, text, {
+              sendingHere: !!s.sendingSessions[event.sessionId],
+              asTypedCommand: commandEchoReader(s.commands),
             });
-          }
+            return blocks ? { threads: { ...s.threads, [event.sessionId]: { ...cur, blocks } } } : {};
+          });
+          return;
+        }
+        case "message.agent": {
           // A user message names its agent. This is how the pill follows
           // OpenCode's own plan_exit "Yes" (it injects a build user message)
           // — and it self-confirms our own sends. Any OTHER agent (the auto-review
@@ -3658,6 +3757,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
                       baseUrl: streamBaseUrl,
                       directory: sourceDirectory,
                       password: streamPassword,
+                      eventStream,
                     });
                     await temporaryClient.connect();
                     presentationClient = temporaryClient;
@@ -4048,36 +4148,32 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   // explicit New may unpin.
   resetDraftView: () => set((s) => blankDraft(s)),
 
-  // Local /new and /clear: clear the visible chat context, but keep the active
-  // folder. The first next message creates a new OpenCode session in that same
-  // folder; no session, database row, or file is deleted here. `key` is the
-  // draft slot to reset — the pane's own `draft:<leafId>` for a tiled pane,
-  // the global DRAFT_KEY for the single-pane fallback.
-  startDraftInCurrentWorkspace: (key = DRAFT_KEY) =>
+  // Local /new and /clear: start a fresh context in the active folder. The
+  // first next message creates a new OpenCode session in that same folder; no
+  // session, database row, or file is deleted here. `key` is the draft slot to
+  // reset — the pane's own `draft:<leafId>` for a tiled pane, the global
+  // DRAFT_KEY for the single-pane fallback. /new is a blank page; /clear keeps
+  // the conversation it cleared on screen above a divider (`clearedFrom`). A
+  // /clear on a draft that has no session yet keeps whatever it already showed.
+  startDraftInCurrentWorkspace: (key = DRAFT_KEY, from) =>
     set((s) => {
-      const threads = { ...s.threads };
-      threads[key] = {
-        ...emptyThread(),
-        loaded: true,
-        blocks: [
-          {
-            kind: "status-line",
-            text: i18n.t("session:localCommand.cleared"),
-            tone: "review",
-            divider: true,
-          },
-        ],
-      };
+      const threads = { ...s.threads, [key]: { ...emptyThread(), loaded: true } };
       const panes = { ...s.panes };
       delete panes[key];
       const sessionAgents = { ...s.sessionAgents };
       delete sessionAgents[key];
+      const clearedFrom = { ...s.clearedFrom };
+      if (from) clearedFrom[key] = from;
+      else delete clearedFrom[key];
+      // The slot may remember a scroll offset from an earlier draft (every pane
+      // starts as one); that would open the kept conversation at its top.
+      forgetScrollMemory(`chat:${key}`);
       // /new and /clear deliberately stay put: aim this draft at the folder
       // it is already in, so the next session lands there and not in a dated one.
       const draftWorkspaces = s.workspace
         ? { ...s.draftWorkspaces, [key]: s.workspace }
         : s.draftWorkspaces;
-      return { currentId: null, draftWorkspaces, threads, panes, sessionAgents };
+      return { currentId: null, draftWorkspaces, threads, panes, sessionAgents, clearedFrom };
     }),
 
   refreshProjects: async () => {
@@ -4455,7 +4551,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // echo and the spinner must appear on click, not after a multi-MB read.
       (sid) =>
         withRetry(async () => {
-          const { parts, dropped } = await imageAttachmentParts(attachments ?? []);
+          // The web client reads attachments from the session's own folder.
+          const g = get();
+          const dir = g.sessions.find((x) => x.id === sid)?.directory ?? g.workspace ?? undefined;
+          const { parts, dropped } = await imageAttachmentParts(attachments ?? [], dir);
           // A picture that could not be read is NOT sent, and the prompt still
           // names the file — so without this the model answers about a figure
           // it never saw, and nothing anywhere says so.
@@ -4495,7 +4594,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   runCommand: async (name, args, sessionId, draftKey) => {
     if (name === "new" || name === "clear") {
-      get().startDraftInCurrentWorkspace(draftKey);
+      const s = get();
+      // The session being cleared: this pane's own, or (single pane) the focused
+      // one. A draft has none — then /clear keeps the conversation it showed.
+      const from = sessionId ?? (draftKey ? undefined : (s.currentId ?? undefined));
+      const key = draftKey ?? DRAFT_KEY;
+      s.startDraftInCurrentWorkspace(
+        key,
+        name === "clear" ? (from ?? s.clearedFrom[key]) : undefined,
+      );
       return null;
     }
     return performTurn(
@@ -4891,6 +4998,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         baseUrl: streamBaseUrl,
         directory: dir,
         password: streamPassword,
+        eventStream,
       });
       if (sharedEventHandler) c.onEvent(sharedEventHandler);
       streamClients.set(dir, c);
@@ -4900,6 +5008,20 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     }
   },
 }));
+
+// A turn that ends on its own sends the next queued message, one per turn. A
+// stopped or failed one does not: the user stopped for a reason, and a queue
+// fired into a failing provider would only fail again. Those queues stay put
+// for the user to send or remove.
+useRuntimeStore.subscribe((s, prev) => {
+  if (s.runningSessions === prev.runningSessions) return;
+  for (const sid of Object.keys(prev.runningSessions)) {
+    if (s.runningSessions[sid] || interruptedSessions.has(sid) || erroredSessions.has(sid)) continue;
+    const head = s.queuedPrompts[sid]?.[0];
+    // Outside the listener: sending sets state, and this one is mid-dispatch.
+    if (head) queueMicrotask(() => useRuntimeStore.getState().sendQueuedPrompt(sid, head.id));
+  }
+});
 
 /**
  * Is this Screen a new conversation nobody has touched — nothing sent or
@@ -5265,20 +5387,73 @@ export function lastAgentMode(messages: HistoryMessage[]): AgentMode {
   return "build";
 }
 
-export function historyToThread(messages: HistoryMessage[], commands?: CommandInfo[]): FoldState {
-  const blocks: ThreadBlock[] = [];
-  // OpenCode stores a slash command's EXPANDED template as the user message —
-  // show the "/name args" the user actually typed instead. Templates either
-  // embed a $ARGUMENTS placeholder anywhere (match prefix + suffix around it,
-  // e.g. the goal plugin's <goal_command_arguments> block) or carry no
-  // placeholder (typed args are appended after the template, no marker).
-  // Longest template first, so one template being a prefix of another's
-  // expansion can't mis-attribute.
+/**
+ * A user message the runtime reports, folded into a thread.
+ *
+ * Usually it is our own send, already shown as an id-less echo: the echo gets
+ * the server's id (the handle for editing it later), matched by its words — or,
+ * when this window has a send in flight and the words differ (a command's
+ * echo, say), the newest id-less echo is ours. Otherwise the message came from
+ * somewhere else — another agent, another tab, the CLI, a web account — and is
+ * added, as a reload would show it. Null when there is nothing to change.
+ *
+ * Tagging used to happen on `message.agent`, by position: the newest id-less
+ * block got the id. A message from elsewhere then stamped its id onto an old
+ * `!` shell echo and was never shown.
+ */
+export function foldUserMessage(
+  blocks: ThreadBlock[],
+  messageID: string,
+  text: string,
+  opts: { sendingHere: boolean; asTypedCommand: (text: string) => string | undefined },
+): ThreadBlock[] | null {
+  const shown = opts.asTypedCommand(text) ?? text;
+  // Already shown. A message of several text parts arrives a part at a time,
+  // each event carrying the text so far: let it grow. Anything else (our own
+  // echo of a command, say) keeps the words it has.
+  const known = blocks.findIndex((b) => b.kind === "user" && b.messageID === messageID);
+  if (known >= 0) {
+    const b = blocks[known] as Extract<ThreadBlock, { kind: "user" }>;
+    if (b.text === shown || !shown.startsWith(b.text)) return null;
+    const next = [...blocks];
+    next[known] = { ...b, text: shown };
+    return next;
+  }
+  const squash = (t: string) => t.split(/\s+/).filter(Boolean).join(" ");
+  const untagged = (b: ThreadBlock) => b.kind === "user" && !b.messageID && !b.text.startsWith("! ");
+  let at = -1;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (untagged(b) && b.kind === "user" && squash(b.text) === squash(shown)) {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0 && opts.sendingHere) {
+    for (let i = blocks.length - 1; i >= 0 && at < 0; i--) if (untagged(blocks[i])) at = i;
+  }
+  const next = [...blocks];
+  if (at >= 0) {
+    next[at] = { ...(blocks[at] as Extract<ThreadBlock, { kind: "user" }>), messageID };
+    return next;
+  }
+  next.push({ kind: "user", text: shown, messageID });
+  return next;
+}
+
+/** OpenCode stores a slash command's EXPANDED template as the user message —
+ *  this recovers the "/name args" the user actually typed, or undefined when
+ *  the text is no command's expansion. Templates either embed a $ARGUMENTS
+ *  placeholder anywhere (match prefix + suffix around it, e.g. the goal
+ *  plugin's <goal_command_arguments> block) or carry no placeholder (typed args
+ *  are appended after the template, no marker). Longest template first, so one
+ *  template being a prefix of another's expansion can't mis-attribute. */
+export function commandEchoReader(commands?: CommandInfo[]): (text: string) => string | undefined {
   const templates = (commands ?? [])
     .filter((c) => c.template?.trim())
     .map((c) => ({ name: c.name, template: c.template!.trim() }))
     .sort((a, b) => b.template.length - a.template.length);
-  const asTypedCommand = (text: string): string | undefined => {
+  return (text: string): string | undefined => {
     for (const t of templates) {
       const at = t.template.indexOf("$ARGUMENTS");
       if (at < 0) {
@@ -5296,6 +5471,11 @@ export function historyToThread(messages: HistoryMessage[], commands?: CommandIn
     }
     return undefined;
   };
+}
+
+export function historyToThread(messages: HistoryMessage[], commands?: CommandInfo[]): FoldState {
+  const blocks: ThreadBlock[] = [];
+  const asTypedCommand = commandEchoReader(commands);
   // A step frozen mid-run (the runtime restarted or the turn was killed before
   // it finished) must not spin forever in history — render it quietly and say
   // once, at the end, that the turn was interrupted.

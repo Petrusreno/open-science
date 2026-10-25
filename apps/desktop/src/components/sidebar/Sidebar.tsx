@@ -5,6 +5,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
 import {
   Archive,
+  Link2,
   FolderInput,
   FolderOpen,
   Pencil,
@@ -57,6 +58,7 @@ import {
 } from "@/lib/store";
 import { useUpdateStore } from "@/lib/update";
 import { overlayTitlebarStyle } from "@/lib/titlebar";
+import { copyReference, sessionReference } from "@/lib/agentReference";
 import { visibleSections, resolveSection } from "@/components/settings/sections";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { useDragDivider } from "@/lib/useDragDivider";
@@ -131,7 +133,7 @@ function initialCollapsedProjects(): string[] {
 }
 
 export function Sidebar({ project }: { project: Project }) {
-  const { t } = useTranslation(["nav", "settings"]);
+  const { t } = useTranslation(["nav", "settings", "session"]);
   const navigate = useNavigate();
   const location = useLocation();
   // In settings the sidebar becomes the settings navigation: "Back to app" on
@@ -514,14 +516,16 @@ export function Sidebar({ project }: { project: Project }) {
 
   /** Open a session row. Desktop tiling: a plain click opens it full-screen in
    *  the tentative "preview" screen (#3); a modifier-click opens it in a NEW
-   *  split pane — it never clobbers the focused pane. Web/phone (single-pane)
-   *  fall through to the NavLink. A trailing click right after a drag is
-   *  swallowed by the drag controller's one-shot capture listener. */
+   *  split pane — it never clobbers the focused pane. A phone has Screens but
+   *  no splits, so there it is always the preview screen: replacing the pane
+   *  would change it for every other view of the same Screen. A trailing
+   *  click right after a drag is swallowed by the drag controller's one-shot
+   *  capture listener. */
   const openRow = (row: Row, e: React.MouseEvent) => {
-    if (row.kind !== "session" || isMobile) return;
+    if (row.kind !== "session") return;
     e.preventDefault();
     const layout = useLayoutStore.getState();
-    if (e.metaKey || e.ctrlKey || e.altKey) {
+    if (!isMobile && (e.metaKey || e.ctrlKey || e.altKey)) {
       // eslint-disable-next-line i18next/no-literal-string -- SplitDir enum, not UI copy
       layout.split("row", row.id);
     } else {
@@ -623,6 +627,18 @@ export function Sidebar({ project }: { project: Project }) {
                 ))}
               </ContextMenuSub>
             )}
+            <ContextMenuItem
+              icon={<Link2 size={14} />}
+              onSelect={() => {
+                const s = sessions.find((x) => x.id === row.id);
+                void copyReference(
+                  sessionReference({ id: row.id, title: s?.title, directory: s?.directory }),
+                  t("session:reference.copied"),
+                );
+              }}
+            >
+              {t("session:reference.copy")}
+            </ContextMenuItem>
             <ContextMenuItem
               icon={<Archive size={14} />}
               disabled={webReadOnly}

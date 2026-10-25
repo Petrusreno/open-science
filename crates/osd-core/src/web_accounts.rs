@@ -319,7 +319,9 @@ pub fn write_layout(env: &Env, user: &str, json: &str) -> Result<(), String> {
 /// mirrors the layout asks "anything newer than N?" instead of re-reading it.
 /// Seeded from the clock, so a restarted app never reissues a number a client
 /// still holds from before.
-static DESKTOP_REV: Mutex<u64> = Mutex::new(0);
+/// Keyed by the layout file: one per runtime, and so one per gateway even when
+/// a process runs several (the tests do).
+static DESKTOP_REV: Mutex<Option<std::collections::HashMap<PathBuf, u64>>> = Mutex::new(None);
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -328,11 +330,10 @@ fn now_ms() -> u64 {
 /// The desktop window's Screens — shared with every web client signed in with
 /// the token, which mirrors them — and their revision.
 pub fn read_desktop_layout(env: &Env) -> Option<(u64, String)> {
-    let json = std::fs::read_to_string(desktop_layout_file(env).ok()?).ok()?;
-    let mut rev = DESKTOP_REV.lock().unwrap();
-    if *rev == 0 {
-        *rev = now_ms();
-    }
+    let file = desktop_layout_file(env).ok()?;
+    let json = std::fs::read_to_string(&file).ok()?;
+    let mut revs = DESKTOP_REV.lock().unwrap();
+    let rev = revs.get_or_insert_with(Default::default).entry(file).or_insert_with(now_ms);
     Some((*rev, json))
 }
 
@@ -340,8 +341,10 @@ pub fn read_desktop_layout(env: &Env) -> Option<(u64, String)> {
 /// return its revision.
 pub fn write_desktop_layout(env: &Env, json: &str) -> Result<u64, String> {
     check_layout(json)?;
-    let mut rev = DESKTOP_REV.lock().unwrap();
-    write_private(&desktop_layout_file(env)?, json.as_bytes())?;
+    let file = desktop_layout_file(env)?;
+    let mut revs = DESKTOP_REV.lock().unwrap();
+    write_private(&file, json.as_bytes())?;
+    let rev = revs.get_or_insert_with(Default::default).entry(file).or_insert(0);
     *rev = (*rev + 1).max(now_ms());
     Ok(*rev)
 }

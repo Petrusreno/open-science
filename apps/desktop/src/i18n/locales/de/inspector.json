@@ -67,6 +67,7 @@
       "code": "Code"
     },
     "loading": "{{filename}} wird geladen…",
+    "notFound": "Diese Datei wurde nicht gefunden – sie wurde vielleicht verschoben oder gelöscht.",
     "desktopOnly": "Vorschau ist in der Desktop-App verfügbar.",
     "sourceDesktopOnly": "Quelle ist in der Desktop-App verfügbar.",
     "binaryNoPreview": "Diese Datei ist binär und hat keine Vorschau — öffnen Sie sie extern.",

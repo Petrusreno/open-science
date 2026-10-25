@@ -1,9 +1,12 @@
-name: ledger CI
+name: core CI
 
+# The headless crates on every PR that touches them. Installers are built only
+# on a tag (build.yml); this keeps osd-core's tests — including the
+# cross-process ledger tests — green on all three desktop platforms.
 on:
   pull_request:
     paths:
-      - .github/workflows/ledger-ci.yml
+      - .github/workflows/core-ci.yml
       - Cargo.toml
       - Cargo.lock
       - crates/osd-core/**
@@ -18,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-latest]
+        os: [macos-latest, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -28,11 +31,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: .
-      - name: Test core including cross-process ledger tests
+      - name: Test osd-core
         run: cargo test -p osd-core --locked
-      - name: Check CLI
+      - name: Check osd-cli
         run: cargo check -p osd-cli --locked
-      - name: Test CLI transactional provenance export
+      - name: Test osd-cli
         run: cargo test -p osd-cli --locked

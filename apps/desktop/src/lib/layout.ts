@@ -566,6 +566,28 @@ function persist(groups: LayoutGroup[], activeGroupId: string): void {
   void import("./layoutSync").then(({ layoutChanged }) => layoutChanged(json));
 }
 
+/** A shared layout as one view should show it. The Screens are shared — the
+ *  window and every tab show the same ones, holding the same panes — but where
+ *  each is looking is its own: which Screen is on display, and which pane is
+ *  focused or zoomed in each. Without this, switching Screens in one browser
+ *  tab switched every other tab and the desktop window with it. Ours is kept
+ *  wherever it still exists in what arrived. */
+export function keepOwnView(incoming: Persisted, own: Persisted): Persisted {
+  const mine = new Map(own.groups.map((g) => [g.id, g]));
+  const groups = incoming.groups.map((g) => {
+    const m = mine.get(g.id);
+    if (!m || !g.tree) return g;
+    const ids = new Set(leaves(g.tree).map((l) => l.id));
+    return {
+      ...g,
+      focusedLeafId: m.focusedLeafId && ids.has(m.focusedLeafId) ? m.focusedLeafId : g.focusedLeafId,
+      zoomedLeafId: m.zoomedLeafId && ids.has(m.zoomedLeafId) ? m.zoomedLeafId : null,
+    };
+  });
+  const activeGroupId = groups.some((g) => g.id === own.activeGroupId) ? own.activeGroupId : incoming.activeGroupId;
+  return { groups, activeGroupId };
+}
+
 /** A copy of a whole layout under fresh ids: where a token client's own
  *  Screens start, the first time it leaves the desktop window's. */
 export function cloneLayout(layout: Persisted): Persisted {

@@ -296,7 +296,7 @@ fn own_folder(env: &Env, dir: &Path) -> Option<PathBuf> {
 /// session folder and project here is its own repository — so it can never do
 /// this. `import` can: it files an EXISTING session in the importing process's
 /// working directory, keeping its id and messages (see `import_dir`; measured
-/// again against the pinned 1.18.32 across two repositories: same id, same
+/// again against the pinned 1.19.4 across two repositories: same id, same
 /// messages, new directory and project). So: export, then import from inside
 /// the project.
 ///

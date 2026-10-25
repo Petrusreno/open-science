@@ -215,7 +215,7 @@ function Transcript({ childId }: { childId: string }) {
     // sibling of the rows around it.
     <div className="nested-transcript mt-1.5 border-l border-border pl-2.5">
       {brief && (
-        <p className="whitespace-pre-wrap break-words pb-2 text-[11px] leading-relaxed text-muted">
+        <p className="select-text whitespace-pre-wrap break-words pb-2 text-[11px] leading-relaxed text-muted">
           {brief}
         </p>
       )}

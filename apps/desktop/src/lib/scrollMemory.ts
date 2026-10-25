@@ -15,6 +15,11 @@ export function moveScrollMemory(from: string, to: string): void {
   }
 }
 
+/** Drop one stored offset, so that pane key opens at its default position. */
+export function forgetScrollMemory(key: string): void {
+  offsets.delete(key);
+}
+
 /** Test seam / explicit reset. */
 export function clearScrollMemory(): void {
   offsets.clear();

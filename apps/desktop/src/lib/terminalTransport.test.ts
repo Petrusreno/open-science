@@ -11,18 +11,43 @@ vi.mock("./webMode", () => ({
   layoutSource: () => who.source,
 }));
 
-const { readEvents, terminalTransport } = await import("./terminalTransport");
+const { terminalTransport } = await import("./terminalTransport");
 const { gatewayPost } = await import("./webMode");
 
-/** A response body that delivers `parts` as separate reads, as a network does. */
-function body(parts: string[]): ReadableStream<Uint8Array> {
+/** A gateway's `/v1/mux`: each tab stream it opens is a body the test writes
+ *  frames into; `onAdd` answers a subscription with frames of its own. */
+function fakeMux(onAdd: (key: string, stream: number, send: (frame: object | null) => void) => void) {
   const enc = new TextEncoder();
-  return new ReadableStream({
-    start(c) {
-      for (const p of parts) c.enqueue(enc.encode(p));
-      c.close();
-    },
+  const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith("/v1/mux")) {
+      const n = streams.length;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            streams.push(c);
+            c.enqueue(enc.encode(`data: {"mux":"m${n}"}\n\n`));
+          },
+        }),
+      );
+    }
+    const n = Number(url.match(/\/v1\/mux\/m(\d+)$/)?.[1]);
+    const { add } = JSON.parse(String(init?.body)) as { add?: { key: string }[] };
+    for (const { key } of add ?? []) {
+      onAdd(key, n, (frame) => (frame ? streams[n].enqueue(enc.encode(`data: ${JSON.stringify(frame)}\n\n`)) : streams[n].close()));
+    }
+    return new Response("{}");
   });
+  /** End every tab stream, as the gateway going away would. */
+  const closeAll = () =>
+    streams.forEach((c) => {
+      try {
+        c.close();
+      } catch {
+        /* that one had already ended */
+      }
+    });
+  return Object.assign(fetchMock, { closeAll });
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -30,24 +55,6 @@ beforeEach(() => {
   window.localStorage.setItem("os_terminal_client", "abcdefabcdef");
   who.account = "dana";
   who.source = "desktop";
-});
-
-describe("readEvents", () => {
-  it("joins frames split across reads, skips keepalives, and stops on exit", async () => {
-    const data: string[] = [];
-    const onExit = vi.fn();
-    const exited = await readEvents(
-      body(['data: "$ ls\\r', '\\n"\n\n: keepalive\n\n', 'data: "─┐"\n\nevent: exit\ndata: null\n\n']),
-      { onData: (c) => data.push(c), onExit },
-    );
-    expect(data).toEqual(["$ ls\r\n", "─┐"]);
-    expect(exited).toBe(true);
-    expect(onExit).toHaveBeenCalledOnce();
-  });
-
-  it("tells a dropped connection from an exited shell", async () => {
-    expect(await readEvents(body(['data: "x"\n\n']), { onData() {}, onExit() {} })).toBe(false);
-  });
 });
 
 describe("the web transport", () => {
@@ -99,27 +106,37 @@ describe("the web transport", () => {
   });
 
   it("re-reads a dropped stream, clearing the screen before the replay", async () => {
-    const responses = [
-      new Response(body(['data: "first"\n\n'])), // drops without an exit
-      new Response(body(['data: "replayed"\n\nevent: exit\ndata: null\n\n'])),
-    ];
-    vi.stubGlobal("fetch", vi.fn(async () => responses.shift()!));
-    vi.useFakeTimers();
+    const fetchMock = fakeMux((k, stream, send) => {
+        send({ k, open: true });
+        if (stream === 0) {
+          send({ k, d: "first" });
+          send(null); // the tab's stream drops, the shell lives on
+        } else {
+          send({ k, d: "replayed" });
+          send({ k, exit: true });
+        }
+      });
+    vi.stubGlobal("fetch", fetchMock);
     const events: string[] = [];
     await terminalTransport.subscribe("leaf-1", {
       onData: (c) => events.push(c),
       onReset: () => events.push("<reset>"),
       onExit: () => events.push("<exit>"),
     });
-    await vi.runAllTimersAsync();
-    vi.useRealTimers();
-    expect(events).toEqual(["first", "<reset>", "replayed", "<exit>"]);
+    await vi.waitFor(() => expect(events).toEqual(["first", "<reset>", "replayed", "<exit>"]), { timeout: 3000 });
+    fetchMock.closeAll(); // the next test starts with no tab stream
   });
 
   it("ends, rather than retrying forever, when the terminal is gone", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 404 })));
+    const fetchMock = fakeMux((k, _stream, send) => send({ k, gone: true }));
+    vi.stubGlobal("fetch", fetchMock);
     const onExit = vi.fn();
-    await terminalTransport.subscribe("leaf-1", { onData() {}, onReset() {}, onExit });
+    await terminalTransport.subscribe("leaf-2", { onData() {}, onReset() {}, onExit });
     await vi.waitFor(() => expect(onExit).toHaveBeenCalledOnce());
+    // It asked over the tab's one stream, for this pane's shell.
+    const adds = fetchMock.mock.calls.filter(([url]) => /\/v1\/mux\/m\d+$/.test(String(url)));
+    expect(JSON.parse(String(adds[0][1]?.body))).toEqual({
+      add: [{ key: expect.any(String), kind: "terminal", id: "wabcdefabcdef-leaf-2" }],
+    });
   });
 });
