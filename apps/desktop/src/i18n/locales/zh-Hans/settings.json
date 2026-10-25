@@ -62,6 +62,8 @@
     "proxySocksUnsupported": "{{url}} 是 SOCKS 代理，智能体运行时用不了——所有连接都会失败。请改用代理的 HTTP 端口（Clash 用混合端口，如 http://127.0.0.1:7890）。",
     "proxyRestartNeeded": "运行时启动后系统代理有变化，运行时仍在走旧线路。点应用会重启运行时——正在运行的任务会停止。",
     "proxyApply": "应用",
+    "proxyBypassLabel": "这些域名不走代理",
+    "proxyBypassHint": "每行一个，含子域名。默认是国内模型服务商，走海外代理反而很慢。保存会重启运行时——正在运行的任务会停止。",
     "proxyNoneDetected": "未检测到系统代理——连接将直连。",
     "mirrorTitle": "软件包镜像",
     "mirrorPypi": "PyPI 索引",

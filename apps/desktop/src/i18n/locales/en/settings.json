@@ -62,6 +62,8 @@
     "proxySocksUnsupported": "{{url}} is a SOCKS proxy, which the agent runtime cannot use — every connection would fail. Use your proxy's HTTP port instead (Clash: the mixed port, e.g. http://127.0.0.1:7890).",
     "proxyRestartNeeded": "The system proxy has changed since the runtime started, which still uses the old route. Apply to restart the runtime — running tasks will stop.",
     "proxyApply": "Apply",
+    "proxyBypassLabel": "Always connect directly",
+    "proxyBypassHint": "One host per line; subdomains included. Defaults to mainland-China model providers, which are slow behind an overseas proxy. Saving restarts the runtime — running tasks will stop.",
     "proxyNoneDetected": "No system proxy detected — connections go direct.",
     "mirrorTitle": "Package mirrors",
     "mirrorPypi": "PyPI index",

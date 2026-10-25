@@ -1289,7 +1289,8 @@ pub fn free_port() -> u16 {
 
 /// Network-proxy setting for the sidecar: `system` (default) follows the OS,
 /// `custom <url>` uses a fixed proxy, `none` forces direct connections.
-/// Stored as one line in `proxy.txt` under the runtime root.
+/// Stored in `proxy.txt` under the runtime root: the mode on line one, and an
+/// optional `bypass a,b,c` line listing hosts that always connect directly.
 fn proxy_setting_file(env: &Env) -> Result<PathBuf, String> {
     Ok(runtime_root(env)?.join("proxy.txt"))
 }
@@ -1306,6 +1307,67 @@ fn read_proxy_setting(env: &Env) -> (String, String) {
         _ if line == "none" => ("none".into(), String::new()),
         _ => ("system".into(), String::new()),
     }
+}
+
+/// Hosts reached directly when no bypass list has been saved: the mainland-China
+/// endpoints of the providers in OpenCode's catalog. Behind an overseas proxy
+/// these are slow for no gain — a 1 MB DeepSeek request (four screenshots) took
+/// 30–40 s through a Clash global proxy uploading at ~30 KB/s, and 1 s direct,
+/// and every turn re-uploads the whole history. Domain suffixes: the bundled
+/// Bun matches `deepseek.com` against `api.deepseek.com` but not `seek.com`.
+const DEFAULT_PROXY_BYPASS: &[&str] = &[
+    "deepseek.com",
+    "moonshot.cn",
+    "bigmodel.cn",
+    "dashscope.aliyuncs.com",
+    "volces.com",
+    "minimax.cn",
+    "siliconflow.cn",
+    "stepfun.com",
+    "xiaomimimo.com",
+    "modelscope.cn",
+    "lkeap.cloud.tencent.com",
+];
+
+/// The persisted bypass list. No `bypass` line ⇒ the defaults; an empty one ⇒
+/// the user cleared them.
+fn read_proxy_bypass(env: &Env) -> Vec<String> {
+    let raw = proxy_setting_file(env)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    match raw.lines().find_map(|l| l.trim().strip_prefix("bypass")) {
+        Some(list) => list
+            .split(',')
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+            .collect(),
+        None => DEFAULT_PROXY_BYPASS.iter().map(|h| h.to_string()).collect(),
+    }
+}
+
+/// Trim, lowercase, drop blanks and repeats; reject anything NO_PROXY cannot
+/// express as a host or domain suffix (schemes, ports, paths, wildcards).
+fn normalize_proxy_bypass(hosts: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in hosts {
+        let host = raw.trim().trim_start_matches('.').to_ascii_lowercase();
+        if host.is_empty() {
+            continue;
+        }
+        let ok = host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            && !host.starts_with('-')
+            && !host.contains("..");
+        if !ok {
+            return Err(format!("not a host name: {raw} (write e.g. deepseek.com)"));
+        }
+        if !out.contains(&host) {
+            out.push(host);
+        }
+    }
+    Ok(out)
 }
 
 /// Accept `http://` or `https://` with a host:port. Not SOCKS: the Bun inside
@@ -1340,10 +1402,14 @@ fn validate_proxy_url(url: &str) -> Result<(), String> {
 /// env. Verified live with xAI OAuth (#9): the proxied browser delivers the
 /// code, then the sidecar's token exchange to auth.x.ai hangs without a proxy
 /// and succeeds with one.
-fn resolve_proxy_env(mode: &str, url: &str) -> Vec<(&'static str, String)> {
+fn resolve_proxy_env(mode: &str, url: &str, bypass: &[String]) -> Vec<(&'static str, String)> {
     // Loopback traffic (the sidecar's own API, provider OAuth callback
-    // servers) must never route through a proxy.
+    // servers) must never route through a proxy; the user's bypass list joins it.
     const NO_PROXY_LOOPBACK: &str = "localhost,127.0.0.1,::1";
+    let direct = std::iter::once(NO_PROXY_LOOPBACK.to_string())
+        .chain(bypass.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(",");
     match mode {
         "none" => vec![
             ("HTTP_PROXY", String::new()),
@@ -1356,18 +1422,27 @@ fn resolve_proxy_env(mode: &str, url: &str) -> Vec<(&'static str, String)> {
         "custom" => vec![
             ("HTTP_PROXY", url.to_string()),
             ("HTTPS_PROXY", url.to_string()),
-            ("NO_PROXY", NO_PROXY_LOOPBACK.to_string()),
+            ("NO_PROXY", direct),
         ],
         _ => {
             if ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
                 .iter()
                 .any(|k| std::env::var_os(k).is_some())
             {
-                return Vec::new();
+                // A terminal launch keeps its own proxy; the bypass list is
+                // added to whatever NO_PROXY it brought (Bun also reads no_proxy).
+                let inherited = std::env::var("NO_PROXY").unwrap_or_default();
+                let no_proxy = [inherited.as_str(), direct.as_str()]
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(",");
+                return vec![("NO_PROXY", no_proxy)];
             }
             match crate::system_proxy::detect() {
                 Some(sys) => {
-                    let no_proxy = std::iter::once(NO_PROXY_LOOPBACK.to_string())
+                    let no_proxy = std::iter::once(direct)
                         .chain(sys.bypass)
                         .collect::<Vec<_>>()
                         .join(",");
@@ -1447,7 +1522,7 @@ fn validate_mirror_url(url: &str) -> Result<(), String> {
 /// `UV_PYTHON_INSTALL_MIRROR` from its environment.
 pub fn uv_network_env(env: &Env) -> Vec<(&'static str, String)> {
     let (mode, url) = read_proxy_setting(env);
-    let mut vars = resolve_proxy_env(&mode, &url);
+    let mut vars = resolve_proxy_env(&mode, &url, &read_proxy_bypass(env));
     let (pypi, python) = read_mirror_setting(env);
     if !pypi.is_empty() {
         vars.push(("UV_DEFAULT_INDEX", pypi));
@@ -1464,7 +1539,7 @@ pub fn uv_network_env(env: &Env) -> Vec<(&'static str, String)> {
 /// mirror vars that only uv understands.
 pub fn sidecar_proxy_env(env: &Env) -> Vec<(&'static str, String)> {
     let (mode, url) = read_proxy_setting(env);
-    resolve_proxy_env(&mode, &url)
+    resolve_proxy_env(&mode, &url, &read_proxy_bypass(env))
 }
 
 /// One-time upgrade cleanup for connector configs created before the app gave
@@ -1680,7 +1755,7 @@ fn spawn_sidecar(env: &Env, port: u16, generation: u64) -> Result<Child, String>
     // Apply the network-proxy setting so provider logins and API calls work
     // where direct connections are blocked (see resolve_proxy_env).
     let (proxy_mode, proxy_url) = read_proxy_setting(env);
-    for (k, v) in resolve_proxy_env(&proxy_mode, &proxy_url) {
+    for (k, v) in resolve_proxy_env(&proxy_mode, &proxy_url, &read_proxy_bypass(env)) {
         cmd.env(k, v);
     }
     *SIDECAR_PROXY.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -2175,6 +2250,7 @@ mod tests {
         auth_has_provider, dependency_pins, deploy_goal_plugin_dependencies,
         package_dependency_version, OPENCODE_PLUGIN_PACKAGE,
         base_workspace_dir, ensure_base_layout, prune_stale_skills, random_hex, remove_key_from_config,
+        normalize_proxy_bypass, proxy_setting_file, read_proxy_bypass, read_proxy_setting,
         resolve_proxy_env, set_workspace_base, skill_name_from_markdown, sync_skill_pack,
         validate_proxy_url, workspace_dir,
         workspace_skill_dirs,
@@ -2743,13 +2819,47 @@ mod tests {
 
     #[test]
     fn proxy_env_modes() {
-        let none = resolve_proxy_env("none", "");
+        let none = resolve_proxy_env("none", "", &[]);
         assert!(none.iter().any(|(k, v)| *k == "NO_PROXY" && v == "*"));
         assert!(none.iter().any(|(k, v)| *k == "HTTPS_PROXY" && v.is_empty()));
 
-        let custom = resolve_proxy_env("custom", "http://127.0.0.1:7890");
+        let custom = resolve_proxy_env("custom", "http://127.0.0.1:7890", &["deepseek.com".into()]);
         assert!(custom.iter().any(|(k, v)| *k == "HTTPS_PROXY" && v == "http://127.0.0.1:7890"));
-        assert!(custom.iter().any(|(k, v)| *k == "NO_PROXY" && v.contains("127.0.0.1")));
+        assert!(custom
+            .iter()
+            .any(|(k, v)| *k == "NO_PROXY" && v == "localhost,127.0.0.1,::1,deepseek.com"));
+    }
+
+    #[test]
+    fn proxy_bypass_normalizes_and_rejects_what_no_proxy_cannot_say() {
+        let got = normalize_proxy_bypass(&[
+            " DeepSeek.com ".into(),
+            ".moonshot.cn".into(),
+            "".into(),
+            "deepseek.com".into(),
+            "10.0.0.5".into(),
+        ])
+        .unwrap();
+        assert_eq!(got, vec!["deepseek.com", "moonshot.cn", "10.0.0.5"]);
+        for bad in ["https://api.deepseek.com", "api.deepseek.com:443", "*.cn", "a b", "a/b", "a..b"] {
+            assert!(normalize_proxy_bypass(&[bad.into()]).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn proxy_bypass_defaults_until_saved_and_survives_clearing() {
+        let dir = std::env::temp_dir().join(format!("os-proxy-bypass-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let env = crate::env::Env::new(dir.clone(), dir.join("res"), None, "0.0.0".into());
+        assert!(read_proxy_bypass(&env).contains(&"deepseek.com".to_string()));
+        let path = proxy_setting_file(&env).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "custom http://127.0.0.1:1087\nbypass ").unwrap();
+        assert!(read_proxy_bypass(&env).is_empty(), "a cleared list stays cleared");
+        assert_eq!(read_proxy_setting(&env), ("custom".into(), "http://127.0.0.1:1087".into()));
+        fs::write(&path, "custom http://127.0.0.1:1087").unwrap(); // saved before this setting existed
+        assert!(read_proxy_bypass(&env).contains(&"deepseek.com".to_string()));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3573,16 +3683,19 @@ pub fn get_proxy_setting(env: &Env) -> Result<serde_json::Value, String> {
         "mode": mode,
         "url": url,
         "effective": effective,
+        "bypass": read_proxy_bypass(env),
         "restartNeeded": restart_needed,
     }))
 }
 
-/// Persist the proxy setting ("system" | "custom" | "none", url for custom)
-/// and restart the sidecar so its network env takes effect.
+/// Persist the proxy setting ("system" | "custom" | "none", url for custom,
+/// hosts that always connect directly) and restart the sidecar so its network
+/// env takes effect.
 pub fn set_proxy_setting(
     env: &Env,
     mode: String,
     url: String,
+    bypass: Vec<String>,
 ) -> Result<String, String> {
     let line = match mode.as_str() {
         "system" => "system".to_string(),
@@ -3594,11 +3707,12 @@ pub fn set_proxy_setting(
         }
         other => return Err(format!("unknown proxy mode: {other}")),
     };
+    let bypass = normalize_proxy_bypass(&bypass)?;
     let path = proxy_setting_file(env)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&path, line).map_err(|e| e.to_string())?;
+    std::fs::write(&path, format!("{line}\nbypass {}", bypass.join(","))).map_err(|e| e.to_string())?;
 
     // Same restart flow as set_approval_mode: the env only applies at spawn.
     Ok(restart_sidecar_if_running(env)?

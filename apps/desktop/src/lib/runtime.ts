@@ -344,7 +344,7 @@ interface RuntimeState {
   /** Persist a new approval mode (restarts the sidecar) and reconnect. */
   setApprovalMode: (mode: ApprovalMode) => Promise<void>;
   /** Persist the network-proxy setting (restarts the sidecar) and reconnect. */
-  setProxySetting: (mode: ProxyMode, url: string) => Promise<void>;
+  setProxySetting: (mode: ProxyMode, url: string, bypass: string[]) => Promise<void>;
   tools: ToolStatus[];
   hiddenExamples: string[];
   error: string | null;
@@ -3033,11 +3033,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     }
   },
 
-  setProxySetting: async (mode, url) => {
+  setProxySetting: async (mode, url, bypass) => {
     // Same masked restart as setApprovalMode: the proxy env applies at spawn.
     set({ switching: true });
     try {
-      await persistProxySetting(mode, url); // persists; restarts the sidecar
+      await persistProxySetting(mode, url, bypass); // persists; restarts the sidecar
       await get().connectRetry();
     } finally {
       set({ switching: false });

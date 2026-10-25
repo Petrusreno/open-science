@@ -415,17 +415,21 @@ export function SettingsPage() {
   // Network proxy for the sidecar (follow system / custom / direct).
   const [proxy, setProxy] = useState<ProxySetting | null>(null);
   const [proxyUrlInput, setProxyUrlInput] = useState("");
+  const [bypassInput, setBypassInput] = useState("");
   const refreshProxy = useCallback(() => {
     void getProxySetting().then((p) => {
       setProxy(p);
-      if (p) setProxyUrlInput(p.url);
+      if (p) {
+        setProxyUrlInput(p.url);
+        setBypassInput(p.bypass.join("\n"));
+      }
     });
   }, []);
   useEffect(refreshProxy, [refreshProxy]);
 
-  const applyProxy = (mode: ProxyMode, url: string) =>
+  const applyProxy = (mode: ProxyMode, url: string, bypass = proxy?.bypass ?? []) =>
     run(t("toast.couldNotSetProxy"), async () => {
-      await useRuntimeStore.getState().setProxySetting(mode, url);
+      await useRuntimeStore.getState().setProxySetting(mode, url, bypass);
       refreshProxy();
       toast.success(t("toast.proxyApplied"));
     });
@@ -440,6 +444,9 @@ export function SettingsPage() {
     }
     void applyProxy(mode, "");
   };
+  // One host per line (commas and spaces also separate); the runtime validates.
+  const bypassHosts = bypassInput.split(/[\s,]+/).filter(Boolean);
+  const bypassChanged = proxy !== null && bypassHosts.join(",") !== proxy.bypass.join(",");
   // HTTP(S) only: the Bun inside OpenCode fails every fetch on a SOCKS proxy.
   const validProxyUrl = /^https?:\/\/\S+:\d+\/?$/i.test(proxyUrlInput.trim());
 
@@ -1026,6 +1033,28 @@ export function SettingsPage() {
                       <Check size={13} /> {t("common:actions.save")}
                     </button>
                   </div>
+                )}
+                {proxy.mode !== "none" && (
+                  <label className="mt-2.5 block">
+                    <span className="mb-1 block text-xs text-muted">{t("runtime.proxyBypassLabel")}</span>
+                    <textarea
+                      value={bypassInput}
+                      onChange={(e) => setBypassInput(e.target.value)}
+                      rows={4}
+                      spellCheck={false}
+                      className={inputCls("w-full resize-y font-mono")}
+                    />
+                    <span className="mt-1 flex items-center gap-2">
+                      <span className="flex-1 text-xs text-muted">{t("runtime.proxyBypassHint")}</span>
+                      <button
+                        className={btnAccent()}
+                        onClick={() => void applyProxy(proxy.mode, proxy.url, bypassHosts)}
+                        disabled={busy || !bypassChanged}
+                      >
+                        <Check size={13} /> {t("common:actions.save")}
+                      </button>
+                    </span>
+                  </label>
                 )}
               </Row>
             )}

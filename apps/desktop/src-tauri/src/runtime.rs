@@ -328,8 +328,13 @@ pub fn get_proxy_setting(app: AppHandle) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command(async)]
-pub fn set_proxy_setting(app: AppHandle, mode: String, url: String) -> Result<String, String> {
-    osd_core::runtime::set_proxy_setting(&env_of(&app), mode, url)
+pub fn set_proxy_setting(
+    app: AppHandle,
+    mode: String,
+    url: String,
+    bypass: Vec<String>,
+) -> Result<String, String> {
+    osd_core::runtime::set_proxy_setting(&env_of(&app), mode, url, bypass)
 }
 
 #[tauri::command]

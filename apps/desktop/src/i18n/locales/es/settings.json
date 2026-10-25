@@ -62,6 +62,8 @@
     "proxySocksUnsupported": "{{url}} es un proxy SOCKS, que el entorno del agente no puede usar: todas las conexiones fallarían. Usa el puerto HTTP de tu proxy (Clash: el puerto mixto, p. ej. http://127.0.0.1:7890).",
     "proxyRestartNeeded": "El proxy del sistema cambió después de iniciar el entorno, que sigue usando la ruta anterior. Aplicar reinicia el entorno; las tareas en curso se detendrán.",
     "proxyApply": "Aplicar",
+    "proxyBypassLabel": "Conectar siempre directamente",
+    "proxyBypassHint": "Un host por línea, subdominios incluidos. Por defecto, los proveedores de modelos de China continental, que van lentos tras un proxy extranjero. Guardar reinicia el entorno de ejecución: las tareas en curso se detendrán.",
     "proxyNoneDetected": "No se detectó proxy del sistema: las conexiones van directas.",
     "mirrorTitle": "Réplicas de paquetes",
     "mirrorPypi": "Índice PyPI",

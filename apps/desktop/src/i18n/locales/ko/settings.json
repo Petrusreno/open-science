@@ -62,6 +62,8 @@
     "proxySocksUnsupported": "{{url}}은(는) SOCKS 프록시라 에이전트 런타임에서 사용할 수 없습니다 — 모든 연결이 실패합니다. 프록시의 HTTP 포트를 사용하세요(Clash는 mixed 포트, 예: http://127.0.0.1:7890).",
     "proxyRestartNeeded": "런타임이 시작된 뒤 시스템 프록시가 바뀌었지만 런타임은 아직 이전 경로를 씁니다. 적용하면 런타임이 다시 시작되고 실행 중인 작업은 중단됩니다.",
     "proxyApply": "적용",
+    "proxyBypassLabel": "항상 직접 연결할 호스트",
+    "proxyBypassHint": "한 줄에 하나, 하위 도메인 포함. 기본값은 중국 본토 모델 제공업체로, 해외 프록시를 거치면 느려집니다. 저장하면 런타임이 다시 시작되어 실행 중인 작업이 중지됩니다.",
     "proxyNoneDetected": "시스템 프록시가 감지되지 않음 — 직접 연결됩니다.",
     "mirrorTitle": "패키지 미러",
     "mirrorPypi": "PyPI 인덱스",

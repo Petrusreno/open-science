@@ -306,6 +306,9 @@ export interface ProxySetting {
   url: string;
   /** The proxy the sidecar would use right now; null ⇒ direct. */
   effective: string | null;
+  /** Hosts (domain suffixes) that always connect directly — by default the
+   *  mainland-China model providers, which are slow behind an overseas proxy. */
+  bypass: string[];
   /** The running sidecar was started with a different proxy than `effective`
    *  (the system proxy changed since); re-applying the setting restarts it. */
   restartNeeded: boolean;
@@ -319,10 +322,10 @@ export async function getProxySetting(): Promise<ProxySetting | null> {
 }
 
 /** Persist the proxy setting; the sidecar restarts — the caller must reconnect. */
-export async function setProxySetting(mode: ProxyMode, url: string): Promise<void> {
+export async function setProxySetting(mode: ProxyMode, url: string, bypass: string[]): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_proxy_setting", { mode, url });
+  await invoke("set_proxy_setting", { mode, url, bypass });
 }
 
 /** Remote Access gateway — one authenticated API for CLI / LAN web / tunnel.

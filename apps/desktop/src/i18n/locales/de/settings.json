@@ -62,6 +62,8 @@
     "proxySocksUnsupported": "{{url}} ist ein SOCKS-Proxy, den die Agent-Laufzeit nicht nutzen kann – jede Verbindung würde fehlschlagen. Verwende stattdessen den HTTP-Port deines Proxys (Clash: der Mixed-Port, z. B. http://127.0.0.1:7890).",
     "proxyRestartNeeded": "Der System-Proxy hat sich seit dem Start der Laufzeit geändert; sie nutzt noch den alten Weg. Übernehmen startet die Laufzeit neu – laufende Aufgaben werden beendet.",
     "proxyApply": "Übernehmen",
+    "proxyBypassLabel": "Immer direkt verbinden",
+    "proxyBypassHint": "Ein Host pro Zeile, Subdomains eingeschlossen. Standard sind Modellanbieter in Festlandchina, die über einen ausländischen Proxy langsam sind. Speichern startet die Laufzeit neu – laufende Aufgaben werden beendet.",
     "proxyNoneDetected": "Kein System-Proxy erkannt — Verbindungen erfolgen direkt.",
     "mirrorTitle": "Paket-Spiegel",
     "mirrorPypi": "PyPI-Index",
