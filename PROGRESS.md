@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-26 08:40 · v0.7.0 published (tag at 9988dc3, 15 assets; both macOS DMGs and their apps verified Notarized Developer ID, archs and version correct; Windows upgrade tested on a real machine). Zenodo v0.7.0 DOI 10.5281/zenodo.23669652 written to CITATION.cff and the 7 README BibTeX blocks; News updated in all seven READMEs.
+
 2026-10-26 06:30 · fix(links): the 05:40 fix missed Claude Code's resumed sessions, which skip the spaces between words with cursor moves, leaving an empty unstyled cell inside the path. A styled run now continues over empty cells, and at a TUI break both joins (with and without a space) are tried. Replaying the captured resume output of the real session yields the link; vitest 1884 green.
 
 2026-10-26 05:40 · fix(links): a highlighted path with spaces in a terminal is a link. Paths were found by shape and a space ended the shape, so Claude Code's `.../dmg/Open Science_0.7.0_aarch64.dmg` was never clickable. As in VS Code, each styled run (Claude Code's inline code) is also tried whole and kept only if it exists on disk; a word wrap at a styled space is read back with the space. Replaying Claude Code's raw output through xterm yields the full path in both wrap cases; vitest 1881 green.
