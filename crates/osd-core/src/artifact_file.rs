@@ -1,6 +1,6 @@
 // Read/open files the agent produced in the workspace, for artifact previews.
 // Strictly sandboxed to the workspace root: a path that escapes it is rejected.
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use crate::env::Env;
 
 use crate::runtime::workspace_dir;
@@ -169,9 +169,11 @@ const SEARCH_MAX_ENTRIES: usize = 10_000;
 const SEARCH_MAX_DEPTH: usize = 8;
 
 /// Locate `rel` under `root`: the literal path when it exists, otherwise the
-/// workspace file with the same basename (newest mtime when several match).
+/// workspace file whose path ends with `rel` (newest mtime when several match).
 /// Agent messages often name a file without its directory ("index.html" for
-/// "canvas-project/index.html"), so a bare name must still resolve.
+/// "canvas-project/index.html"), so a bare name must still resolve. Directories
+/// that were written must match: "pkg/README.md" never resolves to another
+/// README.md. Absolute paths and `..` are only taken literally.
 /// Returns a root-relative path with `/` separators, or None.
 pub fn locate_under(root: &Path, rel: &str) -> Option<String> {
     let canon_root = root.canonicalize().ok()?;
@@ -188,7 +190,16 @@ pub fn locate_under(root: &Path, rel: &str) -> Option<String> {
             return Some(parts.join("/"));
         }
     }
-    let name = Path::new(rel).file_name()?.to_os_string();
+    let mut want = Vec::new();
+    for c in Path::new(rel).components() {
+        match c {
+            Component::Normal(s) => want.push(s.to_os_string()),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    let name = want.last()?.clone();
+    let suffix: PathBuf = want.iter().collect();
     let root = canon_root;
     let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
     let mut stack = vec![(root.clone(), 0usize)];
@@ -212,7 +223,10 @@ pub fn locate_under(root: &Path, rel: &str) -> Option<String> {
                 if depth < SEARCH_MAX_DEPTH {
                     stack.push((entry.path(), depth + 1));
                 }
-            } else if ft.is_file() && fname == name {
+            } else if ft.is_file()
+                && fname == name
+                && entry.path().strip_prefix(&root).is_ok_and(|r| r.ends_with(&suffix))
+            {
                 let mtime = entry
                     .metadata()
                     .and_then(|m| m.modified())
@@ -1044,6 +1058,16 @@ mod tests {
         assert_eq!(locate_under(&root, "dep.html"), None);
         assert_eq!(locate_under(&root, "missing.pdf"), None);
         assert_eq!(locate_under(&root, "../../etc/hosts"), None);
+        // Directories that were written must match: a path from another repo
+        // never lands on a same-named file here; a shorter tail still resolves.
+        assert_eq!(locate_under(&root, "other/repo/index.html"), None);
+        assert_eq!(locate_under(&root, "/elsewhere/index.html"), None);
+        std::fs::create_dir_all(root.join("site/proj")).unwrap();
+        std::fs::write(root.join("site/proj/about.html"), b"x").unwrap();
+        assert_eq!(
+            locate_under(&root, "proj/about.html").as_deref(),
+            Some("site/proj/about.html")
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
