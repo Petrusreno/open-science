@@ -412,6 +412,10 @@ interface RuntimeState {
   bootstrap: () => Promise<void>;
   disconnect: () => void;
   refreshSessions: () => Promise<void>;
+  /** Of `ids`, the sessions the runtime confirms deleted. A lookup that fails
+   *  (runtime starting, timeout) counts as still there: dropping a pane on a
+   *  guess is what emptied restored Screens on relaunch. */
+  findDeletedSessions: (ids: string[]) => Promise<Set<string>>;
   startDraft: () => void;
   /** Blank the draft view WITHOUT unpinning the folder the next session
    *  will be created in — only an explicit New may do that (#69). */
@@ -4125,6 +4129,23 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     } catch {
       /* ignore transient list failures */
     }
+  },
+
+  findDeletedSessions: async (ids) => {
+    const gone = new Set<string>();
+    const c = client;
+    if (!c) return gone;
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          if (!(await c.sessionExists(id))) gone.add(id);
+        } catch {
+          /* unknown → keep */
+        }
+      }),
+    );
+    if (gone.size > 0) void logDebug(`panes closed, sessions deleted: ${[...gone].join(" ")}`);
+    return gone;
   },
 
   // "New" opens a blank draft — no session is created until the first message (#3).

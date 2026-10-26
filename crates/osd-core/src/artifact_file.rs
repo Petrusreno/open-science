@@ -32,6 +32,9 @@ pub fn mime_for(ext: &str) -> (&'static str, bool) {
         "jpg" | "jpeg" => ("image/jpeg", false),
         "gif" => ("image/gif", false),
         "webp" => ("image/webp", false),
+        "ico" => ("image/x-icon", false),
+        "woff" => ("font/woff", false),
+        "woff2" => ("font/woff2", false),
         "html" | "htm" => ("text/html", true),
         "svg" => ("image/svg+xml", true),
         "csv" => ("text/csv", true),
@@ -41,7 +44,13 @@ pub fn mime_for(ext: &str) -> (&'static str, bool) {
         "json" => ("application/json", true),
         "ipynb" => ("application/x-ipynb+json", true),
         "yaml" | "yml" => ("text/yaml", true),
-        "js" | "ts" | "sh" | "toml" | "log" => ("text/plain", true),
+        // A served HTML preview loads its own stylesheets and scripts, and the
+        // preview server sends `nosniff`: under it the webview refuses a
+        // stylesheet that is not text/css and a script that is not a JavaScript
+        // type, so the page renders bare (unstyled, no interactivity).
+        "css" => ("text/css", true),
+        "js" | "mjs" => ("text/javascript", true),
+        "ts" | "sh" | "toml" | "log" => ("text/plain", true),
         "py" => ("text/x-python", true),
         "r" => ("text/x-r", true),
         // Molecular structure formats — all plain text, rendered in 3D by the

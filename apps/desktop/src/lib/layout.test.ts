@@ -182,6 +182,13 @@ describe("layout store — groups", () => {
     });
   });
 
+  it("pruneSessions closes only panes whose session is confirmed gone", () => {
+    S().openInNewGroup("B");
+    S().pruneSessions(new Set(["A"]));
+    // B was never confirmed deleted: missing from a recent list is not enough.
+    expect(S().groups.map((g) => g.tree && leaves(g.tree).map((l) => l.sessionId))).toEqual([null, ["B"]]);
+  });
+
   it("addGroup creates an empty active group; the old one is untouched", () => {
     const id = S().addGroup();
     expect(S().activeGroupId).toBe(id);

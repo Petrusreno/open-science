@@ -648,6 +648,16 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     return { sessions, nextCursor };
   }
 
+  async sessionExists(sessionId: string): Promise<boolean> {
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}`,
+      { headers: this.headers() },
+    );
+    if (res.status === 404) return false;
+    if (!res.ok) throw await this.apiError(res, "Failed to read the session");
+    return true;
+  }
+
   /** Archive a conversation (or restore it with `false`). Recorded in the
    *  session's `metadata`, preserving anything else stored there. */
   async setSessionArchived(sessionId: string, archived: boolean): Promise<void> {

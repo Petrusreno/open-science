@@ -360,6 +360,11 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
    * A listing failure falls back to the local sessions rather than emptying the
    * sidebar — a transient RPC error must not read as "your history is gone".
    */
+  /** ACP has no single-session lookup; its listing pages through everything. */
+  async sessionExists(sessionId: string): Promise<boolean> {
+    return (await this.listSessions()).some((s) => s.id === sessionId);
+  }
+
   async listSessions(): Promise<SessionMeta[]> {
     const local = (): SessionMeta[] =>
       [...this.sessions.entries()].map(([id, s]) => ({ id, title: s.title, directory: s.cwd }));

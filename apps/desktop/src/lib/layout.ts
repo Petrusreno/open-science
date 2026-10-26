@@ -756,9 +756,10 @@ interface LayoutState {
   /** Replace every Screen with `layout` — a signed-in web account's own,
    *  kept on the desktop. */
   adoptLayout: (layout: Persisted) => void;
-  /** Drop leaves whose session vanished (deleted / not in `valid`), collapsing
-   *  toward a single pane. A null-session (draft) leaf is always kept. */
-  pruneSessions: (valid: Set<string>) => void;
+  /** Drop leaves whose session was deleted (`gone`), collapsing toward a single
+   *  pane. Only confirmed deletions: a session missing from the sidebar's list
+   *  is not one (see `findDeletedSessions`). */
+  pruneSessions: (gone: Set<string>) => void;
 }
 
 export const useLayoutStore = create<LayoutState>((set, get) => {
@@ -1383,12 +1384,12 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       const r = makeLeaf(sessionId);
       commitActive({ tree: r, focusedLeafId: r.id, zoomedLeafId: null });
     },
-    pruneSessions: (valid) =>
+    pruneSessions: (gone) =>
       // Prune EVERY group, not just the active one — a deleted session must not
       // linger in a background group's pane. A still-valid zoomed/focused leaf
       // is preserved; only removed leaves reset those.
       set((s) => {
-        const live = (l: { sessionId: string | null }) => l.sessionId === null || valid.has(l.sessionId);
+        const live = (l: { sessionId: string | null }) => l.sessionId === null || !gone.has(l.sessionId);
         let changed = false;
         const groups = s.groups.map((g) => {
           if (!g.tree) return g;

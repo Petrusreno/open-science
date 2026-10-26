@@ -330,7 +330,6 @@
     "via": "· via {{tool}}",
     "open": "Open",
     "maximize": "Maximize",
-    "close": "Close",
     "collapse": "Collapse",
     "expand": "Expand"
   },
