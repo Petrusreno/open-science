@@ -7,6 +7,7 @@ const { openExternalMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/tauri", () => ({
+  isTauri: false,
   openExternal: openExternalMock,
 }));
 

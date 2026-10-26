@@ -14,10 +14,18 @@
  * - macOS, Cmd+← / Cmd+→ / Cmd+Backspace → start of line / end of line /
  *   delete to start (^A, ^E, ^U), as in any macOS text field and VS Code's
  *   terminal. xterm sends nothing for them.
+ * - A modifier pressed on its own (⌘, Ctrl, Shift, Option, Caps Lock, Fn) never
+ *   reaches xterm. It sends nothing, but with an input method on (Sogou,
+ *   macOS Pinyin) WebKit reports it as an IME key (keyCode 229), which xterm
+ *   treats as typing and scrolls to the bottom: pressing ⌘ to click a link or
+ *   Ctrl on the way to Ctrl+O threw away the user's place in the scrollback.
+ *   Matched on `code`, the physical key, since an IME key's `key` is unreliable.
  *
  * Everything else is left to xterm, which already encodes Option+←/→/⌫,
  * Option+Enter, Shift+Tab and the Ctrl keys the way a native terminal does.
  */
+
+const MODIFIER_CODE = /^(?:(?:Meta|OS|Control|Shift|Alt)(?:Left|Right)|CapsLock|Fn|FnLock)$/;
 
 const META_PUNCTUATION: Record<string, string> = {
   Period: ".",
@@ -49,12 +57,10 @@ export function createKeyTranslator(isMac: boolean) {
   // Which Option is down is only told by the Option key's own event.
   let leftOption = false;
   return (event: KeyboardEvent): string | false | null => {
-    if (event.code === "AltLeft") {
-      leftOption = event.type === "keydown";
-      return null;
-    }
+    if (event.code === "AltLeft") leftOption = event.type === "keydown";
     // A window that lost focus with the key held never sees its keyup.
-    if (!event.altKey) leftOption = false;
+    else if (!event.altKey) leftOption = false;
+    if (MODIFIER_CODE.test(event.code)) return event.type === "keydown" ? false : null;
 
     const data = translate(event);
     if (data === null) return null;

@@ -38,6 +38,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         ("screen", "show") => crate::screens::screen_show(args),
         ("term", "read") => crate::screens::term_read(args),
         ("term", "send") => crate::screens::term_send(args),
+        ("term", "key") => crate::screens::term_key(args),
         ("audit", _) => crate::screens::audit(args),
         ("project", "ls") | ("project", "list") => projects(args),
         ("project", "new") | ("project", "create") => new_project(args),
@@ -297,7 +298,7 @@ fn wait_for_reply(
         let messages = status["messages"].as_u64().unwrap_or(0) as usize;
         ever_worked |= state == "working";
         if let Some(err) = status.get("lastError").filter(|e| !e.is_null()) {
-            return Err(format!("the turn failed: {err}"));
+            return Err(turn_failed(err));
         }
         if state == "idle" && messages > before && status["lastRole"].as_str() == Some("assistant")
         {
@@ -446,7 +447,7 @@ fn session_wait(args: &Args) -> Result<(), String> {
     loop {
         let status = client.get(&format!("/v1/sessions/{session}/status"))?;
         if let Some(err) = status.get("lastError").filter(|e| !e.is_null()) {
-            return Err(format!("the turn failed: {err}"));
+            return Err(turn_failed(err));
         }
         // A message just sent reads as idle until its turn starts: the last
         // word is still the user's. Give it the time a turn takes to start
@@ -1025,9 +1026,55 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+
+/// A failed turn, said plainly: the provider's own message rather than the whole
+/// error object, and the next step when the model itself is what failed (it was
+/// retired or renamed), since every later turn on it fails the same way.
+fn turn_failed(err: &Value) -> String {
+    let message = err["data"]["message"]
+        .as_str()
+        .or_else(|| err["message"].as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| err.to_string());
+    let text = err.to_string().to_ascii_lowercase();
+    let model_gone = text.contains("model")
+        && ["deprecated", "not supported", "not found", "no longer"]
+            .iter()
+            .any(|p| text.contains(p));
+    if model_gone {
+        format!(
+            "the turn failed: {message}\nThat model is no longer served. Pick another with \
+             `osd model ls`, then `osd model set <provider/model>` (or `--model` on this send)."
+        )
+    } else {
+        format!("the turn failed: {message}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_turn_shows_the_providers_message() {
+        let err = json!({"name": "APIError", "data": {"message": "Rate limit reached", "statusCode": 429}});
+        assert_eq!(turn_failed(&err), "the turn failed: Rate limit reached");
+        assert_eq!(turn_failed(&json!("boom")), "the turn failed: \"boom\"");
+    }
+
+    #[test]
+    fn a_retired_model_says_how_to_pick_another() {
+        // The shape OpenCode Zen returned for a retired free model (410).
+        let err = json!({"name": "APIError", "data": {
+            "message": "Model longcat-2.5-preview-free has been deprecated.",
+            "statusCode": 410,
+        }});
+        let out = turn_failed(&err);
+        assert!(out.starts_with("the turn failed: Model longcat-2.5-preview-free has been deprecated."));
+        assert!(out.contains("osd model set"), "{out}");
+        let unsupported = json!({"data": {"message": "Model ling-3.0-flash-free is not supported"}});
+        assert!(turn_failed(&unsupported).contains("osd model ls"));
+    }
 
     #[test]
     fn the_answer_is_the_last_assistant_text_not_the_last_message() {

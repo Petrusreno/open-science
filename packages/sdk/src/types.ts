@@ -442,6 +442,10 @@ export interface ProviderModelInfo {
    *  provider directly (the app does, for OpenCode Zen). Undefined means
    *  nobody knows, which every consumer must read as available. */
   available?: boolean;
+  /** True when the catalog prices both input and output at zero (Zen's free
+   *  tier, a local model). Undefined when the catalog gives no price, which
+   *  every consumer must read as "not known to be free". */
+  free?: boolean;
 }
 
 /** A provider OpenCode can use right now (auth present or public). */

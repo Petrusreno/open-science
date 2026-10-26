@@ -613,7 +613,9 @@ export function ModelPicker({
       {/* Chip trigger */}
       <button
         aria-label={t("composer.model.aria")}
-        title={t("composer.model.title")}
+        // A retired model fails every turn: say so on the chip, where it shows
+        // without opening the picker, not only inside it.
+        title={currentRetired ? t("composer.model.retiredTitle") : t("composer.model.title")}
         aria-haspopup="dialog"
         aria-expanded={open}
         className={cn(
@@ -624,6 +626,8 @@ export function ModelPicker({
       >
         {switching ? (
           <Loader2 size={12} className="shrink-0 animate-spin" />
+        ) : currentRetired ? (
+          <TriangleAlert size={12} className="shrink-0 text-warn" aria-hidden />
         ) : (
           <Cpu size={12} className="shrink-0" />
         )}

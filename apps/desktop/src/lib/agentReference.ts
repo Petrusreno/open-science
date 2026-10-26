@@ -43,7 +43,9 @@ export function terminalReference(t: ReferencedTerminal): string {
   const send = t.agent
     ? `  send and wait for the reply: osd term send ${arg(t.shellId)} "<message>" --wait`
     : `  type a line (it runs): osd term send ${arg(t.shellId)} "<command>"`;
-  return [head, `  read: osd term read ${arg(t.shellId)}`, send].join("\n");
+  // A menu or a dialog (a first run, a trust prompt) takes keys, not text.
+  const keys = `  press keys (menus): osd term key ${arg(t.shellId)} down enter`;
+  return [head, `  read: osd term read ${arg(t.shellId)}`, send, keys].join("\n");
 }
 
 /** One pane's reference, or null for a pane with nothing to talk to (a file

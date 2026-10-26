@@ -24,6 +24,9 @@ describe("linkCandidates", () => {
     expect(looksLikePath("README.md")).toBe(true);
     expect(looksLikePath("1.2.3")).toBe(false);
     expect(cleanPath("a/b.py:40")).toBe("a/b.py");
+    expect(cleanPath("a/b.ts:163-182")).toBe("a/b.ts");
+    expect(cleanPath("a/b.ts:12:3.")).toBe("a/b.ts");
+    expect(cleanPath("a/b.md#L5-L9")).toBe("a/b.md");
   });
 });
 

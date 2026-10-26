@@ -1,6 +1,6 @@
 // Read/open files the agent produced in the workspace, for artifact previews.
 // Strictly sandboxed to the workspace root: a path that escapes it is rejected.
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use crate::env::Env;
 
 use crate::runtime::workspace_dir;
@@ -134,34 +134,76 @@ pub struct LocalPath {
     pub is_dir: bool,
 }
 
-/// Resolve a path as printed in a conversation or a terminal — absolute,
-/// `~/…`, or relative to `cwd` — to an existing file or folder under `home`.
-/// None when it does not exist or lies outside home (nothing to open, so no
-/// link is drawn).
-pub fn locate_local(home: &Path, path: &str, cwd: Option<&str>) -> Option<LocalPath> {
-    let raw = Path::new(path);
-    let joined = if let Some(rest) = path.strip_prefix("~/") {
-        home.join(rest)
-    } else if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        let cwd = Path::new(cwd?);
-        if !cwd.is_absolute() {
-            return None;
-        }
-        cwd.join(raw)
-    };
+/// Resolve a path as printed in a conversation or a terminal to an existing
+/// file or folder under `home`. Absolute and `~/…` paths are taken literally.
+/// A relative one is tried under `cwd`, then against `anchors`: absolute paths
+/// seen in the same context (files the agent read, folders it ran commands
+/// in), most recent first. An anchor that ends with the path is the match;
+/// otherwise the path is tried under the anchor's folder and each folder above
+/// it, short of home itself. Only what exists counts, so a guess never links
+/// to the wrong file. None when nothing is found or it lies outside home.
+pub fn locate_local(home: &Path, path: &str, cwd: Option<&str>, anchors: &[String]) -> Option<LocalPath> {
     let home = home.canonicalize().ok()?;
-    let full = joined.canonicalize().ok()?;
-    let rel = full.strip_prefix(&home).ok()?;
-    let parts: Vec<String> = rel
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    if parts.is_empty() {
-        return None; // home itself: not a useful link
+    let inside = |p: &Path| -> Option<LocalPath> {
+        let full = p.canonicalize().ok()?;
+        let rel = full.strip_prefix(&home).ok()?;
+        let parts: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        if parts.is_empty() {
+            return None; // home itself: not a useful link
+        }
+        Some(LocalPath { rel: parts.join("/"), is_dir: full.is_dir() })
+    };
+    let raw = Path::new(path);
+    if let Some(rest) = path.strip_prefix("~/") {
+        return inside(&home.join(rest));
     }
-    Some(LocalPath { rel: parts.join("/"), is_dir: full.is_dir() })
+    if raw.is_absolute() {
+        return inside(raw);
+    }
+    if let Some(cwd) = cwd.map(Path::new).filter(|c| c.is_absolute()) {
+        if let Some(found) = inside(&cwd.join(raw)) {
+            return Some(found);
+        }
+    }
+    // Against anchors only a plain relative path: no `..`, no drive prefix.
+    if !raw.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+        return None;
+    }
+    let suffix: PathBuf = raw.components().filter(|c| matches!(c, Component::Normal(_))).collect();
+    if suffix.as_os_str().is_empty() {
+        return None;
+    }
+    let mut tried = std::collections::HashSet::new();
+    for anchor in anchors {
+        let anchor = match anchor.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(anchor),
+        };
+        if !anchor.is_absolute() {
+            continue;
+        }
+        // The deepest part of it that still exists, in canonical form.
+        let Some(start) = anchor.ancestors().find_map(|a| a.canonicalize().ok()) else { continue };
+        if start.ends_with(&suffix) {
+            if let Some(found) = inside(&start) {
+                return Some(found);
+            }
+        }
+        let mut dir = if start.is_dir() { Some(start.as_path()) } else { start.parent() };
+        while let Some(d) = dir {
+            if d == home || !d.starts_with(&home) || !tried.insert(d.to_path_buf()) {
+                break; // home is too broad; a folder tried before had its parents tried too
+            }
+            if let Some(found) = inside(&d.join(&suffix)) {
+                return Some(found);
+            }
+            dir = d.parent();
+        }
+    }
+    None
 }
 
 // Bounds for the basename search so a huge workspace can't stall a resolve call.
@@ -169,9 +211,11 @@ const SEARCH_MAX_ENTRIES: usize = 10_000;
 const SEARCH_MAX_DEPTH: usize = 8;
 
 /// Locate `rel` under `root`: the literal path when it exists, otherwise the
-/// workspace file with the same basename (newest mtime when several match).
+/// workspace file whose path ends with `rel` (newest mtime when several match).
 /// Agent messages often name a file without its directory ("index.html" for
-/// "canvas-project/index.html"), so a bare name must still resolve.
+/// "canvas-project/index.html"), so a bare name must still resolve. Directories
+/// that were written must match: "pkg/README.md" never resolves to another
+/// README.md. Absolute paths and `..` are only taken literally.
 /// Returns a root-relative path with `/` separators, or None.
 pub fn locate_under(root: &Path, rel: &str) -> Option<String> {
     let canon_root = root.canonicalize().ok()?;
@@ -188,7 +232,16 @@ pub fn locate_under(root: &Path, rel: &str) -> Option<String> {
             return Some(parts.join("/"));
         }
     }
-    let name = Path::new(rel).file_name()?.to_os_string();
+    let mut want = Vec::new();
+    for c in Path::new(rel).components() {
+        match c {
+            Component::Normal(s) => want.push(s.to_os_string()),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    let name = want.last()?.clone();
+    let suffix: PathBuf = want.iter().collect();
     let root = canon_root;
     let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
     let mut stack = vec![(root.clone(), 0usize)];
@@ -212,7 +265,10 @@ pub fn locate_under(root: &Path, rel: &str) -> Option<String> {
                 if depth < SEARCH_MAX_DEPTH {
                     stack.push((entry.path(), depth + 1));
                 }
-            } else if ft.is_file() && fname == name {
+            } else if ft.is_file()
+                && fname == name
+                && entry.path().strip_prefix(&root).is_ok_and(|r| r.ends_with(&suffix))
+            {
                 let mtime = entry
                     .metadata()
                     .and_then(|m| m.modified())
@@ -769,23 +825,58 @@ mod tests {
         let abs = home.join("repo/src/main.rs");
 
         // Absolute, relative to the terminal's directory, and a folder.
-        assert_eq!(locate_local(&home, abs.to_str().unwrap(), None), file("repo/src/main.rs"));
+        assert_eq!(locate_local(&home, abs.to_str().unwrap(), None, &[]), file("repo/src/main.rs"));
         let cwd = home.join("repo");
-        assert_eq!(locate_local(&home, "src/main.rs", cwd.to_str()), file("repo/src/main.rs"));
+        assert_eq!(locate_local(&home, "src/main.rs", cwd.to_str(), &[]), file("repo/src/main.rs"));
         assert_eq!(
-            locate_local(&home, "src", cwd.to_str()),
+            locate_local(&home, "src", cwd.to_str(), &[]),
             Some(LocalPath { rel: "repo/src".into(), is_dir: true })
         );
         // A relative path with no directory to resolve it against, a missing
         // file, a path escaping home, and home itself: no link.
-        assert_eq!(locate_local(&home, "src/main.rs", None), None);
-        assert_eq!(locate_local(&home, "src/nope.rs", cwd.to_str()), None);
-        assert_eq!(locate_local(&home, "../../..", cwd.to_str()), None);
-        assert_eq!(locate_local(&home, outside.to_str().unwrap(), None), None);
-        assert_eq!(locate_local(&home, home.to_str().unwrap(), None), None);
+        assert_eq!(locate_local(&home, "src/main.rs", None, &[]), None);
+        assert_eq!(locate_local(&home, "src/nope.rs", cwd.to_str(), &[]), None);
+        assert_eq!(locate_local(&home, "../../..", cwd.to_str(), &[]), None);
+        assert_eq!(locate_local(&home, outside.to_str().unwrap(), None, &[]), None);
+        assert_eq!(locate_local(&home, home.to_str().unwrap(), None, &[]), None);
 
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn local_links_resolve_against_anchors() {
+        let home = std::env::temp_dir().join(format!("osd-anchor-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("repo/packages/core/src")).unwrap();
+        std::fs::create_dir_all(home.join("proj")).unwrap();
+        std::fs::create_dir_all(home.join("other/src")).unwrap();
+        std::fs::write(home.join("repo/packages/core/src/agent.ts"), "x").unwrap();
+        std::fs::write(home.join("repo/README.md"), "x").unwrap();
+        std::fs::write(home.join("other/src/agent.ts"), "x").unwrap();
+        let file = |rel: &str| Some(LocalPath { rel: rel.into(), is_dir: false });
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        // The agent read one file of the repo and ran a command in another project.
+        let anchors = vec![s(home.join("repo/README.md")), s(home.join("other"))];
+
+        // A repo path printed relative to the repo root, as an answer writes it.
+        assert_eq!(
+            locate_local(&home, "packages/core/src/agent.ts", None, &anchors),
+            file("repo/packages/core/src/agent.ts")
+        );
+        // A bare name or a short tail: the anchor that ends with it, else the
+        // most recent anchor's folders first.
+        assert_eq!(locate_local(&home, "README.md", None, &anchors), file("repo/README.md"));
+        assert_eq!(locate_local(&home, "src/agent.ts", None, &anchors), file("other/src/agent.ts"));
+        // The cwd wins over anchors; nothing that does not exist; never `..`.
+        let cwd = home.join("repo/packages/core");
+        assert_eq!(locate_local(&home, "src/agent.ts", cwd.to_str(), &anchors), file("repo/packages/core/src/agent.ts"));
+        assert_eq!(locate_local(&home, "packages/nope.ts", None, &anchors), None);
+        assert_eq!(locate_local(&home, "../repo/README.md", None, &anchors), None);
+        // Home itself is never searched: a path only an anchor's folders explain.
+        std::fs::write(home.join("top.md"), "x").unwrap();
+        assert_eq!(locate_local(&home, "top.md", None, &anchors), None);
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -1044,6 +1135,16 @@ mod tests {
         assert_eq!(locate_under(&root, "dep.html"), None);
         assert_eq!(locate_under(&root, "missing.pdf"), None);
         assert_eq!(locate_under(&root, "../../etc/hosts"), None);
+        // Directories that were written must match: a path from another repo
+        // never lands on a same-named file here; a shorter tail still resolves.
+        assert_eq!(locate_under(&root, "other/repo/index.html"), None);
+        assert_eq!(locate_under(&root, "/elsewhere/index.html"), None);
+        std::fs::create_dir_all(root.join("site/proj")).unwrap();
+        std::fs::write(root.join("site/proj/about.html"), b"x").unwrap();
+        assert_eq!(
+            locate_under(&root, "proj/about.html").as_deref(),
+            Some("site/proj/about.html")
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

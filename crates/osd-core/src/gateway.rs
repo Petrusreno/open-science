@@ -265,6 +265,8 @@ pub trait Terminals: Send + Sync {
     /// Recent output, then everything after it. The channel closes when the
     /// shell exits. None for a terminal that is not running.
     fn subscribe(&self, id: &str) -> Option<Receiver<String>>;
+    /// The pane's size as (rows, cols). None when it is not running or not known.
+    fn size(&self, id: &str) -> Option<(u16, u16)>;
 }
 
 /// A build with no web client bundled. Serving still works — `/v1` is a
@@ -2109,7 +2111,8 @@ fn terminal_read(
             break;
         }
     }
-    let text = crate::terminal_read::screen_text(&raw, num("lines", 40, 1000));
+    let (rows, cols) = terminals.size(id).unwrap_or((24, 80));
+    let text = crate::terminal_read::screen_text(&raw, num("lines", 40, 1000), rows, cols);
     respond_json(stream, 200, &serde_json::json!({ "kind": "shell", "text": text }).to_string());
 }
 
@@ -2149,7 +2152,8 @@ fn events(stream: &mut TcpStream, ctx: &Ctx, directory: &str) {
         None => return respond_json(stream, 503, "{\"error\":\"runtime not started\"}"),
     };
     // A dedicated client with NO timeout — an idle event stream must not be cut.
-    let client = match reqwest::blocking::Client::builder().build() {
+    // Never proxied, like `shared_client`: the sidecar is on loopback.
+    let client = match reqwest::blocking::Client::builder().no_proxy().build() {
         Ok(c) => c,
         Err(e) => return respond_json(stream, 502, &err_json(&e.to_string())),
     };
@@ -2360,8 +2364,8 @@ fn mux_events(ctx: &Ctx, key: &str, directory: &str, tx: &Sender<String>, stop: 
         gone();
         return;
     };
-    // No timeout, as for `events`: an idle event stream must not be cut.
-    let Ok(client) = reqwest::blocking::Client::builder().build() else {
+    // No timeout and no proxy, as for `events`.
+    let Ok(client) = reqwest::blocking::Client::builder().no_proxy().build() else {
         gone();
         return;
     };
@@ -2441,10 +2445,15 @@ fn mux_terminal(ctx: &Ctx, key: &str, rx: Receiver<String>, tx: &Sender<String>,
 
 // ---- upstream proxy helpers -------------------------------------------------
 
+/// The client for the sidecar, which is always on loopback. Never proxied: an
+/// app started from a terminal inherits its HTTP(S)_PROXY, and reqwest then
+/// sent every sidecar call through it (a Clash answered each one 502, so every
+/// `osd` command failed while the window worked).
 fn shared_client() -> &'static reqwest::blocking::Client {
     static C: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     C.get_or_init(|| {
         reqwest::blocking::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(120))
             .build()
             .expect("build reqwest client")
@@ -3452,6 +3461,9 @@ mod tests {
             subs.push(tx);
             Some(rx)
         }
+        fn size(&self, _id: &str) -> Option<(u16, u16)> {
+            None
+        }
     }
 
     /// One request against a running gateway; returns (status, body).
@@ -3683,7 +3695,10 @@ mod tests {
     }
 
     /// A gateway context whose base workspace is a throwaway temp dir.
-    #[cfg(unix)]
+    ///
+    /// Not `#[cfg(unix)]`: the helper is portable, and the terminal test below
+    /// uses it on every platform. The ticket tests that first needed it keep
+    /// their own `#[cfg(unix)]` for symlink semantics.
     fn ctx_with_base(name: &str) -> (Ctx, PathBuf) {
         let root = std::env::temp_dir().join(format!("gw-verify-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
