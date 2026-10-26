@@ -10,6 +10,8 @@ export interface ModelOption {
    *  Selectable lists must leave these out; lookups by key must not, or the
    *  model a user already has configured would resolve to nothing. */
   available: boolean;
+  /** True only when the catalog says the model costs nothing. */
+  free: boolean;
 }
 
 export type ModelFilter =
@@ -27,6 +29,7 @@ export function flattenModelOptions(providers: ProviderInfo[]): ModelOption[] {
       modelID: model.id,
       modelName: model.name,
       available: model.available !== false,
+      free: model.free === true,
     })),
   );
 }
@@ -37,19 +40,28 @@ export function selectableModelOptions(options: ModelOption[]): ModelOption[] {
 }
 
 /**
- * Where the configured default model should land after a provider change made
- * it dangling (provider removed, or its models renamed): null when the default
- * is still in the catalog — or nothing is left to fall back to — otherwise the
- * closest valid "provider/model" key: the same provider's first model when the
- * provider survived, else the first model of the first provider.
+ * Where the configured default model should land when it can no longer serve a
+ * turn, or null to leave it as it is.
+ *
+ * - Dangling (provider removed, or its models renamed): the same provider's
+ *   first model when the provider survived, else the first model of the first
+ *   provider.
+ * - Retired but still listed (the provider stopped serving it before the
+ *   catalog caught up): only a free model is re-pointed, and only at a free
+ *   model of the same provider, so the switch can never start costing money.
+ *   A paid one stays, and the picker says it is retired: choosing what to pay
+ *   for is the user's call.
  */
 export function fallbackDefaultModel(providers: ProviderInfo[], defaultModel: string): string | null {
   const options = flattenModelOptions(providers);
-  // A retired model still counts as configured: silently re-pointing it would
-  // change the user's model without asking — onto a paid one, for a provider
-  // like Zen where the free tier is what they chose. The pickers say so and let
-  // them choose. Only a model that has left the catalog entirely is dangling.
-  if (options.some((m) => m.key === defaultModel)) return null;
+  const current = options.find((m) => m.key === defaultModel);
+  if (current) {
+    if (current.available || !current.free) return null;
+    const free = selectableModelOptions(options).find(
+      (m) => m.free && m.providerID === current.providerID,
+    );
+    return free?.key ?? null;
+  }
   const candidates = selectableModelOptions(options);
   if (candidates.length === 0) return null;
   const providerID = defaultModel.split("/")[0];

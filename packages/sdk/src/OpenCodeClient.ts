@@ -949,6 +949,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
             name?: string;
             variants?: Record<string, unknown>;
             limit?: { context?: number };
+            cost?: { input?: number; output?: number };
           }
         >;
       }>;
@@ -963,6 +964,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         // 0 and "absent" mean the same thing here — OpenCode reports an unknown
         // window as 0 — so normalise to 0 and let callers test one value.
         contextLimit: m.limit?.context ?? 0,
+        ...(m.cost ? { free: m.cost.input === 0 && m.cost.output === 0 } : {}),
       })),
     }));
   }
