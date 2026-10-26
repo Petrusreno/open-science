@@ -34,9 +34,14 @@ export function cleanUrl(raw: string): string {
   return raw.replace(/[.,;:!?]+$/, "");
 }
 
-/** A printed path without its `:12:3` position or trailing punctuation. */
+/** A printed path without its position (`:12`, `:12:3`, `:12-30`, `#L12-L30`)
+ *  or trailing punctuation. */
 export function cleanPath(raw: string): string {
-  return raw.replace(/(?::\d+){1,2}$/, "").replace(/[.,;:!?]+$/, "");
+  const bare = raw.replace(/[.,;:!?]+$/, "");
+  return bare
+    .replace(/(?::\d+(?:[-–]\d+)?){1,2}$/, "")
+    .replace(/#L\d+(?:-L?\d+)?$/, "")
+    .replace(/[.,;:!?]+$/, "");
 }
 
 /** Could `text` name a file? A slash, or a name with an extension — not every
