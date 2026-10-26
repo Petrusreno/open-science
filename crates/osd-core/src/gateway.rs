@@ -2149,7 +2149,8 @@ fn events(stream: &mut TcpStream, ctx: &Ctx, directory: &str) {
         None => return respond_json(stream, 503, "{\"error\":\"runtime not started\"}"),
     };
     // A dedicated client with NO timeout — an idle event stream must not be cut.
-    let client = match reqwest::blocking::Client::builder().build() {
+    // Never proxied, like `shared_client`: the sidecar is on loopback.
+    let client = match reqwest::blocking::Client::builder().no_proxy().build() {
         Ok(c) => c,
         Err(e) => return respond_json(stream, 502, &err_json(&e.to_string())),
     };
@@ -2360,8 +2361,8 @@ fn mux_events(ctx: &Ctx, key: &str, directory: &str, tx: &Sender<String>, stop: 
         gone();
         return;
     };
-    // No timeout, as for `events`: an idle event stream must not be cut.
-    let Ok(client) = reqwest::blocking::Client::builder().build() else {
+    // No timeout and no proxy, as for `events`.
+    let Ok(client) = reqwest::blocking::Client::builder().no_proxy().build() else {
         gone();
         return;
     };
@@ -2441,10 +2442,15 @@ fn mux_terminal(ctx: &Ctx, key: &str, rx: Receiver<String>, tx: &Sender<String>,
 
 // ---- upstream proxy helpers -------------------------------------------------
 
+/// The client for the sidecar, which is always on loopback. Never proxied: an
+/// app started from a terminal inherits its HTTP(S)_PROXY, and reqwest then
+/// sent every sidecar call through it (a Clash answered each one 502, so every
+/// `osd` command failed while the window worked).
 fn shared_client() -> &'static reqwest::blocking::Client {
     static C: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     C.get_or_init(|| {
         reqwest::blocking::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(120))
             .build()
             .expect("build reqwest client")

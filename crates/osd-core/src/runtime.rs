@@ -2573,6 +2573,7 @@ mod tests {
         // Serving is the claim, so ask it. The first start deploys skills and
         // profile files, so allow a generous window.
         let client = reqwest::blocking::Client::builder()
+            .no_proxy()
             .timeout(std::time::Duration::from_secs(3))
             .build()
             .unwrap();
