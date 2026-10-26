@@ -384,7 +384,7 @@ Si usas Open Science Desktop en tu investigación, cítalo así:
   author  = {{The Open Science Desktop Contributors}},
   title   = {Open Science Desktop: a local-first, model-agnostic AI research workbench},
   year    = {2026},
-  version = {0.6.0},
+  version = {0.7.0},
   doi     = {10.5281/zenodo.23138229},
   url     = {https://github.com/ai4s-research/open-science},
   license = {MIT}
