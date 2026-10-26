@@ -118,6 +118,7 @@ export function MarkdownViewer({
 }) {
   const s = STYLES[variant];
   const folder = useContext(LinkFolder);
+  const anchors = useContext(LinkAnchors);
   const normalized = useMemo(() => normalizeMathDelimiters(children), [children]);
   const plugins = useMemo(() => pluginsFor(normalized), [normalized]);
   return (
@@ -146,7 +147,7 @@ export function MarkdownViewer({
                 if (links) {
                   // Read now: React may reuse the event once this returns.
                   const { clientX, clientY, metaKey, ctrlKey, shiftKey } = event;
-                  void resolveLink(href, "workspace", folder).then(
+                  void resolveLink(href, { folders: folder, anchors }).then(
                     (target) =>
                       target && activateLink(target, { clientX, clientY, metaKey, ctrlKey, shiftKey }),
                   );
@@ -209,19 +210,24 @@ export function MarkdownViewer({
  *  folder of the conversation it belongs to, then those of the conversations
  *  it names (see `resolveLink`). */
 export const LinkFolder = createContext<readonly string[] | undefined>(undefined);
+/** Absolute paths seen in the conversation, most recent first — where a path
+ *  into another folder is looked for next (see `resolveLink`). */
+export const LinkAnchors = createContext<readonly string[] | undefined>(undefined);
 
 function LinkCode({ children, className }: { children: string; className: string }) {
   const [target, setTarget] = useState<LinkTarget | null>(null);
   const folder = useContext(LinkFolder);
+  const anchors = useContext(LinkAnchors);
   useEffect(() => {
     let live = true;
     const text = children.trim();
-    if (/^https?:\/\//.test(text) || looksLikePath(cleanPath(text)))
-      void resolveLink(text, "workspace", folder).then((t) => live && setTarget(t));
+    // A path broken over lines has a space where the break was.
+    if (/^https?:\/\//.test(text) || looksLikePath(cleanPath(text.replace(/\s+/g, ""))))
+      void resolveLink(text, { folders: folder, anchors }).then((t) => live && setTarget(t));
     return () => {
       live = false;
     };
-  }, [children, folder]);
+  }, [children, folder, anchors]);
   if (!target) return <code className={className}>{children}</code>;
   return (
     <code

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lineCandidates, logicalLine, pickLongest, rowText } from "./terminalLinks";
+import { bufferAnchors, lineCandidates, logicalLine, pickLongest, rowText } from "./terminalLinks";
 
 /** A fake xterm row: each entry is one cell's characters, "" for the second
  *  half of a wide character. */
@@ -99,5 +99,12 @@ describe("pickLongest", () => {
       { start: 0, end: 30 },
       { start: 31, end: 35 },
     ]);
+  });
+});
+
+describe("bufferAnchors", () => {
+  it("reads absolute paths from the output, the latest first, wrapped rows as one line", () => {
+    const rows = screen(["⏺ Read(/Users/me/rep", "↪o/README.md)", "$ cd /Users/me/other", "ok"], 20);
+    expect(bufferAnchors(rows, 4)).toEqual(["/Users/me/other", "/Users/me/repo/README.md"]);
   });
 });

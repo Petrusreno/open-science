@@ -1,5 +1,5 @@
 import type { IBufferLine, ILink, Terminal } from "@xterm/xterm";
-import { activateLink, linkCandidates, resolveLink, type LinkSpan, type LinkTarget } from "@/lib/links";
+import { activateLink, anchorPaths, linkCandidates, mergeAnchors, resolveLink, type LinkSpan, type LinkTarget } from "@/lib/links";
 
 /** One row's text, with the cell each UTF-16 unit of it sits in. A wide (CJK)
  *  character takes two cells, so a string index is not a column. */
@@ -134,23 +134,51 @@ export function pickLongest<T extends { start: number; end: number }>(found: T[]
   return picked;
 }
 
+/** How far back the output is read for anchors. */
+const ANCHOR_ROWS = 2_000;
+
+/** The anchors of a terminal's output, most recent (lowest) first: absolute
+ *  paths it printed — an agent's tool calls, a `cd`, a listing. Rows the
+ *  terminal wrapped are read as one line. */
+export function bufferAnchors(row: (y: number) => Row | null, rows: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (let y = Math.max(1, rows - ANCHOR_ROWS + 1); y <= rows; y++) {
+    const r = row(y);
+    if (!r) continue;
+    if (r.wrapped) line += r.text;
+    else {
+      if (line) lines.push(line);
+      line = r.text;
+    }
+  }
+  if (line) lines.push(line);
+  return mergeAnchors(lines.reverse().map(anchorPaths));
+}
+
 /**
  * URLs and existing local paths in a terminal become links (see lib/links):
  * xterm underlines one under the pointer, and a click opens the link menu.
  * A link may run over several rows (see `logicalLine`). `cwd` is read at hover
- * time — the shell moves — so relative paths resolve where the user is now.
+ * time — the shell moves — so relative paths resolve where the user is now,
+ * and then against the absolute paths the output has shown (see
+ * `resolveLink`, the same rule as in answers).
  */
 export function registerTerminalLinks(term: Terminal, cwd: () => string | null) {
   const row = (y: number): Row | null => {
     const line = term.buffer.active.getLine(y - 1);
     return line ? { ...rowText(line), wrapped: line.isWrapped } : null;
   };
-  return term.registerLinkProvider({
+  // Read again only after new output: hovering asks once per row.
+  let anchors: string[] | null = null;
+  const written = term.onWriteParsed(() => (anchors = null));
+  const currentAnchors = () => (anchors ??= bufferAnchors(row, term.buffer.active.length));
+  const provider = term.registerLinkProvider({
     provideLinks(y, callback) {
       const line = logicalLine(row, y, term.cols);
       const spans = lineCandidates(line);
       if (spans.length === 0) return callback(undefined);
-      const from = { cwd: cwd() };
+      const from = { cwd: cwd(), anchors: currentAnchors() };
       void Promise.all(
         spans.map(async (span) => {
           const target = await resolveLink(span.text, from);
@@ -176,4 +204,10 @@ export function registerTerminalLinks(term: Terminal, cwd: () => string | null) 
       });
     },
   });
+  return {
+    dispose() {
+      written.dispose();
+      provider.dispose();
+    },
+  };
 }
