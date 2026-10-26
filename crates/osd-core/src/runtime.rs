@@ -747,10 +747,120 @@ fn deploy_origin_plugin(env: &Env) -> Option<PathBuf> {
     Some(dst)
 }
 
+/// True when the runtime would load this file as a custom tool: it scans
+/// `{tool,tools}/*.{js,ts}` in every config directory (`tool/registry.ts`).
+/// Over-inclusive on purpose — a name the glob might pick up is checked even if
+/// a given platform would not, because missing one leaves the failure in place.
+fn is_tool_source(name: &std::ffi::OsStr) -> bool {
+    // Compare by suffix, not `Path::extension`: a file named `.ts` has no
+    // extension by the standard library's rule, while the runtime would still
+    // derive the id `.ts` from it. Case-insensitive because the glob's case
+    // behavior follows the filesystem.
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    name.ends_with(".ts") || name.ends_with(".js")
+}
+
+/// True when the id this file would get can be sent to a model provider. The
+/// runtime takes the file stem VERBATIM as the tool id — only MCP names are
+/// sanitized — and providers enforce `^[a-zA-Z0-9_-]+$`. A stem outside that
+/// grammar is not a tool with an odd name: it makes OpenAI and DeepSeek reject
+/// EVERY request in the session, whichever model the user picks (#165).
+fn is_legal_tool_name(name: &std::ffi::OsStr) -> bool {
+    let Some(stem) = Path::new(name).file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    !stem.is_empty() && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Move aside every file in the app-owned tools directory that the runtime
+/// would load under a name no provider accepts. Such a file arrives from an
+/// install directory that was copied over an older one (Windows names the
+/// copies `present_artifact (2).ts`), and a later install into a new folder
+/// replaces the valid files but never prunes the rest — so the mistake
+/// survives, and the runtime keeps sending a tool id that makes every request
+/// fail (#165).
+///
+/// Moved, never deleted: the bytes are the user's, and the `.unusable-<ms>`
+/// suffix takes the file out of the runtime's `*.{js,ts}` glob while leaving it
+/// recoverable by hand.
+fn quarantine_unusable_tools(env: &Env, dst: &Path) {
+    let Ok(entries) = std::fs::read_dir(dst) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        if !is_tool_source(&name) || is_legal_tool_name(&name) {
+            continue;
+        }
+        let aside = path.with_file_name(format!(
+            "{}.unusable-{}",
+            name.to_string_lossy(),
+            now_ms()
+        ));
+        match std::fs::rename(&path, &aside) {
+            Ok(()) => {
+                let note = format!(
+                    "[tools] moved {} to {}: no provider accepts that tool id (#165)",
+                    path.display(),
+                    aside.display()
+                );
+                eprintln!("{note}");
+                crate::debug_log::append(env, &note);
+            }
+            Err(e) => eprintln!(
+                "failed to move unusable workbench tool {}: {e}",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// Copy the deployable workbench tools from `src` into `dst`, creating `dst`.
+///
+/// A file whose name cannot be a tool id is skipped: the runtime would send that
+/// stem VERBATIM as a tool id, and every strictly validating provider would
+/// reject the whole request (#165). A copy that fails is logged and the rest
+/// still deploy — one unreadable file must not cost the others.
+fn sync_workbench_tools(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        // Windows' "keep both files" names a copy `present_artifact (2).ts`.
+        // Deployed, the runtime would send that stem verbatim as a tool id and
+        // every strictly validating provider would reject the request (#165).
+        // The file can never work, so it is not deployed at all.
+        if is_tool_source(name) && !is_legal_tool_name(name) {
+            eprintln!(
+                "skipping workbench tool {}: its name cannot be a tool id",
+                path.display()
+            );
+            continue;
+        }
+        if let Err(e) = std::fs::copy(&path, dst.join(name)) {
+            eprintln!("failed to deploy workbench tool {}: {e}", path.display());
+        }
+    }
+    Ok(())
+}
+
 /// Ship app-owned custom tools into OpenCode's global tools directory. These
 /// tools expose safe, declarative host capabilities (for example, asking the
 /// UI to present an existing workspace artifact); they never hand the model a
 /// raw window handle or filesystem access outside the active workspace.
+///
+/// A file whose name cannot be a tool id is never deployed, and one already in
+/// the profile is moved aside — see `quarantine_unusable_tools`.
 fn deploy_workbench_tools(env: &Env) {
     let Some(src) = env.resource("tools").filter(|p| p.is_dir()) else {
         return;
@@ -763,21 +873,10 @@ fn deploy_workbench_tools(env: &Env) {
         eprintln!("failed to create workbench tools directory: {e}");
         return;
     }
-    let Ok(entries) = std::fs::read_dir(&src) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(name) = path.file_name() else {
-            continue;
-        };
-        if let Err(e) = std::fs::copy(&path, dst.join(name)) {
-            eprintln!("failed to deploy workbench tool {}: {e}", path.display());
-        }
+    if let Err(e) = sync_workbench_tools(&src, &dst) {
+        eprintln!("failed to read workbench tools from {}: {e}", src.display());
     }
+    quarantine_unusable_tools(env, &dst);
 }
 
 /// Ship the computer-use host layer next to the tools that import it.
@@ -2900,6 +2999,142 @@ mod tests {
 
         assert!(installed.join("SKILL.md").is_file(), "installed skill kept");
         let _ = fs::remove_dir_all(&dst);
+    }
+
+    /// #165: an install directory copied over an older one can carry Windows'
+    /// duplicate-copy names (`present_artifact (2).ts`). The runtime derives a
+    /// custom tool's id from its file stem VERBATIM — only MCP names are
+    /// sanitized — and every provider rejects a name outside
+    /// `^[a-zA-Z0-9_-]+$`. Deploying one such file therefore makes DeepSeek and
+    /// OpenAI reject EVERY request in the session, whichever model the user
+    /// picks. It must never reach the profile.
+    #[test]
+    fn workbench_tools_never_deploy_a_duplicate_copy_name() {
+        let (_env, dir) = temp_env("tooldupcopy");
+        let src = dir.join("res/tools");
+        fs::create_dir_all(&src).unwrap();
+        let body = b"export default {}";
+        fs::write(src.join("present_artifact.ts"), body).unwrap();
+        fs::write(src.join("present_artifact (2).ts"), body).unwrap();
+
+        let dst = dir.join("runtime/xdg-config/opencode/tools");
+        super::sync_workbench_tools(&src, &dst).unwrap();
+
+        assert!(dst.join("present_artifact.ts").is_file(), "the real tool still deploys");
+        assert!(
+            !dst.join("present_artifact (2).ts").exists(),
+            "a name no provider accepts reached the profile: {:?}",
+            fs::read_dir(&dst).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>(),
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// …and a leftover of an older build is already in the profile, because a
+    /// later install into a new folder replaces the valid files but never
+    /// prunes the rest. Moving it aside (never deleting: the bytes are the
+    /// user's) lets an affected install recover on the next start without the
+    /// user finding the file by hand.
+    #[test]
+    fn workbench_tools_move_aside_an_unusable_leftover() {
+        let (env, dir) = temp_env("toolleftover");
+        let src = dir.join("res/tools");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("present_artifact.ts"), b"export default {}").unwrap();
+        let dst = dir.join("runtime/xdg-config/opencode/tools");
+        fs::create_dir_all(&dst).unwrap();
+        let user_bytes = b"leftover bytes the user may still want";
+        fs::write(dst.join("present_artifact (2).ts"), user_bytes).unwrap();
+        // Only files the runtime would load can break a request; anything else
+        // in this directory is none of our business.
+        fs::write(dst.join("notes (2).md"), b"not a tool").unwrap();
+
+        super::deploy_workbench_tools(&env);
+
+        assert!(
+            !dst.join("present_artifact (2).ts").exists(),
+            "the unusable name stayed on the runtime's load path",
+        );
+        let aside: Vec<std::path::PathBuf> = fs::read_dir(&dst)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("present_artifact (2).ts.unusable-"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(aside.len(), 1, "moved aside exactly once: {aside:?}");
+        assert_eq!(fs::read(&aside[0]).unwrap(), user_bytes, "moved, never deleted");
+        assert!(dst.join("present_artifact.ts").is_file(), "the real tool still deploys");
+        assert!(dst.join("notes (2).md").is_file(), "a file the runtime never loads is left alone");
+
+        // A name that is legal is not ours to prune: only an id no provider
+        // accepts can break a request, so a stale-but-working tool stays.
+        fs::write(dst.join("old_tool.ts"), b"legal but stale").unwrap();
+        // This runs on every sidecar start, so it must be a no-op the second
+        // time: the moved file is no longer a tool source, and the install-dir
+        // copy is still skipped.
+        super::deploy_workbench_tools(&env);
+        assert!(dst.join("old_tool.ts").is_file(), "a legal name is never pruned");
+        let moved_again = fs::read_dir(&dst)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".unusable-"))
+            .count();
+        assert_eq!(moved_again, 1, "the second start moves nothing again");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The guard is the provider's grammar, not a guess: every legal id shape
+    /// still deploys, so it cannot quietly drop a working tool.
+    #[test]
+    fn workbench_tools_deploy_every_legal_name_unchanged() {
+        let (_env, dir) = temp_env("toollegal");
+        let src = dir.join("res/tools");
+        fs::create_dir_all(&src).unwrap();
+        for name in ["present_artifact.ts", "ssh_connect.ts", "my-tool_2.js", "UPPER.ts"] {
+            fs::write(src.join(name), name.as_bytes()).unwrap();
+        }
+
+        let dst = dir.join("runtime/xdg-config/opencode/tools");
+        super::sync_workbench_tools(&src, &dst).unwrap();
+
+        for name in ["present_artifact.ts", "ssh_connect.ts", "my-tool_2.js", "UPPER.ts"] {
+            assert_eq!(fs::read(dst.join(name)).unwrap(), name.as_bytes(), "{name} did not deploy");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The two predicates are the provider's grammar and the runtime's glob,
+    /// pinned as a table: the edge shapes below are the ones that look harmless
+    /// and are not (a dotfile has no extension by the standard library's rule,
+    /// yet the runtime still derives an id from it; a space survives Windows'
+    /// copy but no provider accepts it).
+    #[test]
+    fn workbench_tool_name_grammar_matches_the_provider_pattern() {
+        use std::ffi::OsStr;
+        for (name, legal) in [
+            ("present_artifact.ts", true),
+            ("my-tool_2.js", true),
+            ("UPPER.ts", true),
+            ("present_artifact (2).ts", false),
+            ("工具.ts", false),
+            ("a b.ts", false),
+            ("..ts", false),
+        ] {
+            assert_eq!(super::is_legal_tool_name(OsStr::new(name)), legal, "{name}");
+        }
+        for (name, source) in [
+            ("present_artifact.ts", true),
+            ("present_artifact (2).JS", true),
+            (".ts", true),
+            ("README.md", false),
+            ("notes", false),
+            ("present_artifact.ts.bak", false),
+        ] {
+            assert_eq!(super::is_tool_source(OsStr::new(name)), source, "{name}");
+        }
     }
 
     #[test]

@@ -3688,7 +3688,10 @@ mod tests {
     }
 
     /// A gateway context whose base workspace is a throwaway temp dir.
-    #[cfg(unix)]
+    ///
+    /// Not `#[cfg(unix)]`: the helper is portable, and the terminal test below
+    /// uses it on every platform. The ticket tests that first needed it keep
+    /// their own `#[cfg(unix)]` for symlink semantics.
     fn ctx_with_base(name: &str) -> (Ctx, PathBuf) {
         let root = std::env::temp_dir().join(format!("gw-verify-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
