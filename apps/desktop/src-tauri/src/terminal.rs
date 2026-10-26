@@ -352,6 +352,12 @@ impl osd_core::gateway::Terminals for GatewayTerminals {
         let mut output = terminals.get(id)?.output.lock().ok()?;
         Some(output.subscribe())
     }
+    fn size(&self, id: &str) -> Option<(u16, u16)> {
+        let state = self.0.state::<TerminalState>();
+        let terminals = state.0.lock().ok()?;
+        let size = terminals.get(id)?.master.get_size().ok()?;
+        Some((size.rows, size.cols))
+    }
 }
 
 /// Kill every shell — the app is quitting, and a PTY child outlives its parent

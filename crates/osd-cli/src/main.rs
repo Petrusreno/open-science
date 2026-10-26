@@ -54,6 +54,9 @@ osd — Open Science Desktop without a window
   osd term send <id> <text…> [--wait] [--no-enter] [--timeout S]
                                     type into it (Enter included); --wait
                                     returns the agent's reply
+  osd term key <id> <key…>          press keys, for menus and dialogs: up down
+                                    left right enter esc tab shift-tab space
+                                    backspace ctrl-c ctrl-d, or one character
 
   osd audit [--account NAME] [--session ID] [--action A] [--since 2026-10-01]
             [--until DATE] [--limit N]

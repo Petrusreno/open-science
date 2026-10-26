@@ -38,6 +38,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         ("screen", "show") => crate::screens::screen_show(args),
         ("term", "read") => crate::screens::term_read(args),
         ("term", "send") => crate::screens::term_send(args),
+        ("term", "key") => crate::screens::term_key(args),
         ("audit", _) => crate::screens::audit(args),
         ("project", "ls") | ("project", "list") => projects(args),
         ("project", "new") | ("project", "create") => new_project(args),

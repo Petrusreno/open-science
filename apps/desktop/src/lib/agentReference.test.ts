@@ -26,6 +26,7 @@ describe("agent references", () => {
     const shell = terminalReference({ shellId: "wabc-p3", name: "build" });
     expect(shell).toContain("[OSD terminal] build · wabc-p3");
     expect(shell).toContain('type a line (it runs): osd term send wabc-p3 "<command>"');
+    expect(shell).toContain("press keys (menus): osd term key wabc-p3 down enter");
   });
 
   it("an id that is not plain is quoted for the shell", () => {

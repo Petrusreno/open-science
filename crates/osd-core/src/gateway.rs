@@ -265,6 +265,8 @@ pub trait Terminals: Send + Sync {
     /// Recent output, then everything after it. The channel closes when the
     /// shell exits. None for a terminal that is not running.
     fn subscribe(&self, id: &str) -> Option<Receiver<String>>;
+    /// The pane's size as (rows, cols). None when it is not running or not known.
+    fn size(&self, id: &str) -> Option<(u16, u16)>;
 }
 
 /// A build with no web client bundled. Serving still works — `/v1` is a
@@ -2109,7 +2111,8 @@ fn terminal_read(
             break;
         }
     }
-    let text = crate::terminal_read::screen_text(&raw, num("lines", 40, 1000));
+    let (rows, cols) = terminals.size(id).unwrap_or((24, 80));
+    let text = crate::terminal_read::screen_text(&raw, num("lines", 40, 1000), rows, cols);
     respond_json(stream, 200, &serde_json::json!({ "kind": "shell", "text": text }).to_string());
 }
 
@@ -3456,6 +3459,9 @@ mod tests {
             }
             subs.push(tx);
             Some(rx)
+        }
+        fn size(&self, _id: &str) -> Option<(u16, u16)> {
+            None
         }
     }
 

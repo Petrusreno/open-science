@@ -70,6 +70,33 @@ fn build_env(app: &AppHandle) -> Result<Env, String> {
     ))
 }
 
+/// The variables Claude Code puts on the processes it starts. When the app was
+/// launched from inside a Claude Code session (a `pnpm tauri dev`, an `open` it
+/// ran) they leak into every terminal, sidecar and ACP agent, and a `claude`
+/// started in one of our terminals takes itself for a nested child session: it
+/// registers no `~/.claude/sessions/<pid>.json`, so the terminal probe never
+/// sees it and `osd term read` / `--wait` treat the pane as a plain shell.
+const LAUNCHING_AGENT_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+];
+
+/// Drop them before anything is spawned. Runs first in `run`, while the process
+/// is still single-threaded.
+fn forget_launching_agent() {
+    for name in LAUNCHING_AGENT_VARS {
+        std::env::remove_var(name);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK's DMA-BUF renderer fails to hand out a GL context on a good
@@ -82,6 +109,7 @@ pub fn run() {
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
+    forget_launching_agent();
     tauri::Builder::default()
         // Single instance MUST be the first plugin. A second launch (or a reinstall
         // while the app is still running) focuses the existing window instead of
