@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bufferAnchors, cellStyle, lineCandidates, logicalLine, pickLongest, rowText } from "./terminalLinks";
+import { BLANK, bufferAnchors, cellStyle, lineCandidates, logicalLine, pickLongest, rowText } from "./terminalLinks";
 
 /** A fake xterm row: each entry is one cell's characters, "" for the second
  *  half of a wide character. */
@@ -53,12 +53,19 @@ describe("rowText", () => {
       { x: 4, width: 1, style: "" },
     ]);
   });
+
+  it("reads a cell nothing was printed into as a blank space", () => {
+    const blank = { getChars: () => "", getWidth: () => 1, ...cell() } as never;
+    const { text, cells } = rowText({ length: 3, getCell: (x: number) => (x === 1 ? blank : row(["a", "", "b"]).getCell(x)) });
+    expect(text).toBe("a b");
+    expect(cells[1].style).toBe(BLANK);
+  });
 });
 
 /** Rows as text, one cell per character, padded to `cols` like a real buffer.
  *  A leading "↪" marks a row the terminal itself wrapped onto. `styles` gives
- *  each row's cells a style, one letter per cell ("." default); the rest of
- *  the row takes `pad`. */
+ *  each row's cells a style, one letter per cell ("." default, "_" nothing
+ *  printed there); the rest of the row takes `pad`. */
 function screen(lines: string[], cols: number, styles: string[] = [], pad = ".") {
   const rows = lines.map((l, i) => {
     const wrapped = l.startsWith("↪");
@@ -66,7 +73,7 @@ function screen(lines: string[], cols: number, styles: string[] = [], pad = ".")
     const mask = (styles[i] ?? "").padEnd(cols, pad);
     return {
       text,
-      cells: [...text].map((_, x) => ({ x, width: 1, style: mask[x] === "." ? "" : mask[x] })),
+      cells: [...text].map((_, x) => ({ x, width: 1, style: mask[x] === "." ? "" : mask[x] === "_" ? BLANK : mask[x] })),
       wrapped,
     };
   });
@@ -89,7 +96,7 @@ describe("logicalLine", () => {
     for (const y of [1, 2]) {
       const line = logicalLine(rows, y, cols);
       expect(line.text.trimEnd()).toBe("● Open: /Users/me/Documents/projects/dsh-notes/dsh-principles.html");
-      expect(line.breaks).toEqual([{ at: 38, nearEdge: true, space: false }]);
+      expect(line.breaks).toEqual([{ at: 38, nearEdge: true }]);
       const spans = lineCandidates(line).map((s) => s.text);
       expect(spans).toContain("/Users/me/Documents/projects/dsh-notes/dsh-principles.html");
       // The row-by-row pieces stay candidates, for when the whole does not resolve.
@@ -141,6 +148,21 @@ describe("a highlighted path with spaces", () => {
     expect(spans.map((s) => s.text)).toContain("/Users/me/My");
   });
 
+  it("goes on over a space the TUI skipped instead of printing", () => {
+    // A resumed Claude Code moves the cursor over spaces: nothing is printed there.
+    const text = "  /Users/me/dmg/Open Science.dmg";
+    const styles = ["__" + "b".repeat(18) + "_" + "b".repeat(11)];
+    const { spans } = at([text], styles, 1, "_");
+    expect(spans.map((s) => s.text)).toContain("/Users/me/dmg/Open Science.dmg");
+  });
+
+  it("tries a word wrap with the space it took, when no space was printed", () => {
+    const lines = ["  /Users/me/release/dmg/Open", "  Science_0.7.0_aarch64.dmg"];
+    const styles = [mark(lines[0], "/Users/me/release/dmg/Open").replace(/\./g, "_"), mark(lines[1], "Science_0.7.0_aarch64.dmg").replace(/\./g, "_")];
+    const { spans } = at(lines, styles, 2, "_");
+    expect(spans.map((s) => s.text)).toContain("/Users/me/release/dmg/Open Science_0.7.0_aarch64.dmg");
+  });
+
   it("gets back the space a word wrap took, from either row", () => {
     // Claude Code wraps inline code at the space and indents the rest.
     // The space ending the first row is printed in the path's style.
@@ -148,7 +170,7 @@ describe("a highlighted path with spaces", () => {
     const styles = [mark(lines[0], "/Users/me/release/dmg/Open "), mark(lines[1], "Science_0.7.0_aarch64.dmg")];
     for (const y of [1, 2]) {
       const { line, spans } = at(lines, styles, y);
-      expect(line.breaks).toEqual([{ at: 31, nearEdge: false, space: true }]);
+      expect(line.breaks).toEqual([{ at: 31, nearEdge: false }]);
       const whole = spans.find((s) => s.text === "/Users/me/release/dmg/Open Science_0.7.0_aarch64.dmg");
       expect(whole).toBeDefined();
       // The span covers the cells of both rows.
@@ -161,15 +183,13 @@ describe("a highlighted path with spaces", () => {
     const lines = ["at /Users/me/projects/open-ai4s-workbe", "  nch/dmg/Open Science.dmg ok"];
     const styles = [mark(lines[0], "/Users/me/projects/open-ai4s-workbe"), mark(lines[1], "nch/dmg/Open Science.dmg")];
     const { line, spans } = at(lines, styles, 2);
-    expect(line.breaks).toEqual([{ at: 38, nearEdge: true, space: false }]);
+    expect(line.breaks).toEqual([{ at: 38, nearEdge: true }]);
     expect(spans.map((s) => s.text)).toContain("/Users/me/projects/open-ai4s-workbench/dmg/Open Science.dmg");
   });
 
-  it("changes nothing in a box whose padding has the text's style", () => {
-    // A path broken mid-name inside a shaded box: no space is put in.
+  it("keeps the plain reading of a path wrapped mid-name in a shaded box", () => {
     const lines = ["  /Users/me/a-very-long-folder/and-a", "  -file.txt"];
-    const { line, spans } = at(lines, ["gggggggggggggggggggggggggggggggggggg", "gggggggggggg"], 1, "g");
-    expect(line.breaks[0].space).toBe(true);
+    const { spans } = at(lines, ["gggggggggggggggggggggggggggggggggggg", "gggggggggggg"], 1, "g");
     expect(spans.map((s) => s.text)).toContain("/Users/me/a-very-long-folder/and-a-file.txt");
   });
 

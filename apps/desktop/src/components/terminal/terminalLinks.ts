@@ -10,7 +10,12 @@ export function cellStyle(cell: IBufferCell): string {
   return `${cell.getFgColorMode()}:${cell.getFgColor()} ${cell.getBgColorMode()}:${cell.getBgColor()} ${flags}`;
 }
 
-/** One printed cell: its column, width and style (see `cellStyle`). */
+/** The style of a cell nothing was printed into. A TUI moves the cursor over
+ *  the spaces between words instead of printing them (Claude Code does when it
+ *  redraws a resumed conversation), so a gap inside a path is such a cell. */
+export const BLANK = "blank";
+
+/** One printed cell: its column, width and style (see `cellStyle`, `BLANK`). */
 export interface Cell {
   x: number;
   width: number;
@@ -27,8 +32,9 @@ export function rowText(line: Pick<IBufferLine, "length" | "getCell">): { text: 
     if (!cell) break;
     const width = cell.getWidth();
     if (width === 0) continue; // the second half of a wide character
-    const chars = cell.getChars() || " ";
-    const style = cellStyle(cell);
+    const printed = cell.getChars();
+    const chars = printed || " ";
+    const style = printed ? cellStyle(cell) : BLANK;
     for (let i = 0; i < chars.length; i++) cells.push({ x, width, style });
     text += chars;
   }
@@ -50,10 +56,8 @@ export interface LogicalLine {
   cells: (Cell & { y: number })[];
   /** Where a TUI broke the line itself: the next row's text starts at `at`.
    *  `nearEdge` — the row before ran up to the right edge, so a break there is
-   *  almost certainly a wrap and not the end of a sentence. `space` — the row
-   *  before ended in a space styled like the text on both sides: a word wrap
-   *  inside one highlighted string, which `styleRuns` puts the space back into. */
-  breaks: { at: number; nearEdge: boolean; space: boolean }[];
+   *  almost certainly a wrap and not the end of a sentence. */
+  breaks: { at: number; nearEdge: boolean }[];
 }
 
 /** How far a line is followed up and down. A path or URL longer than this
@@ -103,14 +107,11 @@ export function logicalLine(row: (y: number) => Row | null, y: number, cols: num
       if (how === "hard") {
         // Drop the previous row's trailing blanks and this row's indent.
         const dropped = prev.text.length - trimEnd(prev).length;
-        from = cur.text.length - cur.text.trimStart().length;
-        const style = out.cells[out.cells.length - dropped - 1].style;
-        const space =
-          dropped > 0 && style !== "" && out.cells[out.cells.length - dropped].style === style && cur.cells[from].style === style;
         out.text = out.text.slice(0, out.text.length - dropped);
         out.cells.length -= dropped;
         const last = out.cells[out.cells.length - 1];
-        out.breaks.push({ at: out.text.length, nearEdge: last.x + last.width >= cols - EDGE_COLUMNS, space });
+        out.breaks.push({ at: out.text.length, nearEdge: last.x + last.width >= cols - EDGE_COLUMNS });
+        from = cur.text.length - cur.text.trimStart().length;
       }
     }
     out.text += cur.text.slice(from);
@@ -123,32 +124,42 @@ export function logicalLine(row: (y: number) => Row | null, y: number, cols: num
 /** A path with spaces is not found by shape. Programs print it in a style of
  *  its own (Claude Code's inline code), as an answer prints it in a code span,
  *  so each styled run is also tried whole, as VS Code does. Unstyled text is
- *  prose, not tried. */
+ *  prose, not tried. A run goes on over blank cells up to the next cell of its
+ *  style. Where it crosses a TUI break, the break may have taken a space (a
+ *  word wrap) or not (a wrap mid-name): both are tried, and what exists wins. */
 const MAX_RUN = 1024;
+const MAX_RUN_BREAKS = 3;
 
 function styleRuns(line: LogicalLine): LinkSpan[] {
   const spans: LinkSpan[] = [];
-  for (let start = 0; start < line.text.length; ) {
+  const { text, cells } = line;
+  for (let start = 0; start < text.length; ) {
+    const style = cells[start].style;
     let end = start + 1;
-    while (end < line.text.length && line.cells[end].style === line.cells[start].style) end++;
-    if (line.cells[start].style === "") {
+    if (style === "" || style === BLANK) {
       start = end;
       continue;
     }
-    const raw = line.text.slice(start, end);
+    for (let i = end; i < text.length && (cells[i].style === style || cells[i].style === BLANK); i++) {
+      if (cells[i].style === style) end = i + 1;
+    }
+    const raw = text.slice(start, end);
     const from = start + raw.length - raw.trimStart().length;
     const to = from + cleanPath(raw.trim()).length;
-    // The text as printed: with the spaces a word wrap took out.
-    let text = "";
-    let at = from;
-    for (const b of line.breaks) {
-      if (!b.space || b.at <= from || b.at >= to) continue;
-      text += `${line.text.slice(at, b.at)} `;
-      at = b.at;
+    const inner = line.breaks.filter((b) => b.at > from && b.at < to).map((b) => b.at);
+    if (to - from <= MAX_RUN && inner.length <= MAX_RUN_BREAKS && !/^https?:\/\//.test(raw.trim())) {
+      for (let mask = 0; mask < 1 << inner.length; mask++) {
+        let joined = "";
+        let at = from;
+        inner.forEach((b, i) => {
+          joined += text.slice(at, b) + (mask & (1 << i) ? " " : "");
+          at = b;
+        });
+        joined += text.slice(at, to);
+        // Without a space anywhere, the plain reading has found it already.
+        if (/\s/.test(joined) && joined.includes("/")) spans.push({ start: from, end: to, text: joined, kind: "path" });
+      }
     }
-    text += line.text.slice(at, to);
-    if (text.length <= MAX_RUN && /\s/.test(text) && text.includes("/") && !/^https?:\/\//.test(text))
-      spans.push({ start: from, end: to, text, kind: "path" });
     start = end;
   }
   return spans;
