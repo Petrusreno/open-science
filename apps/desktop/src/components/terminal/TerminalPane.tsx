@@ -28,7 +28,7 @@ import { registerTerminalLinks } from "./terminalLinks";
 import { TerminalSearch } from "./TerminalSearch";
 import { isJumpChord } from "@/components/jump-palette/JumpPalette";
 import { createKeyTranslator, isModifierKey, releaseImeGate } from "./terminalKeys";
-import { readResizeReply } from "./terminalResize";
+import { readRepaint, spliceRepaint, type Repaint } from "./terminalResize";
 
 /**
  * A real shell in a pane.
@@ -236,8 +236,8 @@ export function TerminalPane({
           if (!reply) return term.write(chunk);
           reply.data += chunk;
           if (reply.writing) return;
-          const read = readResizeReply(reply.data, reply.rows);
-          if (read !== "wait") applyResize(read === "other" ? null : read.repaint);
+          const repaint = readRepaint(reply.data, reply.rows);
+          if (repaint) applyResize(repaint);
         },
         onExit: () => term.write(`\r\n${t("terminal.exited")}\r\n`),
         onReset: () => term.reset(),
@@ -256,17 +256,16 @@ export function TerminalPane({
       // animates a width for 200ms, and each step would re-measure the DOM and
       // make Claude Code repaint its conversation.
       //
-      // xterm waits too, until the program answers. Claude Code's answer is a
-      // repaint of the whole screen (see `readResizeReply`). For that one the
-      // screen is cleared BEFORE xterm re-wraps to the new width, as it is
-      // about to be redrawn anyway; re-wrapped, its old lines would grow and
-      // push some of themselves into scrollback, next to the redrawn copy.
-      // Anything else (a shell prompt, vim) is written after the resize, as
-      // before.
+      // xterm waits too, until the program answers. Claude Code answers with a
+      // repaint of its latest turn, which would land on top of the copy
+      // already here; it is spliced in instead (see `spliceRepaint`), the old
+      // rows it replaces erased BEFORE xterm re-wraps them. Any other program
+      // (a shell prompt, vim) prints no such repaint: after RESIZE_REPLY_MS its
+      // output is written after the resize, as before.
       let queued = 0;
       let settle: ReturnType<typeof setTimeout> | undefined;
       let sent = { cols: term.cols, rows: term.rows };
-      const applyResize = (repaint: string | null) => {
+      const applyResize = (repaint: Repaint | null) => {
         if (!reply || reply.writing) return;
         const { cols, rows, data, timer } = reply;
         clearTimeout(timer);
@@ -276,12 +275,17 @@ export function TerminalPane({
           term.write(text);
         };
         if (repaint === null) return resizeAndWrite(data);
-        // Output arriving while the clear is written queues behind the repaint.
+        // Output arriving meanwhile queues behind the repaint.
         reply.data = "";
         reply.writing = true;
-        term.write("\x1b[H\x1b[J", () => {
-          const later = reply?.data ?? "";
-          resizeAndWrite(repaint + later);
+        term.write(repaint.before, () => {
+          const buffer = term.buffer.active;
+          const screen = Array.from(
+            { length: term.rows },
+            (_, y) => buffer.getLine(buffer.baseY + y)?.translateToString(true) ?? "",
+          );
+          const splice = spliceRepaint(repaint, screen);
+          term.write(splice.clear, () => resizeAndWrite(splice.repaint + (reply?.data ?? "")));
         });
       };
       const tellShell = () => {
@@ -520,9 +524,9 @@ const findControls = new Map<string, FindControls>();
  *  longer than a frame, shorter than a person notices after letting go. */
 const RESIZE_SETTLE_MS = 150;
 
-/** How long a resize waits for the program's answer before xterm resizes
- *  anyway. Claude Code answers within a few milliseconds. */
-const RESIZE_REPLY_MS = 300;
+/** How long a resize waits for Claude Code's repaint before xterm resizes
+ *  anyway. Claude Code answers within 10ms; a shell waits this long. */
+const RESIZE_REPLY_MS = 100;
 
 /**
  * Terminal defaults, borrowed from Orca's `lib/pane-manager/pane-terminal-options.ts`

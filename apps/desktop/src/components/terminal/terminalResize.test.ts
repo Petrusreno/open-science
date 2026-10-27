@@ -1,42 +1,70 @@
 import { describe, expect, it } from "vitest";
-import { readResizeReply } from "./terminalResize";
+import { readRepaint, spliceRepaint } from "./terminalResize";
 
 // Claude Code 2.1.311's answer to a resize, as captured from its pty.
-const head = (rows: number) =>
-  "\x1b[?25l\x1b[2D\x1b[4B\x1b[H" + "\x1b[2K\x1b[1B".repeat(rows) + "\x1b[H";
+const erase = (rows: number) => "\x1b[H" + "\x1b[2K\x1b[1B".repeat(rows) + "\x1b[H";
+const lead = "\x1b[?25l\x1b[2D\x1b[4B";
 const tail = "\x1b[2C\x1b[4A\x1b[?25h";
-const frame = (lines: number) =>
-  Array.from({ length: lines }, (_, i) => `\x1b[3${i % 8}mline ${i}\x1b[39m\r\r\n`).join("");
+const answer = (rows: number, lines: string[]) =>
+  lead + erase(rows) + lines.map((l) => `\x1b[3G${l}\x1b[39m\r\r`).join("\n") + "\n" + tail;
 
-describe("readResizeReply", () => {
-  it("keeps only the last screenful of a repaint taller than the screen, and its colours", () => {
-    const read = readResizeReply(head(5) + frame(8) + tail, 5);
-    expect(read).not.toBe("wait");
-    expect(read).not.toBe("other");
-    const repaint = (read as { repaint: string }).repaint;
-    expect(repaint.startsWith(head(5))).toBe(true);
+const turn = [
+  "⏺ First message, long enough to be found again",
+  "  its second line",
+  "",
+  "⏺ Second message, also long enough to be found",
+  "  wrapped once at the new width",
+  "",
+  "❯",
+];
+
+describe("readRepaint", () => {
+  it("finds the repaint after the end of an earlier frame, and waits for all of it", () => {
+    const earlier = "um\x1b[110G/effort\x1b[39m\r\r\n" + tail;
+    const data = earlier + answer(5, turn);
+    expect(readRepaint(data.slice(0, earlier.length + 20), 5)).toBeNull();
+    expect(readRepaint(data.slice(0, -3), 5)).toBeNull();
+    const repaint = readRepaint(data, 5)!;
+    expect(repaint.before).toBe(earlier + lead);
+    expect(repaint.lines).toHaveLength(turn.length + 1);
+    expect(repaint.tail).toBe("\x1b[?25h");
+  });
+
+  it("ignores a shell's answer and an erase of another height", () => {
+    expect(readRepaint("\r\x1b[K% ", 5)).toBeNull();
+    expect(readRepaint(answer(4, turn), 5)).toBeNull();
+  });
+});
+
+describe("spliceRepaint", () => {
+  it("writes the repaint from the line the old top row starts, erasing from there down", () => {
+    // The old screen starts at the second message; the first is in scrollback.
+    const screen = ["⏺ Second message, also long enough to be found wrapped", "  once at the new width", "", "❯", ""];
+    const { clear, repaint } = spliceRepaint(readRepaint(answer(5, turn), 5)!, screen);
+    expect(clear).toBe("\x1b[1;1H\x1b[J");
+    expect(repaint).not.toContain("First message");
+    expect(repaint).toContain("Second message");
     expect(repaint.endsWith(tail)).toBe(true);
-    // 8 lines plus the cursor row: the first 4 are already in scrollback.
-    const body = repaint.slice(head(5).length, -tail.length);
-    expect(body.split("\n")).toHaveLength(5);
-    expect(body).not.toContain("line 3");
-    expect(body).toContain("line 4");
-    expect(body).toContain("\x1b[33m");
   });
 
-  it("leaves a repaint that fits as it is", () => {
-    const data = head(5) + frame(4) + tail;
-    expect(readResizeReply(data, 5)).toEqual({ repaint: data });
+  it("keeps old rows the repaint does not redraw, above the match", () => {
+    const screen = ["an older line the repaint leaves out", "", "⏺ First message, long enough to be found again", "", ""];
+    const { clear, repaint } = spliceRepaint(readRepaint(answer(5, turn), 5)!, screen);
+    expect(clear).toBe("\x1b[3;1H\x1b[J");
+    expect(repaint).toContain("First message");
   });
 
-  it("waits for the rest of a repaint split across chunks", () => {
-    const data = head(5) + frame(8) + tail;
-    expect(readResizeReply(data.slice(0, 20), 5)).toBe("wait");
-    expect(readResizeReply(data.slice(0, head(5).length + 30), 5)).toBe("wait");
+  it("skips a row whose text repeats, which could match the wrong copy", () => {
+    const repeated = "⎿ Shell cwd was reset to /Users/someone/project";
+    const screen = [repeated, "", "⏺ First message, long enough to be found again", repeated, ""];
+    const { clear } = spliceRepaint(readRepaint(answer(5, [...turn, repeated]), 5)!, screen);
+    expect(clear).toBe("\x1b[3;1H\x1b[J");
   });
 
-  it("does not take a shell's answer, or an erase of the wrong height, for a repaint", () => {
-    expect(readResizeReply("\r\x1b[K% ", 5)).toBe("other");
-    expect(readResizeReply(head(4) + frame(8) + tail, 5)).toBe("other");
+  it("with nothing to line up, writes the whole repaint below the old screen", () => {
+    const screen = ["something else entirely, unrelated", "more of it, also unrelated text", "", "", ""];
+    const { clear, repaint } = spliceRepaint(readRepaint(answer(5, turn), 5)!, screen);
+    expect(clear).toBe("\x1b[3;1H\x1b[J");
+    expect(repaint).toContain("First message");
   });
 });
