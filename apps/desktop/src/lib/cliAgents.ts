@@ -65,6 +65,13 @@ export async function detectCliAgents(): Promise<CliAgent[]> {
   return CLI_AGENTS.filter((agent) => found.includes(agent.detect));
 }
 
+/** The terminal program behind a catalog agent, when its sessions can move
+ *  between a terminal and a conversation (`claude --resume`, `codex resume`). */
+export function terminalKindOf(agentId: string): "claude" | "codex" | null {
+  const detect = CLI_AGENTS.find((a) => a.id === agentId)?.detect;
+  return detect === "claude" || detect === "codex" ? detect : null;
+}
+
 let detection: Promise<CliAgent[]> | null = null;
 
 /** `detectCliAgents`, asked once per run: an install does not appear

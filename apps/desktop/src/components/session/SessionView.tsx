@@ -13,8 +13,12 @@ import {
   PanelLeft,
   PanelRight,
   PlugZap,
+  SquareTerminal,
   X,
 } from "lucide-react";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { terminalKindOf } from "@/lib/cliAgents";
+import { toast } from "@/lib/toast";
 import type { RuntimeStatus } from "@ai4s/shared";
 import {
   acpAgentFor,
@@ -272,6 +276,30 @@ export function SessionView({
   const [finding, setFinding] = useState(false);
   const dockSession = useLayoutStore((s) => s.dockSession);
   const openContentPane = useLayoutStore((s) => s.openContentPane);
+  const replacePane = useLayoutStore((s) => s.replacePane);
+  const releaseAcpSession = useRuntimeStore((s) => s.releaseAcpSession);
+  // A Claude Code or Codex conversation can go back to a terminal, where the
+  // same session resumes (desktop only: the terminal is this machine's).
+  const acpRecord = useRuntimeStore((s) => (eid ? s.acpSessions[eid] : undefined));
+  const terminalKind = acpRecord && isTauri && !isGatewayWeb ? terminalKindOf(acpRecord.agentId) : null;
+  const [confirmTerminal, setConfirmTerminal] = useState(false);
+  const continueInTerminal = async () => {
+    if (!eid || !acpRecord || !terminalKind) return;
+    try {
+      // The agent lets go first: two processes writing one session would fork it.
+      await releaseAcpSession(eid);
+      replacePane(leafId, {
+        content: {
+          kind: "terminal",
+          cwd: acpRecord.directory,
+          // Running: the terminal resumes it on open (`terminalStartup`).
+          agent: { kind: terminalKind, sessionId: eid, running: true },
+        },
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
   const [renaming, setRenaming] = useState(false);
   const setLeafZoom = useLayoutStore((s) => s.setLeafZoom);
   // Any real interaction with a tentative (preview) screen pins it (#3).
@@ -878,6 +906,16 @@ export function SessionView({
               {showToolLabels && <span>{t("subagents.title")}</span>}
             </button>
           )}
+          {terminalKind && (
+            <button
+              onClick={() => setConfirmTerminal(true)}
+              className="rounded-md p-1 text-muted transition-colors hover:bg-surface-2 hover:text-text"
+              title={t("terminal.continueInTerminal.label")}
+              aria-label={t("terminal.continueInTerminal.label")}
+            >
+              <SquareTerminal size={13} strokeWidth={1.5} />
+            </button>
+          )}
           {/* Split this pane — the visible, discoverable way to tile (no
               keyboard shortcut needed). Right = side-by-side, down = stacked. */}
           {canSplit && (
@@ -958,6 +996,24 @@ export function SessionView({
             // longer in the document.
             generation={blocksCount}
             onClose={() => setFinding(false)}
+          />
+        )}
+        {confirmTerminal && terminalKind && (
+          <ConfirmDialog
+            title={t("terminal.continueInTerminal.confirmTitle")}
+            body={t(
+              running ? "terminal.continueInTerminal.confirmBodyRunning" : "terminal.continueInTerminal.confirmBody",
+            )}
+            confirmLabel={t("terminal.continueInTerminal.label")}
+            // eslint-disable-next-line i18next/no-literal-string -- tone enum, not UI copy
+            tone="default"
+            // eslint-disable-next-line i18next/no-literal-string -- scope enum, not UI copy
+            scope="pane"
+            onConfirm={() => {
+              setConfirmTerminal(false);
+              void continueInTerminal();
+            }}
+            onCancel={() => setConfirmTerminal(false)}
           />
         )}
         {/* The turn rail overlays the scroll box's right edge, so the two share

@@ -560,7 +560,14 @@
     "recentInput": "Recent input from outside:",
     "continueInApp": {
       "label": "Open as conversation",
-      "title": "Continue this {{agent}} session as a conversation in the app. This terminal closes."
+      "confirmTitle": "Continue in a conversation?",
+      "confirmBody": "This {{agent}} session continues in the app's conversation view, and this terminal closes. You can move it back to a terminal at any time."
+    },
+    "continueInTerminal": {
+      "label": "Continue in terminal",
+      "confirmTitle": "Continue in a terminal?",
+      "confirmBody": "This conversation reopens in a terminal where it is, and this pane becomes that terminal. It stays in the sidebar, so you can come back to it here.",
+      "confirmBodyRunning": "The reply in progress stops, then this conversation reopens in a terminal where it is. It stays in the sidebar, so you can come back to it here."
     }
   },
   "splitInto": {

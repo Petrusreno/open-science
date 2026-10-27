@@ -639,6 +639,20 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
     }
   }
 
+  /**
+   * Let go of a session so another process can take it over (the user moved it
+   * to a terminal). A running turn is cancelled first; the agent frees what it
+   * holds when it supports `session/close`, and this client forgets the session
+   * either way, so a later message resumes it rather than assuming it is open.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    const state = this.sessions.get(sessionId);
+    if (state?.promptRunning) await this.abortSession(sessionId);
+    this.sessions.delete(sessionId);
+    if (this.agentCapabilities?.sessionCapabilities?.close === undefined) return;
+    await this.peer.request("session/close", { sessionId });
+  }
+
   async abortSession(sessionId: string): Promise<void> {
     // A notification, not a request: ACP's `session/cancel` has no response, and
     // the turn's own `session/prompt` settles with stopReason "cancelled".

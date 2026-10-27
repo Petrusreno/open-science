@@ -144,12 +144,19 @@ pub fn acp_start(
     let cwd = crate::runtime::workspace_dir(&app)?;
     // quiet_command: an ACP agent is a console-subsystem binary, and a console
     // window opening beside the app for it is noise the user never asked for.
-    let mut child = crate::runtime::quiet_command(&command)
+    let mut command_line = crate::runtime::quiet_command(&command);
+    command_line
         .args(&args)
         .current_dir(&cwd)
         // GUI-launched apps get a minimal PATH; an ACP agent is usually a node
         // or cargo binary the user installed, so give it the real one.
-        .env("PATH", crate::runtime::enriched_path())
+        .env("PATH", crate::runtime::enriched_path());
+    // The app's proxy setting, the same a terminal gets: Claude Code or Codex
+    // run here must reach their API the way they do in the app's terminal.
+    for (k, v) in crate::runtime::sidecar_proxy_env(&app) {
+        command_line.env(k, v);
+    }
+    let mut child = command_line
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

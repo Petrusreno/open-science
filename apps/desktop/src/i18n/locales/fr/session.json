@@ -560,7 +560,14 @@
     "recentInput": "Saisies récentes venues de l’extérieur :",
     "continueInApp": {
       "label": "Ouvrir en conversation",
-      "title": "Poursuivre cette session {{agent}} comme conversation dans l’app. Ce terminal se ferme."
+      "confirmTitle": "Continuer en conversation ?",
+      "confirmBody": "Cette session {{agent}} se poursuit dans la vue conversation de l’app, et ce terminal se ferme. Vous pourrez la remettre dans un terminal à tout moment."
+    },
+    "continueInTerminal": {
+      "label": "Continuer dans le terminal",
+      "confirmTitle": "Continuer dans un terminal ?",
+      "confirmBody": "Cette conversation reprend dans un terminal là où elle en était, et ce volet devient ce terminal. Elle reste dans la barre latérale, vous pourrez y revenir.",
+      "confirmBodyRunning": "La réponse en cours s’arrête, puis cette conversation reprend dans un terminal là où elle en était. Elle reste dans la barre latérale, vous pourrez y revenir."
     }
   },
   "splitInto": {

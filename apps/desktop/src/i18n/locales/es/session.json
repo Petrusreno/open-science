@@ -560,7 +560,14 @@
     "recentInput": "Entradas recientes desde fuera:",
     "continueInApp": {
       "label": "Abrir como conversación",
-      "title": "Continúa esta sesión de {{agent}} como una conversación en la app. Esta terminal se cierra."
+      "confirmTitle": "¿Continuar en una conversación?",
+      "confirmBody": "Esta sesión de {{agent}} sigue en la vista de conversación de la app y esta terminal se cierra. Puedes volver a una terminal cuando quieras."
+    },
+    "continueInTerminal": {
+      "label": "Continuar en la terminal",
+      "confirmTitle": "¿Continuar en una terminal?",
+      "confirmBody": "Esta conversación sigue en una terminal donde la dejaste, y este panel pasa a ser esa terminal. Se queda en la barra lateral, así que puedes volver aquí.",
+      "confirmBodyRunning": "La respuesta en curso se detiene y luego esta conversación sigue en una terminal donde la dejaste. Se queda en la barra lateral, así que puedes volver aquí."
     }
   },
   "splitInto": {

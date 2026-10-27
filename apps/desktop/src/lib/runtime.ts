@@ -293,6 +293,10 @@ interface RuntimeState {
    *  conversation here, so opening it replays it on that agent. Its folder and
    *  title come from the agent's own list; `directory` is the fallback. */
   adoptAcpSession: (agentId: string, sessionId: string, directory: string) => Promise<void>;
+  /** Hand an ACP conversation back to a terminal: its agent stops holding the
+   *  session (a running turn is stopped), so only the terminal writes it. It
+   *  stays listed here, to come back to. */
+  releaseAcpSession: (sessionId: string) => Promise<void>;
   /** The ACP agent's OWN selectors per session — model, reasoning level,
    *  permission mode — as it reported them (`configOptions`). This is what the
    *  composer offers instead of our model picker: ACP v1 changes a model through
@@ -2831,6 +2835,18 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       sessions: [...s.sessions.filter((m) => m.id !== sessionId), row],
     }));
     saveAcpSessions(get().acpSessions);
+  },
+  releaseAcpSession: async (sessionId) => {
+    const rt = acpRuntimeOf(get, sessionId);
+    if (rt) await rt.closeSession(sessionId);
+    set((s) => {
+      const runningSessions = { ...s.runningSessions };
+      delete runningSessions[sessionId];
+      const threads = { ...s.threads };
+      // Reloaded on return: the terminal will have added to it.
+      delete threads[sessionId];
+      return { runningSessions, threads };
+    });
   },
   acpConfigOptions: {},
   setAcpConfigOption: async (sessionId, configId, value) => {

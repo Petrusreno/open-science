@@ -6,6 +6,7 @@ import { CLI_AGENTS, ensureCliAgent } from "@/lib/cliAgents";
 import { isTauri } from "@/lib/tauri";
 import { isGatewayWeb } from "@/lib/webMode";
 import { toast } from "@/lib/toast";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { draftKeyFor, useRuntimeStore } from "@/lib/runtime";
 import { startPaneDrag } from "@/lib/dragPane";
 import { extOf } from "@/lib/artifacts";
@@ -46,7 +47,8 @@ export function ContentPane({
   const showDocumentPane = useLayoutStore((s) => s.showDocumentPane);
   const renamePane = useLayoutStore((s) => s.renamePane);
   const dockSession = useLayoutStore((s) => s.dockSession);
-  const closePane = useLayoutStore((s) => s.closePane);
+  const replacePane = useLayoutStore((s) => s.replacePane);
+  const [confirmContinue, setConfirmContinue] = useState(false);
   const adoptAcpSession = useRuntimeStore((s) => s.adoptAcpSession);
   const aimDraft = useRuntimeStore((s) => s.aimDraft);
   const [renaming, setRenaming] = useState(false);
@@ -68,9 +70,9 @@ export function ContentPane({
 
   /**
    * Continue the terminal's agent session as a conversation in the app, in the
-   * terminal's place. The terminal closes: two processes writing one session
-   * would fork its history, and the conversation can always go back to a
-   * terminal (`claude --resume`).
+   * terminal's place, after the user confirms. The terminal closes: two
+   * processes writing one session would fork its history. The conversation
+   * offers the way back (SessionView's terminal button).
    */
   const continueInApp = async (agent: TerminalAgent) => {
     const cli = cliAgentOf(agent);
@@ -81,8 +83,7 @@ export function ContentPane({
       const fallback = folder ?? useRuntimeStore.getState().workspace;
       if (!fallback) throw new Error("No folder to resume this conversation in.");
       await adoptAcpSession(entry.id, agent.sessionId, fallback);
-      dockSession(leafId, "right", agent.sessionId);
-      closePane(leafId);
+      replacePane(leafId, { sessionId: agent.sessionId });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     }
@@ -139,12 +140,12 @@ export function ContentPane({
             <div className="flex-1" />
             {cli && content.agent && (
               <button
-                onClick={() => void continueInApp(content.agent!)}
-                className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] text-muted transition-colors hover:bg-border hover:text-text"
-                title={t("terminal.continueInApp.title", { agent: cli.name })}
+                onClick={() => setConfirmContinue(true)}
+                className="rounded-md p-1 text-muted transition-colors hover:bg-border hover:text-text"
+                aria-label={t("terminal.continueInApp.label")}
+                title={t("terminal.continueInApp.label")}
               >
                 <MessagesSquare size={13} strokeWidth={1.5} />
-                {t("terminal.continueInApp.label")}
               </button>
             )}
             <TerminalSenders leafId={leafId} />
@@ -156,6 +157,22 @@ export function ContentPane({
               <X size={13} strokeWidth={1.5} />
             </button>
           </header>
+          {confirmContinue && cli && content.agent && (
+            <ConfirmDialog
+              title={t("terminal.continueInApp.confirmTitle")}
+              body={t("terminal.continueInApp.confirmBody", { agent: cli.name })}
+              confirmLabel={t("terminal.continueInApp.label")}
+              // eslint-disable-next-line i18next/no-literal-string -- tone enum, not UI copy
+              tone="default"
+              // eslint-disable-next-line i18next/no-literal-string -- scope enum, not UI copy
+              scope="pane"
+              onConfirm={() => {
+                setConfirmContinue(false);
+                void continueInApp(content.agent!);
+              }}
+              onCancel={() => setConfirmContinue(false)}
+            />
+          )}
           <div className="min-h-0 flex-1 overflow-hidden">
             <TerminalPane
               leafId={leafId}

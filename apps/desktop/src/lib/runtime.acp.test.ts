@@ -120,7 +120,7 @@ function fakeAgent() {
             agentInfo: { name: "@agentclientprotocol/codex-acp", title: "Codex" },
             agentCapabilities: {
               loadSession: true,
-              sessionCapabilities: { list: {}, delete: {} },
+              sessionCapabilities: { list: {}, delete: {}, close: {} },
             },
           },
         });
@@ -153,6 +153,7 @@ function fakeAgent() {
             ],
           },
         });
+      if (msg.method === "session/close") push({ jsonrpc: "2.0", id: msg.id, result: {} });
       if (msg.method === "session/load") {
         // History arrives as notifications, then the request is answered.
         const sessionId = (msg.params as { sessionId: string }).sessionId;
@@ -458,6 +459,18 @@ describe("ACP conversations beside OpenCode", () => {
     const s = useRuntimeStore.getState();
     expect(JSON.stringify({ error: s.error, threads: s.threads })).toMatch(/could not start npx/);
     expect(s.status).toBe("ready");
+  });
+
+  it("lets go of a conversation moved to a terminal, and keeps it listed", async () => {
+    const { useRuntimeStore } = await freshStore(null, PAST);
+    await useRuntimeStore.getState().openSession("acp-past-1");
+    await useRuntimeStore.getState().releaseAcpSession("acp-past-1");
+    expect(mocks.agent?.sent.find((m) => m.method === "session/close")?.params).toEqual({
+      sessionId: "acp-past-1",
+    });
+    expect(useRuntimeStore.getState().sessions.map((m) => m.id)).toContain("acp-past-1");
+    // Reloaded on return, since the terminal adds to it meanwhile.
+    expect(useRuntimeStore.getState().threads["acp-past-1"]).toBeUndefined();
   });
 
   it("forgets a deleted conversation here and leaves its history on the agent", async () => {

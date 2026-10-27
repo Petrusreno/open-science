@@ -1,6 +1,6 @@
 // A terminal running Claude Code or Codex can continue as a conversation in the
 // app, in the terminal's place.
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -44,6 +44,11 @@ describe("continuing a terminal agent as a conversation", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "Open as conversation" }));
+    // Nothing moves until the user confirms.
+    expect(adoptAcpSession).not.toHaveBeenCalled();
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Claude Code");
+    await user.click(within(dialog).getByRole("button", { name: "Open as conversation" }));
 
     await waitFor(() =>
       expect(adoptAcpSession).toHaveBeenCalledWith("cli-claude-code", "0b1c2d3e-aaaa", "/ws/project"),
@@ -55,6 +60,19 @@ describe("continuing a terminal agent as a conversation", () => {
     // The terminal is gone (its shell closes with it); the conversation is there.
     expect(all.some((l) => l.id === leafId)).toBe(false);
     expect(all.map((l) => l.sessionId)).toEqual(["0b1c2d3e-aaaa"]);
+  });
+
+  it("leaves the terminal alone when the user cancels", async () => {
+    const user = userEvent.setup();
+    const leafId = openTerminal({
+      kind: "terminal",
+      cwd: "/ws/project",
+      agent: { kind: "codex", sessionId: "019a", running: true },
+    });
+    await user.click(screen.getByRole("button", { name: "Open as conversation" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    expect(adoptAcpSession).not.toHaveBeenCalled();
+    expect(leaves(useLayoutStore.getState().tree!).map((l) => l.id)).toEqual([leafId]);
   });
 
   it("offers nothing for a plain shell", () => {

@@ -743,6 +743,10 @@ interface LayoutState {
   /** Close the focused leaf (no-op on the last pane). */
   closeFocused: () => void;
   closePane: (leafId: string) => void;
+  /** Put something else where a pane is: a conversation where a terminal was,
+   *  or a terminal where a conversation was. The pane gets a new id, so what
+   *  it held (a terminal's shell) closes the way a closed pane's does. */
+  replacePane: (leafId: string, next: { sessionId: string } | { content: PaneContent }) => void;
   focusLeaf: (leafId: string) => void;
   focusAdjacent: (dir: "next" | "prev") => void;
   setSplitSizes: (splitId: string, sizes: number[]) => void;
@@ -1346,6 +1350,20 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       if (!res) return;
       const nextFocus = leafId === focusedLeafId ? res.nextFocusId : focusedLeafId;
       commitActive({ tree: res.tree, focusedLeafId: nextFocus, zoomedLeafId: null });
+    },
+    replacePane: (leafId, next) => {
+      const leaf = "content" in next ? makeContentLeaf(next.content) : makeLeaf(next.sessionId);
+      const swap = (node: PaneNode): PaneNode =>
+        node.kind === "leaf"
+          ? node.id === leafId
+            ? leaf
+            : node
+          : { ...node, children: node.children.map(swap) };
+      commitLeafGroup(leafId, (g) => ({
+        tree: swap(g.tree!),
+        focusedLeafId: leaf.id,
+        zoomedLeafId: g.zoomedLeafId === leafId ? null : g.zoomedLeafId,
+      }));
     },
     focusLeaf: (leafId) => {
       const { tree } = get();

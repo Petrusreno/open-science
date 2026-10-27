@@ -560,7 +560,14 @@
     "recentInput": "Letzte Eingaben von außen:",
     "continueInApp": {
       "label": "Als Unterhaltung öffnen",
-      "title": "Diese {{agent}}-Sitzung als Unterhaltung in der App fortsetzen. Dieses Terminal wird geschlossen."
+      "confirmTitle": "Als Unterhaltung fortsetzen?",
+      "confirmBody": "Diese {{agent}}-Sitzung geht in der Unterhaltungsansicht der App weiter, und dieses Terminal wird geschlossen. Du kannst sie jederzeit zurück ins Terminal holen."
+    },
+    "continueInTerminal": {
+      "label": "Im Terminal fortsetzen",
+      "confirmTitle": "Im Terminal fortsetzen?",
+      "confirmBody": "Diese Unterhaltung geht in einem Terminal genau dort weiter, und dieser Bereich wird zu diesem Terminal. Sie bleibt in der Seitenleiste, du kannst hierher zurück.",
+      "confirmBodyRunning": "Die laufende Antwort wird gestoppt, dann geht diese Unterhaltung in einem Terminal genau dort weiter. Sie bleibt in der Seitenleiste, du kannst hierher zurück."
     }
   },
   "splitInto": {
