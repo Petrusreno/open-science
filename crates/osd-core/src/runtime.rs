@@ -1161,7 +1161,15 @@ pub fn adopt_workspace_skills(
 /// (macOS Homebrew vs. Linux /opt/conda & Linuxbrew), same as python_candidates.
 #[cfg(unix)]
 pub fn enriched_path() -> String {
-    let base = std::env::var("PATH").unwrap_or_default();
+    // The user's own shell comes first: node from nvm, cargo, pnpm and the
+    // rest live wherever their shell profile put them, which no fixed list can
+    // know. The well-known locations below still cover a shell that would not
+    // answer.
+    let process = std::env::var("PATH").unwrap_or_default();
+    let base = match login_shell_path() {
+        Some(shell) => join_unique(&[shell.as_str(), process.as_str()]),
+        None => process,
+    };
     let home = std::env::var("HOME").unwrap_or_default();
 
     #[cfg(target_os = "macos")]
@@ -1202,6 +1210,64 @@ pub fn enriched_path() -> String {
         parts.push(base);
     }
     parts.join(":")
+}
+
+/// Join PATH strings in order, keeping the first copy of each entry.
+#[cfg(unix)]
+fn join_unique(paths: &[&str]) -> String {
+    let mut seen = std::collections::HashSet::new();
+    paths
+        .iter()
+        .flat_map(|p| p.split(':'))
+        .filter(|p| !p.is_empty() && seen.insert(p.to_string()))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// The PATH a new terminal would have, read once from the user's shell.
+///
+/// A GUI app launched from Finder inherits launchd's minimal PATH, so a node
+/// installed through nvm (or anything a profile adds) is invisible to it. The
+/// shell runs as login AND interactive: zsh reads `.zshrc`, where nvm, pyenv
+/// and most installers put themselves, only for an interactive shell; this is
+/// what VS Code and Zed do too. The value is read between markers because an
+/// interactive profile may print a banner, and the wait is bounded because a
+/// profile may also stall.
+#[cfg(unix)]
+pub fn login_shell_path() -> Option<String> {
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+            let mut child = quiet_command(&shell)
+                .args(["-l", "-i", "-c", r#"printf '\n__OSD_PATH__%s__OSD_END__\n' "$PATH""#])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+            let mut stdout = child.stdout.take()?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut out = String::new();
+                let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+                let _ = tx.send(out);
+            });
+            let out = rx.recv_timeout(std::time::Duration::from_secs(5));
+            let _ = child.kill();
+            let _ = child.wait();
+            parse_marked_path(&out.ok()?)
+        })
+        .clone()
+}
+
+/// The PATH printed between the markers, if the shell got that far.
+#[cfg(unix)]
+fn parse_marked_path(out: &str) -> Option<String> {
+    let start = out.rfind("__OSD_PATH__")? + "__OSD_PATH__".len();
+    let len = out[start..].find("__OSD_END__")?;
+    let path = out[start..start + len].trim();
+    (!path.is_empty()).then(|| path.to_string())
 }
 
 /// Windows twin of the unix version above: GUI apps inherit a PATH without the
@@ -2341,6 +2407,28 @@ pub fn kill_child(state: &RuntimeState) {
         kill_and_reap(child);
     }
     lifecycle.url = None;
+}
+
+#[cfg(all(test, unix))]
+mod shell_path_tests {
+    use super::{join_unique, parse_marked_path};
+
+    #[test]
+    fn reads_the_path_past_a_profile_banner() {
+        let out = "Welcome back!\n\n__OSD_PATH__/a/bin:/b/bin__OSD_END__\n";
+        assert_eq!(parse_marked_path(out).as_deref(), Some("/a/bin:/b/bin"));
+    }
+
+    #[test]
+    fn a_shell_that_never_printed_the_marker_gives_nothing() {
+        assert_eq!(parse_marked_path("zsh: command not found\n"), None);
+        assert_eq!(parse_marked_path("__OSD_PATH____OSD_END__"), None);
+    }
+
+    #[test]
+    fn joins_paths_keeping_the_first_copy() {
+        assert_eq!(join_unique(&["/n/bin:/usr/bin", "/usr/bin:/bin:"]), "/n/bin:/usr/bin:/bin");
+    }
 }
 
 #[cfg(test)]

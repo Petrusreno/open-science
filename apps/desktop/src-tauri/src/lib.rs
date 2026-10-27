@@ -110,6 +110,13 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
     forget_launching_agent();
+    // Ask the user's shell for its PATH now, beside the rest of startup: the
+    // sidecar, kernels and agents all wait on it (`enriched_path`), and an
+    // interactive profile takes most of a second to answer.
+    #[cfg(unix)]
+    std::thread::spawn(|| {
+        let _ = osd_core::runtime::login_shell_path();
+    });
     tauri::Builder::default()
         // Single instance MUST be the first plugin. A second launch (or a reinstall
         // while the app is still running) focuses the existing window instead of

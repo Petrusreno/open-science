@@ -154,7 +154,12 @@ pub fn acp_start(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("could not start {command}: {e}"))?;
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => format!(
+                "{command} is not installed, or not on your shell's PATH. Install it, or give its full path in Settings → Agent."
+            ),
+            _ => format!("could not start {command}: {e}"),
+        })?;
 
     let stdout = child.stdout.take().ok_or("the agent has no stdout")?;
     let stderr = child.stderr.take().ok_or("the agent has no stderr")?;
