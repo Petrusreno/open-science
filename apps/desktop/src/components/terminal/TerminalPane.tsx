@@ -20,6 +20,7 @@ import {
 import {
   findLeaf,
   resumeCommand,
+  terminalAgentName,
   terminalStartup,
   useLayoutStore,
   type TerminalAgent,
@@ -441,7 +442,7 @@ export function TerminalPane({
           }}
         >
           {t("terminal.menu.resumeAgent", {
-            agent: agent.kind === "claude" ? "Claude Code" : "Codex",
+            agent: terminalAgentName(agent.kind),
           })}
         </ContextMenuItem>
       )}

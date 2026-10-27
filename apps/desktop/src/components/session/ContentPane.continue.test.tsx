@@ -75,6 +75,14 @@ describe("continuing a terminal agent as a conversation", () => {
     expect(leaves(useLayoutStore.getState().tree!).map((l) => l.id)).toEqual([leafId]);
   });
 
+  it("moves a pi session too, on the pi agent", async () => {
+    const user = userEvent.setup();
+    openTerminal({ kind: "terminal", cwd: "/ws/project", agent: { kind: "pi", sessionId: "01a0", running: true } });
+    await user.click(screen.getByRole("button", { name: "Open as conversation" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Open as conversation" }));
+    await waitFor(() => expect(adoptAcpSession).toHaveBeenCalledWith("cli-pi", "01a0", "/ws/project"));
+  });
+
   it("offers nothing for a plain shell", () => {
     openTerminal({ kind: "terminal", cwd: "/ws/project" });
     expect(screen.queryByRole("button", { name: "Open as conversation" })).not.toBeInTheDocument();

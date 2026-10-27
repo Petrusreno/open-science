@@ -13,6 +13,7 @@ import {
   projectGroups,
   projectOf,
   selectActiveProjectId,
+  terminalAgentName,
   type LayoutGroup,
   type PaneContent,
   type PaneLeaf,
@@ -70,7 +71,7 @@ const basename = (path: string): string => path.replace(/[\\/]+$/, "").split(/[\
  *  `fallback`), its folder, and the coding agent running in it. */
 export function terminalLabel(c: Extract<PaneContent, { kind: "terminal" }>, fallback: string): string {
   const where = c.cwd ? ` · ${basename(c.cwd)}` : "";
-  const agent = c.agent?.running ? ` · ${c.agent.kind === "claude" ? "Claude Code" : "Codex"}` : "";
+  const agent = c.agent?.running ? ` · ${terminalAgentName(c.agent.kind)}` : "";
   return `${c.name || fallback}${where}${agent}`;
 }
 

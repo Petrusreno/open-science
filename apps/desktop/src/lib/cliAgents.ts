@@ -8,6 +8,7 @@
 //
 // Adding an agent is a row here. Nothing else in the app needs to know it.
 import { isTauri } from "./tauri";
+import type { TerminalAgentKind } from "./layout";
 import {
   CLAUDE_ACP_PACKAGE,
   loadAcpAgents,
@@ -76,10 +77,11 @@ export async function detectCliAgents(): Promise<CliAgent[]> {
 }
 
 /** The terminal program behind a catalog agent, when its sessions can move
- *  between a terminal and a conversation (`claude --resume`, `codex resume`). */
-export function terminalKindOf(agentId: string): "claude" | "codex" | null {
+ *  between a terminal and a conversation (`claude --resume`, `codex resume`,
+ *  `pi --session`). */
+export function terminalKindOf(agentId: string): TerminalAgentKind | null {
   const detect = CLI_AGENTS.find((a) => a.id === agentId)?.detect;
-  return detect === "claude" || detect === "codex" ? detect : null;
+  return detect === "claude" || detect === "codex" || detect === "pi" ? detect : null;
 }
 
 let detection: Promise<CliAgent[]> | null = null;

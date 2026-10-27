@@ -50,9 +50,18 @@ export type PaneContent =
  *  foreground program when last looked at, i.e. the user left it open; a
  *  relaunch then resumes it instead of leaving a bare shell. */
 export interface TerminalAgent {
-  kind: "claude" | "codex";
+  kind: TerminalAgentKind;
   sessionId: string;
   running: boolean;
+}
+
+/** The terminal agents whose sessions the app can resume and move. */
+export type TerminalAgentKind = "claude" | "codex" | "pi";
+const TERMINAL_AGENT_KINDS: readonly string[] = ["claude", "codex", "pi"];
+
+/** The product name of a terminal agent, shown as-is in every language. */
+export function terminalAgentName(kind: TerminalAgentKind): string {
+  return { claude: "Claude Code", codex: "Codex", pi: "pi" }[kind];
 }
 
 /** The command that resumes `agent`'s session in a shell, or null when the
@@ -61,9 +70,14 @@ export interface TerminalAgent {
  *  it safe unquoted in every shell (cmd.exe has no single quotes). */
 export function resumeCommand(agent: TerminalAgent): string | null {
   if (!/^[A-Za-z0-9_-]+$/.test(agent.sessionId)) return null;
-  return agent.kind === "claude"
-    ? `claude --resume ${agent.sessionId}`
-    : `codex resume ${agent.sessionId}`;
+  switch (agent.kind) {
+    case "claude":
+      return `claude --resume ${agent.sessionId}`;
+    case "codex":
+      return `codex resume ${agent.sessionId}`;
+    case "pi":
+      return `pi --session ${agent.sessionId}`;
+  }
 }
 
 /** What `terminal_probe` reports for one terminal (see terminal_probe.rs). */
@@ -83,7 +97,8 @@ function isTerminalAgent(v: unknown): v is TerminalAgent {
   if (!v || typeof v !== "object") return false;
   const a = v as Record<string, unknown>;
   return (
-    (a.kind === "claude" || a.kind === "codex") &&
+    typeof a.kind === "string" &&
+    TERMINAL_AGENT_KINDS.includes(a.kind) &&
     typeof a.sessionId === "string" &&
     typeof a.running === "boolean"
   );
