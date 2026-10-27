@@ -278,8 +278,9 @@ interface RuntimeState {
   draftRuntimes: Record<string, string | null>;
   setDraftRuntime: (draftKey: string, agentId: string | null) => void;
   /** List an ACP agent's existing session (one started in a terminal) as a
-   *  conversation here, so opening it replays it on that agent. */
-  adoptAcpSession: (agentId: string, sessionId: string, directory: string, title?: string) => void;
+   *  conversation here, so opening it replays it on that agent. Its folder and
+   *  title come from the agent's own list; `directory` is the fallback. */
+  adoptAcpSession: (agentId: string, sessionId: string, directory: string) => Promise<void>;
   /** The ACP agent's OWN selectors per session — model, reasoning level,
    *  permission mode — as it reported them (`configOptions`). This is what the
    *  composer offers instead of our model picker: ACP v1 changes a model through
@@ -2746,20 +2747,22 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   draftRuntimes: {},
   setDraftRuntime: (draftKey, agentId) =>
     set((s) => ({ draftRuntimes: { ...s.draftRuntimes, [draftKey]: agentId } })),
-  adoptAcpSession: (agentId, sessionId, directory, title) => {
+  adoptAcpSession: async (agentId, sessionId, directory) => {
+    // The folder matters beyond grouping: Claude Code files a session under the
+    // folder it ran in, and resuming it from any other folder finds nothing.
+    // The shell may have moved since the agent started, so ask the agent.
+    const rt = await startAcpRuntime(agentId, directory);
+    const listed = (await rt.listSessions().catch(() => [])).find((m) => m.id === sessionId);
+    const record: AcpSessionRecord = {
+      agentId,
+      title: listed?.title || get().acpSessions[sessionId]?.title || "Session",
+      directory: listed?.directory || directory,
+      updated: listed?.updated ?? Date.now(),
+    };
+    const row: SessionMeta = { id: sessionId, title: record.title, directory: record.directory, updated: record.updated };
     set((s) => ({
-      acpSessions: {
-        ...s.acpSessions,
-        [sessionId]: {
-          agentId,
-          title: title || s.acpSessions[sessionId]?.title || "Session",
-          directory,
-          updated: Date.now(),
-        },
-      },
-      sessions: s.sessions.some((m) => m.id === sessionId)
-        ? s.sessions
-        : [...s.sessions, { id: sessionId, title: title || "Session", directory, updated: Date.now() }],
+      acpSessions: { ...s.acpSessions, [sessionId]: record },
+      sessions: [...s.sessions.filter((m) => m.id !== sessionId), row],
     }));
     saveAcpSessions(get().acpSessions);
   },

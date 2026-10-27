@@ -375,9 +375,11 @@ describe("ACP conversations beside OpenCode", () => {
 
   it("opens a session started outside the app (a terminal) once it is adopted", async () => {
     const { useRuntimeStore } = await freshStore(null);
-    useRuntimeStore.getState().adoptAcpSession("acp-1", "acp-past-1", "/ws/older-project", "From the terminal");
+    // The terminal's folder is only a fallback: the agent says where the
+    // session lives (the shell may have moved), and that is where it resumes.
+    await useRuntimeStore.getState().adoptAcpSession("acp-1", "acp-past-1", "/ws/project");
     expect(useRuntimeStore.getState().sessions).toContainEqual(
-      expect.objectContaining({ id: "acp-past-1", directory: "/ws/older-project" }),
+      expect.objectContaining({ id: "acp-past-1", title: "Yesterday's run", directory: "/ws/older-project" }),
     );
     await useRuntimeStore.getState().openSession("acp-past-1");
     expect(useRuntimeStore.getState().threads["acp-past-1"]?.blocks).toHaveLength(2);

@@ -542,7 +542,11 @@
       "none": "該当なし",
       "find": "検索…"
     },
-    "recentInput": "外部からの最近の入力："
+    "recentInput": "外部からの最近の入力：",
+    "continueInApp": {
+      "label": "会話で続ける",
+      "title": "この {{agent}} セッションをアプリの会話として続けます。このターミナルは閉じます。"
+    }
   },
   "splitInto": {
     "session": "セッション"

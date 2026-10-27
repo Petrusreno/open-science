@@ -555,7 +555,11 @@
       "none": "aucun résultat",
       "find": "Rechercher…"
     },
-    "recentInput": "Saisies récentes venues de l’extérieur :"
+    "recentInput": "Saisies récentes venues de l’extérieur :",
+    "continueInApp": {
+      "label": "Ouvrir en conversation",
+      "title": "Poursuivre cette session {{agent}} comme conversation dans l’app. Ce terminal se ferme."
+    }
   },
   "splitInto": {
     "session": "Session"

@@ -555,7 +555,11 @@
       "none": "sin resultados",
       "find": "Buscar…"
     },
-    "recentInput": "Entradas recientes desde fuera:"
+    "recentInput": "Entradas recientes desde fuera:",
+    "continueInApp": {
+      "label": "Abrir como conversación",
+      "title": "Continúa esta sesión de {{agent}} como una conversación en la app. Esta terminal se cierra."
+    }
   },
   "splitInto": {
     "session": "Sesión"

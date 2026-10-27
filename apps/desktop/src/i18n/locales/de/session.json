@@ -555,7 +555,11 @@
       "none": "keine Treffer",
       "find": "Suchen…"
     },
-    "recentInput": "Letzte Eingaben von außen:"
+    "recentInput": "Letzte Eingaben von außen:",
+    "continueInApp": {
+      "label": "Als Unterhaltung öffnen",
+      "title": "Diese {{agent}}-Sitzung als Unterhaltung in der App fortsetzen. Dieses Terminal wird geschlossen."
+    }
   },
   "splitInto": {
     "session": "Sitzung"

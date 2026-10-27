@@ -555,7 +555,11 @@
       "none": "no results",
       "find": "Find…"
     },
-    "recentInput": "Recent input from outside:"
+    "recentInput": "Recent input from outside:",
+    "continueInApp": {
+      "label": "Open as conversation",
+      "title": "Continue this {{agent}} session as a conversation in the app. This terminal closes."
+    }
   },
   "splitInto": {
     "session": "Session"

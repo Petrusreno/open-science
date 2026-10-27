@@ -542,7 +542,11 @@
       "none": "결과 없음",
       "find": "찾기…"
     },
-    "recentInput": "외부에서 온 최근 입력:"
+    "recentInput": "외부에서 온 최근 입력:",
+    "continueInApp": {
+      "label": "대화로 계속",
+      "title": "이 {{agent}} 세션을 앱의 대화로 이어갑니다. 이 터미널은 닫힙니다."
+    }
   },
   "splitInto": {
     "session": "세션"

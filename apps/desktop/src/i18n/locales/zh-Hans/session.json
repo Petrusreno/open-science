@@ -542,7 +542,11 @@
       "none": "无结果",
       "find": "查找…"
     },
-    "recentInput": "最近来自外部的输入："
+    "recentInput": "最近来自外部的输入：",
+    "continueInApp": {
+      "label": "在对话中继续",
+      "title": "把这个 {{agent}} 会话转到应用的对话界面里继续，这个终端会关闭。"
+    }
   },
   "splitInto": {
     "session": "会话"
