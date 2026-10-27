@@ -134,3 +134,23 @@ describe("TerminalPane resize", () => {
     xterm.cols = 80;
   });
 });
+
+describe("TerminalPane font", () => {
+  it("opens the terminal only once its web font has loaded, so the cell is measured in it", async () => {
+    const pending: (() => void)[] = [];
+    const load = vi.fn(() => new Promise<FontFace[]>((r) => pending.push(() => r([]))));
+    Object.defineProperty(document, "fonts", { value: { load }, configurable: true });
+    xterm.keyHandler = null;
+    try {
+      render(<TerminalPane leafId="font-1" />);
+      await waitFor(() => expect(load).toHaveBeenCalled());
+      expect(String(load.mock.calls[0])).toContain("JetBrains Mono");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(xterm.keyHandler).toBeNull();
+      pending.forEach((done) => done());
+      await waitFor(() => expect(xterm.keyHandler).not.toBeNull());
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+});

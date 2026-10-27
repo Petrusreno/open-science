@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-26 21:13 · Terminal: the bottom rows (Claude Code's input box) no longer hide below a pane. A terminal opened before the JetBrains Mono web font loaded measured a fallback font (about 14.7 px a line at 12.5 px against 16.5 px); xterm re-measures on every resize but kept the row count, so about six rows fell outside the pane, out of scroll's reach, until the pane was resized. Terminals now open after the font has loaded. vitest green; not reproduced in the packaged app.
+
 2026-10-26 21:07 · Terminal: full-width punctuation typed with Shift under macOS Pinyin (？：！（）《》) now goes in on the first press. xterm 5.5 counts a held Shift as a pending keydown and drops IME text that arrives before the key's own keydown, which is the order macOS Pinyin uses (xtermjs/xterm.js#6144, unmerged fix #6200); a modifier keydown now releases that gate. A real-xterm test reproduces the drop and fails if an upgrade renames the private field. vitest 1890 green. Not checked in the packaged app with a real input method.
 
 2026-10-26 21:30 · The terminal host now runs from a copy in the data folder on macOS too, so a manual install (close the app, drag the new one over it) meets no running file inside the old bundle. Verified on a packaged build: with a looping shell in the host, the closed app's bundle had 0 open files, Finder replaced it, and the relaunched new copy reattached the same shell (pid unchanged, output continued).

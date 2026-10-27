@@ -130,6 +130,7 @@ export function TerminalPane({
         import("@xterm/addon-unicode11"),
         import("@xterm/addon-webgl"),
         import("@xterm/xterm/css/xterm.css"),
+        loadTerminalFont(),
       ]);
       if (disposed) return;
 
@@ -504,6 +505,21 @@ const TERMINAL_OPTIONS = {
   macOptionClickForcesSelection: true,
   drawBoldTextInBrightColors: true,
 } as const;
+
+/** Waits for the terminal's own font before a terminal opens. xterm measures
+ *  its cell when it opens and again on every resize, and JetBrains Mono is a
+ *  web font that loads on first use. A pane opened before it arrived (the
+ *  restored layout at launch) measured a fallback font; its next resize
+ *  measured the taller real one but kept the row count, so the bottom rows,
+ *  Claude Code's input box among them, sat below the pane where no scrolling
+ *  reaches them. */
+function loadTerminalFont(): Promise<unknown> {
+  if (!document.fonts) return Promise.resolve();
+  const { fontSize, fontFamily, fontWeight, fontWeightBold } = TERMINAL_OPTIONS;
+  return Promise.all(
+    [fontWeight, fontWeightBold].map((w) => document.fonts.load(`${w} ${fontSize}px ${fontFamily}`)),
+  ).catch(() => undefined);
+}
 
 /** Clipboard reads and Finder, kept out of the menu body so it reads as a list
  *  of actions rather than a list of dynamic imports. */
