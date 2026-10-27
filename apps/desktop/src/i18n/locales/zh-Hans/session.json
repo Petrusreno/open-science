@@ -160,7 +160,12 @@
       "add": "排队发送",
       "addTitle": "本轮结束后发送（Enter）· Cmd/Ctrl+Enter 立即插话"
     },
-    "busyCommand": "等这一轮结束再运行命令。"
+    "busyCommand": "等这一轮结束再运行命令。",
+    "runtime": {
+      "aria": "智能体",
+      "title": "这个对话由哪个智能体运行",
+      "locked": "这个对话固定由这个智能体运行。换智能体请新建对话。"
+    }
   },
   "localCommand": {
     "newDescription": "在当前文件夹开始新对话",

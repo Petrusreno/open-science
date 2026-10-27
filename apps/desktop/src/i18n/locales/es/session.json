@@ -160,7 +160,12 @@
       "add": "Poner en cola",
       "addTitle": "Enviar al terminar este turno (Enter) · Cmd/Ctrl+Enter interviene ahora"
     },
-    "busyCommand": "Espera a que termine este turno para ejecutar un comando."
+    "busyCommand": "Espera a que termine este turno para ejecutar un comando.",
+    "runtime": {
+      "aria": "Agente",
+      "title": "Qué agente ejecuta esta conversación",
+      "locked": "Esta conversación se ejecuta en este agente. Inicia una conversación nueva para usar otro."
+    }
   },
   "localCommand": {
     "newDescription": "Nueva conversación en esta carpeta",

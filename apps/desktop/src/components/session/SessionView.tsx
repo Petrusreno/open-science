@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import type { RuntimeStatus } from "@ai4s/shared";
 import {
+  acpAgentFor,
   contextLimitFor,
   draftKeyFor,
   inheritedDraftFolder,
@@ -28,6 +29,7 @@ import { startPaneDrag } from "@/lib/dragPane";
 import { allowsNativeMenu } from "@/lib/nativeMenu";
 import { FindBar } from "@/components/ui/FindBar";
 import { isTauri } from "@/lib/tauri";
+import { RuntimePicker } from "@/components/thread/RuntimePicker";
 import { isGatewayWeb } from "@/lib/webMode";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { queryRuns } from "@/lib/runs";
@@ -189,6 +191,10 @@ export function SessionView({
   // independent draft and each create their own session on first send (#2).
   const draftKey = draftKeyFor(leafId);
   const key = eid ?? draftKey;
+  // The ACP agent this conversation runs on, or null for OpenCode (#14).
+  const acpAgentId = useRuntimeStore((s) => acpAgentFor(s, key));
+  const acp = acpAgentId !== null;
+  const setDraftRuntime = useRuntimeStore((s) => s.setDraftRuntime);
 
   // Per-field selection (never a bare useRuntimeStore()): a background session's
   // SSE folds must not repaint this pane. The active thread is selected on its
@@ -333,9 +339,11 @@ export function SessionView({
       { name: "new", description: t("localCommand.newDescription"), source: "local", immediate: true },
       { name: "clear", description: t("localCommand.clearDescription"), source: "local", immediate: true },
     ];
+    // OpenCode's commands, skills and MCP prompts mean nothing to an ACP agent.
+    if (acp) return local;
     const localNames = new Set(local.map((c) => c.name));
     return [...local, ...commands.filter((c) => !localNames.has(c.name))];
-  }, [commands, t]);
+  }, [commands, t, acp]);
 
   // Which subagent the transcript last asked the panel to show. The counter
   // makes a repeat ask distinct from the previous one (see SubagentPane).
@@ -441,11 +449,10 @@ export function SessionView({
       ? (sessions.find((s) => s.id === activeRequest.sessionId)?.title ?? t("live.subagentFallback"))
       : undefined;
 
-  // An ACP agent is driving instead of the bundled OpenCode runtime (#14).
-  const acp = useRuntimeStore((s) => s.runtimeKind) === "acp";
   const acpConfigOptions = useRuntimeStore((s) => s.acpConfigOptions);
   const setAcpConfigOption = useRuntimeStore((s) => s.setAcpConfigOption);
-  const planAvailable = agents.some((a) => a.name === "plan");
+  // Plan mode is an OpenCode agent; an ACP agent brings its own modes.
+  const planAvailable = !acp && agents.some((a) => a.name === "plan");
   const agentMode = sessionAgents[key] ?? "build";
   const activeArtifact = pane?.artifact ?? null;
   const showFiles = !activeArtifact && !!pane?.showFiles;
@@ -1153,6 +1160,17 @@ export function SessionView({
                 // agent owns its model list, and `session/set_config_option` is how
                 // v1 changes it.
                 configOptions={acp && !webReadOnly ? (acpConfigOptions[key] ?? []) : undefined}
+                // The agent is a child process of the desktop: the web client
+                // can neither start one nor reach a conversation running on one.
+                runtimePicker={
+                  isTauri && !isGatewayWeb && !webReadOnly ? (
+                    <RuntimePicker
+                      value={acpAgentId}
+                      locked={!!eid}
+                      onChange={(agentId) => setDraftRuntime(draftKey, agentId)}
+                    />
+                  ) : undefined
+                }
                 onConfigOption={
                   acp && sid
                     ? (configId, value) => void setAcpConfigOption(sid, configId, value)

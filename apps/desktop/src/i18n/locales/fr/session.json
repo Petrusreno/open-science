@@ -160,7 +160,12 @@
       "add": "Mettre en attente",
       "addTitle": "Envoyer après ce tour (Entrée) · Cmd/Ctrl+Entrée intervient maintenant"
     },
-    "busyCommand": "Attendez la fin de ce tour avant de lancer une commande."
+    "busyCommand": "Attendez la fin de ce tour avant de lancer une commande.",
+    "runtime": {
+      "aria": "Agent",
+      "title": "Quel agent exécute cette conversation",
+      "locked": "Cette conversation s’exécute sur cet agent. Commencez une nouvelle conversation pour en utiliser un autre."
+    }
   },
   "localCommand": {
     "newDescription": "Nouvelle conversation dans ce dossier",

@@ -95,7 +95,8 @@ export function saveAcpAgents(agents: AcpAgentConfig[]): void {
   }
 }
 
-/** The selected agent's id, or null for the bundled OpenCode runtime. */
+/** The agent new conversations start on, or null for the bundled OpenCode
+ *  runtime. A draft's own pick in the composer overrides it. */
 export function activeAcpAgentId(): string | null {
   return storage()?.getItem(ACTIVE_KEY) || null;
 }
@@ -112,7 +113,7 @@ export function setActiveAcpAgentId(id: string | null): void {
 }
 
 /**
- * The agent to run, or null for the bundled OpenCode runtime.
+ * The agent new conversations start on, or null for the bundled OpenCode runtime.
  *
  * A selection naming an agent that is no longer configured resolves to null, not
  * to an error: deleting the selected entry must fall back to OpenCode rather
@@ -173,4 +174,50 @@ export function parseCommandArgs(text: string): string[] {
 /** The inverse, for the editor field: quote any argument that contains spaces. */
 export function formatCommandArgs(args: string[]): string {
   return args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
+}
+
+/** A conversation that runs on an ACP agent rather than on OpenCode. OpenCode
+ *  lists its own sessions; these are the app's record of the others, so they
+ *  stay in the sidebar across restarts and reopen on the agent that owns them. */
+export interface AcpSessionRecord {
+  agentId: string;
+  title: string;
+  directory?: string;
+  updated?: number;
+}
+
+const SESSIONS_KEY = "ai4s.acp.sessions.v1";
+
+export function loadAcpSessions(): Record<string, AcpSessionRecord> {
+  const store = storage();
+  if (!store) return {};
+  try {
+    const raw: unknown = JSON.parse(store.getItem(SESSIONS_KEY) ?? "{}");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, AcpSessionRecord> = {};
+    for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const { agentId, title, directory, updated } = value as Record<string, unknown>;
+      if (typeof agentId !== "string" || !agentId) continue;
+      out[id] = {
+        agentId,
+        title: typeof title === "string" && title ? title : "Session",
+        ...(typeof directory === "string" && directory ? { directory } : {}),
+        ...(typeof updated === "number" && Number.isFinite(updated) ? { updated } : {}),
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveAcpSessions(records: Record<string, AcpSessionRecord>): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.setItem(SESSIONS_KEY, JSON.stringify(records));
+  } catch {
+    /* storage full/unavailable: the record lives until the app closes */
+  }
 }

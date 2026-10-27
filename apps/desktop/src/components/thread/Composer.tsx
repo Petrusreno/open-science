@@ -5,6 +5,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -160,6 +161,7 @@ export function Composer({
   modelSessionId,
   configOptions,
   onConfigOption,
+  runtimePicker,
   showWorkspaceChip = true,
   draftKey,
   sessionDir,
@@ -206,6 +208,9 @@ export function Composer({
    *  model, and these are the choices it actually offers (#14). */
   configOptions?: AcpConfigOption[];
   onConfigOption?: (configId: string, value: string) => void;
+  /** Which agent this conversation runs on (`RuntimePicker`), left of the
+   *  model controls. Omitted where there is no choice to show. */
+  runtimePicker?: ReactNode;
   /** Show the draft workspace-folder chip. Only the draft pane opts in — in a
    *  split layout the other panes already have a bound session/folder. */
   showWorkspaceChip?: boolean;
@@ -1293,6 +1298,7 @@ export function Composer({
               onCancel={() => setConfirmCompact(false)}
             />
           )}
+          {runtimePicker}
           {showModelPicker && <ModelPicker sessionId={modelSessionId} compact={compactToolbar} />}
           {configOptions && onConfigOption && (
             <AcpConfigPicker options={configOptions} onChange={onConfigOption} disabled={working} />

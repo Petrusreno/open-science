@@ -167,7 +167,6 @@ export function SettingsPage() {
   const disconnect = useRuntimeStore((s) => s.disconnect);
   const defaultModel = useRuntimeStore((s) => s.defaultModel);
   const loadCatalog = useRuntimeStore((s) => s.loadCatalog);
-  const runtimeKind = useRuntimeStore((s) => s.runtimeKind);
   const autoReview = useRuntimeStore((s) => s.autoReview);
   const setAutoReview = useRuntimeStore((s) => s.setAutoReview);
   const turnNotify = useRuntimeStore((s) => s.turnNotify);
@@ -1907,7 +1906,7 @@ export function SettingsPage() {
         )}
 
         {/* ---- Review ---- */}
-        {section === "general" && runtimeKind !== "acp" && (
+        {section === "general" && (
         <Section title={t("review.title")} hint={t("review.hint")} flush>
           <div className="divide-y divide-faint">
             <Row
@@ -1928,7 +1927,7 @@ export function SettingsPage() {
         {/* ---- Turn-completion notifications ---- */}
         {/* Desktop only: the gateway web client has no native notifications.
             Off by default; fires one system notification per settled turn. */}
-        {section === "general" && isTauri && runtimeKind !== "acp" && (
+        {section === "general" && isTauri && (
           <Section title={t("notify.title")} hint={t("notify.hint")} flush>
             <div className="divide-y divide-faint">
               <Row
@@ -1951,7 +1950,7 @@ export function SettingsPage() {
             repeating the same tool call with identical results (Channel B) —
             and offer Keep waiting / Stop. Never auto-interrupts. Available on
             the web too (the warning is inline there; no system notification). */}
-        {section === "general" && runtimeKind !== "acp" && (
+        {section === "general" && (
           <Section
             title={t("stall.title")}
             hint={t("stall.hint") + (isGatewayWeb ? ` ${t("stall.webNote")}` : "")}
@@ -2025,7 +2024,7 @@ export function SettingsPage() {
         {/* Desktop only: it needs a folder on this machine and a local runtime
             to import into, so the gateway web client hides it rather than
             offering a control that cannot work. */}
-        {section === "general" && isTauri && runtimeKind !== "acp" && <ConversationSyncCard />}
+        {section === "general" && isTauri && <ConversationSyncCard />}
 
         {/* ---- Which agent this app drives: OpenCode, or an ACP agent (#14) ---- */}
         {section === "runtime" && <AcpAgentsCard />}

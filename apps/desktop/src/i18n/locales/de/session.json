@@ -160,7 +160,12 @@
       "add": "Nachricht einreihen",
       "addTitle": "Nach diesem Durchgang senden (Enter) · Cmd/Strg+Enter schiebt sie jetzt ein"
     },
-    "busyCommand": "Warte, bis dieser Durchgang fertig ist, bevor du einen Befehl ausführst."
+    "busyCommand": "Warte, bis dieser Durchgang fertig ist, bevor du einen Befehl ausführst.",
+    "runtime": {
+      "aria": "Agent",
+      "title": "Welcher Agent diese Unterhaltung ausführt",
+      "locked": "Diese Unterhaltung läuft auf diesem Agenten. Für einen anderen Agenten eine neue Unterhaltung beginnen."
+    }
   },
   "localCommand": {
     "newDescription": "Neues Gespräch in diesem Ordner",

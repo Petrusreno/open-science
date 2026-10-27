@@ -160,7 +160,12 @@
       "add": "Queue message",
       "addTitle": "Queue for after this turn (Enter) · Cmd/Ctrl+Enter steers it in now"
     },
-    "busyCommand": "Wait for this turn to finish before running a command."
+    "busyCommand": "Wait for this turn to finish before running a command.",
+    "runtime": {
+      "aria": "Agent",
+      "title": "Which agent this conversation runs on",
+      "locked": "This conversation runs on this agent. Start a new conversation to use another."
+    }
   },
   "localCommand": {
     "newDescription": "New conversation in this folder",

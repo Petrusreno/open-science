@@ -3,8 +3,8 @@
 // Borrowed in shape from Orca (`src/shared/tui-agent-config.ts`, MIT): an agent
 // is not an integration written per vendor, it is a COMMAND that may or may not
 // be installed, described by a row in a table. Orca runs them as TUI processes
-// in a terminal; this app has no terminal, so it drives the same binaries over
-// ACP — the protocol OSD already speaks (`lib/acpTransport.ts`).
+// in a terminal; this app drives the same binaries over ACP, so a conversation
+// with them uses the app's own thread and composer (`lib/acpTransport.ts`).
 //
 // Adding an agent is a row here. Nothing else in the app needs to know it.
 import { isTauri } from "./tauri";
@@ -12,7 +12,6 @@ import {
   CLAUDE_ACP_PACKAGE,
   loadAcpAgents,
   saveAcpAgents,
-  setActiveAcpAgentId,
   type AcpAgentConfig,
 } from "./acpAgents";
 
@@ -66,15 +65,24 @@ export async function detectCliAgents(): Promise<CliAgent[]> {
   return CLI_AGENTS.filter((agent) => found.includes(agent.detect));
 }
 
+let detection: Promise<CliAgent[]> | null = null;
+
+/** `detectCliAgents`, asked once per run: an install does not appear
+ *  mid-session, and every composer asking would walk PATH per pane. */
+export function detectCliAgentsOnce(): Promise<CliAgent[]> {
+  detection ??= detectCliAgents().catch(() => []);
+  return detection;
+}
+
 /**
- * Make this agent the one the app runs, and return the config list to persist.
+ * Make sure this agent has a configured entry, and return it.
  *
  * Its entry is created on first use rather than up front: a user who never
  * picks Gemini should not find a Gemini row in their settings. An existing
  * entry is overwritten, so a catalog fix reaches a machine that used the old
  * command once.
  */
-export function selectCliAgent(agent: CliAgent): AcpAgentConfig[] {
+export function ensureCliAgent(agent: CliAgent): AcpAgentConfig {
   const entry: AcpAgentConfig = {
     id: agent.id,
     name: agent.name,
@@ -82,10 +90,10 @@ export function selectCliAgent(agent: CliAgent): AcpAgentConfig[] {
     args: agent.args,
   };
   const existing = loadAcpAgents();
-  const next = existing.some((a) => a.id === entry.id)
-    ? existing.map((a) => (a.id === entry.id ? entry : a))
-    : [...existing, entry];
-  saveAcpAgents(next);
-  setActiveAcpAgentId(entry.id);
-  return next;
+  saveAcpAgents(
+    existing.some((a) => a.id === entry.id)
+      ? existing.map((a) => (a.id === entry.id ? entry : a))
+      : [...existing, entry],
+  );
+  return entry;
 }

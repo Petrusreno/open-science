@@ -566,7 +566,7 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
       `${this.displayName} is not signed in: ${err.message}. ` +
         `Its sign-in is its own — run the agent's login command in a terminal` +
         (offers.length > 0 ? ` (it offers ${offers.join(", ")})` : "") +
-        `, then reconnect in Settings → Runtime.`,
+        `, then send the message again.`,
     );
   }
 
