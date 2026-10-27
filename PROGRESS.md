@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-27 01:20 · pi sessions move between terminal and conversation like Claude Code and Codex: the terminal probe knows pi by its arguments (it runs under node) and finds its session as the newest file in pi's session folder written since the process started, so the button appears after pi's first message. Checked on a live node process with pi's argv and an isolated PI_CODING_AGENT_DIR; cargo terminal_probe 12 and vitest 1918 green. Not yet tried with a real pi conversation in the packaged app.
+
 2026-10-27 00:55 · pi joins the agents (Run an agent menu, the picker, the Settings presets) through pi-acp, checked against pi 0.84.2 on this machine: protocol 1, loadSession, model and thought_level selectors read without a conversation, and the throwaway session deleted. Moving a pi session between terminal and conversation is not wired: the terminal only recognises Claude Code and Codex.
 
 2026-10-27 00:50 · A new conversation on Claude Code (or any ACP agent) can pick its model before the first message: the picker reads the agent's selectors through a throwaway session/new + session/delete, about 1.5 s on claude-agent-acp 0.97.0 once the agent is up, leaving no session file (checked against the real adapter). vitest 1917 green.
