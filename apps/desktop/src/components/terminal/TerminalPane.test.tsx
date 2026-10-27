@@ -15,13 +15,22 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 // The one xterm instance, and the key handler it was given when created.
 // `cols` is what the fit addon last measured; a test changes it to resize.
-const xterm = vi.hoisted(() => ({ keyHandler: null as ((e: KeyboardEvent) => boolean) | null, cols: 80 }));
+const xterm = vi.hoisted(() => ({
+  keyHandler: null as ((e: KeyboardEvent) => boolean) | null,
+  cols: 80,
+  last: null as { options: Record<string, unknown> } | null,
+}));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     get cols() {
       return xterm.cols;
     }
     rows = 24;
+    options: Record<string, unknown> = {};
+    constructor(options: Record<string, unknown>) {
+      xterm.last = this;
+      this.options = { ...options };
+    }
     unicode = { activeVersion: "" };
     loadAddon() {}
     attachCustomKeyEventHandler(fn: (e: KeyboardEvent) => boolean) {
@@ -152,5 +161,24 @@ describe("TerminalPane font", () => {
     } finally {
       delete (document as { fonts?: unknown }).fonts;
     }
+  });
+});
+
+describe("TerminalPane theme", () => {
+  it("repaints in the new theme when the app switches theme", async () => {
+    const root = document.documentElement;
+    root.style.setProperty("--surface", "#ffffff");
+    xterm.keyHandler = null;
+    render(<TerminalPane leafId="theme-1" />);
+    await waitFor(() => expect(xterm.keyHandler).not.toBeNull());
+    expect((xterm.last!.options.theme as { background: string }).background).toBe("#ffffff");
+
+    root.style.setProperty("--surface", "#1e1d24");
+    root.dataset.theme = "dark";
+    await waitFor(() =>
+      expect((xterm.last!.options.theme as { background: string }).background).toBe("#1e1d24"),
+    );
+    delete root.dataset.theme;
+    root.style.removeProperty("--surface");
   });
 });

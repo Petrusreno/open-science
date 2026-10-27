@@ -274,6 +274,13 @@ export function TerminalPane({
       });
       observer.observe(container);
 
+      // Follows the theme as it changes (Settings, or the system's light/dark
+      // when the theme is "system"), not just the one it opened in.
+      const themeWatch = new MutationObserver(() => {
+        term.options.theme = readTheme();
+      });
+      themeWatch.observe(document.documentElement, { attributeFilter: ["data-theme"] });
+
       // Sent once, on the pane's FIRST open — never on a remount, which would
       // re-run it over whatever the user is doing in that shell.
       // And only into a shell this open STARTED: one already running (the
@@ -294,6 +301,7 @@ export function TerminalPane({
           input.dispose();
           links.dispose();
           observer.disconnect();
+          themeWatch.disconnect();
           if (queued) cancelAnimationFrame(queued);
           clearTimeout(settle);
         },
@@ -539,7 +547,7 @@ async function revealPath(path: string): Promise<void> {
 }
 
 /** xterm paints its own canvas, so it cannot inherit CSS variables — the
- *  current values are read once and handed over. */
+ *  current values are read and handed over, again on every theme change. */
 function readTheme() {
   const style = getComputedStyle(document.documentElement);
   const value = (name: string, fallback: string) =>
