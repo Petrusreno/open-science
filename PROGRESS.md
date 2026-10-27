@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-26 22:31 · Open terminals are listed in the sidebar. A terminal is not a runtime session, so the rail never showed one and the only way back was its Screen tab. Each terminal now has a row (terminal icon; name or "Terminal", folder, and Claude Code / Codex when running, the same label as ⌘J via `terminalLabel`) under its Screen's project, after new-session drafts and before sessions; a click shows its Screen and focuses it. vitest 1893 green; not screenshot-checked.
+
 2026-10-26 22:20 · Terminal follows the theme live. Its colours (background, text, cursor, selection) were read once when the pane opened, so after switching to warm or dark, or the system flipping light/dark under "system", open terminals kept the old palette (a white terminal in a dark window). They now repaint on every data-theme change. vitest 1892 green; not checked by screenshot.
 
 2026-10-26 21:13 · Terminal: the bottom rows (Claude Code's input box) no longer hide below a pane. A terminal opened before the JetBrains Mono web font loaded measured a fallback font (about 14.7 px a line at 12.5 px against 16.5 px); xterm re-measures on every resize but kept the row count, so about six rows fell outside the pane, out of scroll's reach, until the pane was resized. Terminals now open after the font has loaded. vitest green; not reproduced in the packaged app.
