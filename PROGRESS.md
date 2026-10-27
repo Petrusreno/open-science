@@ -1,6 +1,7 @@
 # Progress
 
-2026-10-26 22:50 Terminal: resizing a pane no longer stacks copies of Claude Code's latest turn in scrollback; xterm resizes only once the program answers, and Claude Code's full-screen repaint is cut to one screenful after clearing the old screen (replayed captures of Claude Code 2.1.311 match a clean --resume line for line; not yet seen in the packaged app).
+2026-10-26 22:50 · Terminal: resizing a pane no longer stacks copies of Claude Code's latest turn in scrollback; xterm resizes only once the program answers, and Claude Code's full-screen repaint is cut to one screenful after clearing the old screen (replayed captures of Claude Code 2.1.311 match a clean --resume line for line; not yet seen in the packaged app).
+
 2026-10-26 22:31 · Open terminals are listed in the sidebar. A terminal is not a runtime session, so the rail never showed one and the only way back was its Screen tab. Each terminal now has a row (terminal icon; name or "Terminal", folder, and Claude Code / Codex when running, the same label as ⌘J via `terminalLabel`) under its Screen's project, after new-session drafts and before sessions; a click shows its Screen and focuses it. vitest 1893 green; not screenshot-checked.
 
 2026-10-26 22:20 · Terminal follows the theme live. Its colours (background, text, cursor, selection) were read once when the pane opened, so after switching to warm or dark, or the system flipping light/dark under "system", open terminals kept the old palette (a white terminal in a dark window). They now repaint on every data-theme change. vitest 1892 green; not checked by screenshot.
