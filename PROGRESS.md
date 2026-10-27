@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-27 00:55 · pi joins the agents (Run an agent menu, the picker, the Settings presets) through pi-acp, checked against pi 0.84.2 on this machine: protocol 1, loadSession, model and thought_level selectors read without a conversation, and the throwaway session deleted. Moving a pi session between terminal and conversation is not wired: the terminal only recognises Claude Code and Codex.
+
 2026-10-27 00:50 · A new conversation on Claude Code (or any ACP agent) can pick its model before the first message: the picker reads the agent's selectors through a throwaway session/new + session/delete, about 1.5 s on claude-agent-acp 0.97.0 once the agent is up, leaving no session file (checked against the real adapter). vitest 1917 green.
 
 2026-10-27 00:30 · Terminal and conversation, both ways: a terminal running Claude Code or Codex shows a small icon that asks, then continues the session as a conversation in that pane; the conversation's header has a terminal icon that asks, closes the session on the agent (session/close, stopping a running reply), and resumes it in a terminal in the same pane. ACP agents now get the app's proxy setting like terminals do. vitest 1914 green; dialog checked in headless Chrome, not yet in the packaged app.
