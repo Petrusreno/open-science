@@ -350,6 +350,28 @@ pub struct ExportSummary {
 pub(crate) fn runs(root: &Path) -> Result<Vec<RunRecord>, String> {
     rows(&connect(root)?, "runs")
 }
+/// Runs after the first `skip` rows, in commit order, plus the row total. The
+/// ledger is append-only, so a row count is a sound watermark for incremental
+/// readers. `skip > total` means the database was replaced: the caller restarts.
+pub(crate) fn runs_since(root: &Path, skip: i64) -> Result<(i64, Vec<RunRecord>), String> {
+    let conn = connect(root)?;
+    let total: i64 = conn
+        .query_row("SELECT count(*) FROM runs", [], |r| r.get(0))
+        .map_err(err)?;
+    if skip > total {
+        return Ok((total, Vec::new()));
+    }
+    let mut stmt = conn
+        .prepare("SELECT json FROM runs ORDER BY rowid LIMIT -1 OFFSET ?1")
+        .map_err(err)?;
+    let strings = stmt
+        .query_map([skip], |r| r.get::<_, String>(0))
+        .map_err(err)?;
+    let records = strings
+        .map(|s| serde_json::from_str(&s.map_err(err)?).map_err(err))
+        .collect::<Result<Vec<RunRecord>, String>>()?;
+    Ok((total, records))
+}
 pub(crate) fn provenance(root: &Path) -> Result<Vec<ProvenanceRecord>, String> {
     rows(&connect(root)?, "provenance")
 }
