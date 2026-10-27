@@ -25,7 +25,28 @@
  * Option+Enter, Shift+Tab and the Ctrl keys the way a native terminal does.
  */
 
+import type { Terminal } from "@xterm/xterm";
+
 const MODIFIER_CODE = /^(?:(?:Meta|OS|Control|Shift|Alt)(?:Left|Right)|CapsLock|Fn|FnLock)$/;
+
+/** A modifier pressed on its own, matched on the physical key. */
+export function isModifierKey(event: KeyboardEvent): boolean {
+  return MODIFIER_CODE.test(event.code);
+}
+
+/**
+ * Call on a modifier's keydown. xterm 5.5 ignores IME text that arrives while
+ * a keydown is "seen" and not yet released, and counts a modifier as one.
+ * macOS Pinyin commits full-width punctuation typed with Shift (？：！（）《》)
+ * BEFORE that key's own keydown, so with Shift held the first one was dropped
+ * and had to be typed twice. A modifier types nothing, so it must not arm the
+ * gate. Upstream: xtermjs/xterm.js#6144, fix in #6200; the test pins the
+ * private field so an xterm upgrade that renames it fails loudly.
+ */
+export function releaseImeGate(term: Terminal): void {
+  const core = (term as unknown as { _core?: { _keyDownSeen?: boolean } })._core;
+  if (core) core._keyDownSeen = false;
+}
 
 const META_PUNCTUATION: Record<string, string> = {
   Period: ".",
@@ -60,7 +81,7 @@ export function createKeyTranslator(isMac: boolean) {
     if (event.code === "AltLeft") leftOption = event.type === "keydown";
     // A window that lost focus with the key held never sees its keyup.
     else if (!event.altKey) leftOption = false;
-    if (MODIFIER_CODE.test(event.code)) return event.type === "keydown" ? false : null;
+    if (isModifierKey(event)) return event.type === "keydown" ? false : null;
 
     const data = translate(event);
     if (data === null) return null;

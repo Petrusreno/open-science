@@ -27,7 +27,7 @@ import {
 import { registerTerminalLinks } from "./terminalLinks";
 import { TerminalSearch } from "./TerminalSearch";
 import { isJumpChord } from "@/components/jump-palette/JumpPalette";
-import { createKeyTranslator } from "./terminalKeys";
+import { createKeyTranslator, isModifierKey, releaseImeGate } from "./terminalKeys";
 
 /**
  * A real shell in a pane.
@@ -158,6 +158,7 @@ export function TerminalPane({
         // Keys a native terminal sends differently (Shift+Enter, Option as
         // Meta, ⌘←/→/⌫) — see terminalKeys.
         const translated = translateKey(event);
+        if (event.type === "keydown" && isModifierKey(event)) releaseImeGate(term);
         if (translated === false) return false;
         if (translated !== null) {
           event.preventDefault();
