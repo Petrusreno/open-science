@@ -14,7 +14,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 // The one xterm instance, and the key handler it was given when created.
-// `cols` is what the fit addon last measured; a test changes it to resize.
+// `cols` is what the fit addon measures; a test changes it to resize.
 const xterm = vi.hoisted(() => ({
   keyHandler: null as ((e: KeyboardEvent) => boolean) | null,
   cols: 80,
@@ -22,10 +22,12 @@ const xterm = vi.hoisted(() => ({
 }));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
-    get cols() {
-      return xterm.cols;
-    }
+    cols = 80;
     rows = 24;
+    resize(cols: number, rows: number) {
+      this.cols = cols;
+      this.rows = rows;
+    }
     options: Record<string, unknown> = {};
     constructor(options: Record<string, unknown>) {
       xterm.last = this;
@@ -50,6 +52,9 @@ vi.mock("@xterm/xterm", () => ({
 }));
 const addon = class {
   fit() {}
+  proposeDimensions() {
+    return { cols: xterm.cols, rows: 24 };
+  }
   dispose() {}
   onContextLoss() {}
   onDidChangeResults() {

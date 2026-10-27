@@ -28,6 +28,7 @@ import { registerTerminalLinks } from "./terminalLinks";
 import { TerminalSearch } from "./TerminalSearch";
 import { isJumpChord } from "@/components/jump-palette/JumpPalette";
 import { createKeyTranslator, isModifierKey, releaseImeGate } from "./terminalKeys";
+import { readResizeReply } from "./terminalResize";
 
 /**
  * A real shell in a pane.
@@ -106,8 +107,8 @@ export function TerminalPane({
     // what the user had half-typed — is still there.
     const existing = getTerminal(leafId);
     if (existing) {
+      // Its new box reaches the shell through the resize observer.
       parent.appendChild(existing.container);
-      existing.fit.fit();
       existing.term.focus();
       return () => {
         // Park it, do not destroy it. Destruction belongs to the layout, which
@@ -135,7 +136,8 @@ export function TerminalPane({
       if (disposed) return;
 
       const container = document.createElement("div");
-      container.className = "h-full w-full";
+      // Clips the old grid while a resize waits to be applied.
+      container.className = "h-full w-full overflow-hidden";
       parent.appendChild(container);
 
       const term = new Terminal({
@@ -220,8 +222,23 @@ export function TerminalPane({
       });
 
       const created = await terminalTransport.open(leafId, cwd, term.cols, term.rows);
+      // Output that answers a resize the pane is still applying; see below.
+      let reply: {
+        cols: number;
+        rows: number;
+        data: string;
+        timer: ReturnType<typeof setTimeout>;
+        /** The repaint is being written; later output only queues. */
+        writing: boolean;
+      } | null = null;
       const unsubscribe = await terminalTransport.subscribe(leafId, {
-        onData: (chunk) => term.write(chunk),
+        onData: (chunk) => {
+          if (!reply) return term.write(chunk);
+          reply.data += chunk;
+          if (reply.writing) return;
+          const read = readResizeReply(reply.data, reply.rows);
+          if (read !== "wait") applyResize(read === "other" ? null : read.repaint);
+        },
         onExit: () => term.write(`\r\n${t("terminal.exited")}\r\n`),
         onReset: () => term.reset(),
       });
@@ -235,25 +252,56 @@ export function TerminalPane({
       // The pane is resizable and tiled; the shell has to be told, or every
       // full-screen program keeps drawing into the old box.
       //
-      // Coalesced to one frame, and the shell is told only when the GRID
-      // changed. Collapsing the sidebar animates a width for 200ms, which fires
-      // this a dozen times per terminal; each call re-measures the DOM
-      // synchronously and used to cross into Rust for a PTY ioctl, so a window
-      // with a few terminals in it visibly stuttered for the whole animation.
+      // Applied once, to the grid the pane SETTLES on: collapsing the sidebar
+      // animates a width for 200ms, and each step would re-measure the DOM and
+      // make Claude Code repaint its conversation.
       //
-      // The shell hears only the grid the pane SETTLES on. Claude Code and
-      // Codex repaint their whole conversation on every width change and never
-      // clear the scrollback, so an animation that walks the width down one
-      // column per frame left a dozen stacked copies of it above the prompt.
-      // xterm still refits every frame; only the PTY waits for a quiet moment.
+      // xterm waits too, until the program answers. Claude Code's answer is a
+      // repaint of the whole screen (see `readResizeReply`). For that one the
+      // screen is cleared BEFORE xterm re-wraps to the new width, as it is
+      // about to be redrawn anyway; re-wrapped, its old lines would grow and
+      // push some of themselves into scrollback, next to the redrawn copy.
+      // Anything else (a shell prompt, vim) is written after the resize, as
+      // before.
       let queued = 0;
       let settle: ReturnType<typeof setTimeout> | undefined;
       let sent = { cols: term.cols, rows: term.rows };
+      const applyResize = (repaint: string | null) => {
+        if (!reply || reply.writing) return;
+        const { cols, rows, data, timer } = reply;
+        clearTimeout(timer);
+        const resizeAndWrite = (text: string) => {
+          reply = null;
+          term.resize(cols, rows);
+          term.write(text);
+        };
+        if (repaint === null) return resizeAndWrite(data);
+        // Output arriving while the clear is written queues behind the repaint.
+        reply.data = "";
+        reply.writing = true;
+        term.write("\x1b[H\x1b[J", () => {
+          const later = reply?.data ?? "";
+          resizeAndWrite(repaint + later);
+        });
+      };
       const tellShell = () => {
         settle = undefined;
-        if (term.cols === sent.cols && term.rows === sent.rows) return;
-        sent = { cols: term.cols, rows: term.rows };
-        void terminalTransport.resize(leafId, term.cols, term.rows);
+        if (reply?.writing) {
+          settle = setTimeout(tellShell, RESIZE_SETTLE_MS);
+          return;
+        }
+        const size = fit.proposeDimensions();
+        if (!size || (size.cols === sent.cols && size.rows === sent.rows)) return;
+        applyResize(null);
+        sent = { cols: size.cols, rows: size.rows };
+        reply = {
+          ...sent,
+          data: "",
+          writing: false,
+          // A program that prints nothing, or only part of a repaint.
+          timer: setTimeout(() => applyResize(null), RESIZE_REPLY_MS),
+        };
+        void terminalTransport.resize(leafId, size.cols, size.rows);
       };
       const observer = new ResizeObserver(() => {
         if (queued) return;
@@ -267,7 +315,6 @@ export function TerminalPane({
             !container.clientHeight
           )
             return;
-          fit.fit();
           clearTimeout(settle);
           settle = setTimeout(tellShell, RESIZE_SETTLE_MS);
         });
@@ -304,6 +351,7 @@ export function TerminalPane({
           themeWatch.disconnect();
           if (queued) cancelAnimationFrame(queued);
           clearTimeout(settle);
+          if (reply) clearTimeout(reply.timer);
         },
       });
       if (disposed) container.remove();
@@ -471,6 +519,10 @@ const findControls = new Map<string, FindControls>();
 /** How long the pane must hold still before the shell is told its new size:
  *  longer than a frame, shorter than a person notices after letting go. */
 const RESIZE_SETTLE_MS = 150;
+
+/** How long a resize waits for the program's answer before xterm resizes
+ *  anyway. Claude Code answers within a few milliseconds. */
+const RESIZE_REPLY_MS = 300;
 
 /**
  * Terminal defaults, borrowed from Orca's `lib/pane-manager/pane-terminal-options.ts`
