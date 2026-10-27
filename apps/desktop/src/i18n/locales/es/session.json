@@ -161,10 +161,12 @@
       "addTitle": "Enviar al terminar este turno (Enter) · Cmd/Ctrl+Enter interviene ahora"
     },
     "busyCommand": "Espera a que termine este turno para ejecutar un comando.",
-    "runtime": {
+    "agent": {
       "aria": "Agente",
-      "title": "Qué agente ejecuta esta conversación",
-      "locked": "Esta conversación se ejecuta en este agente. Inicia una conversación nueva para usar otro."
+      "title": "Agente y modelo",
+      "locked": "Otro agente en una conversación nueva",
+      "optionsLater": "{{agent}} muestra sus modelos cuando arranca. Tras el primer mensaje puedes elegir aquí.",
+      "manage": "Gestionar agentes"
     }
   },
   "localCommand": {

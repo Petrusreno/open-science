@@ -161,10 +161,12 @@
       "addTitle": "Nach diesem Durchgang senden (Enter) · Cmd/Strg+Enter schiebt sie jetzt ein"
     },
     "busyCommand": "Warte, bis dieser Durchgang fertig ist, bevor du einen Befehl ausführst.",
-    "runtime": {
+    "agent": {
       "aria": "Agent",
-      "title": "Welcher Agent diese Unterhaltung ausführt",
-      "locked": "Diese Unterhaltung läuft auf diesem Agenten. Für einen anderen Agenten eine neue Unterhaltung beginnen."
+      "title": "Agent und Modell",
+      "locked": "Für einen anderen Agenten neue Unterhaltung",
+      "optionsLater": "{{agent}} zeigt seine Modelle, sobald er gestartet ist. Nach der ersten Nachricht kannst du hier wählen.",
+      "manage": "Agenten verwalten"
     }
   },
   "localCommand": {

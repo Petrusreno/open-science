@@ -29,7 +29,6 @@ import { startPaneDrag } from "@/lib/dragPane";
 import { allowsNativeMenu } from "@/lib/nativeMenu";
 import { FindBar } from "@/components/ui/FindBar";
 import { isTauri } from "@/lib/tauri";
-import { RuntimePicker } from "@/components/thread/RuntimePicker";
 import { isGatewayWeb } from "@/lib/webMode";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { queryRuns } from "@/lib/runs";
@@ -195,6 +194,18 @@ export function SessionView({
   const acpAgentId = useRuntimeStore((s) => acpAgentFor(s, key));
   const acp = acpAgentId !== null;
   const setDraftRuntime = useRuntimeStore((s) => s.setDraftRuntime);
+  const setDraftAcpOption = useRuntimeStore((s) => s.setDraftAcpOption);
+  // A new conversation's agent has no session yet, so its selectors are the
+  // ones it last reported, with this draft's picks shown as chosen.
+  const agentOptions = useRuntimeStore((s) => (acpAgentId ? s.acpAgentOptions[acpAgentId] : undefined));
+  const draftPicks = useRuntimeStore((s) => s.draftAcpPicks[draftKey]);
+  const draftAcpOptions = useMemo(
+    () =>
+      (agentOptions ?? []).map((o) =>
+        draftPicks?.[o.id] !== undefined ? { ...o, currentValue: draftPicks[o.id] } : o,
+      ),
+    [agentOptions, draftPicks],
+  );
 
   // Per-field selection (never a bare useRuntimeStore()): a background session's
   // SSE folds must not repaint this pane. The active thread is selected on its
@@ -1155,25 +1166,22 @@ export function SessionView({
                 onApprovalModeChange={acp ? undefined : (mode) => void setApprovalMode(mode)}
                 agentMode={planAvailable ? agentMode : undefined}
                 onAgentModeChange={planAvailable ? (mode) => setAgentMode(mode, key) : undefined}
-                showModelPicker={connected && !webReadOnly && !acp}
-                // The ACP agent's own selectors stand in for the model picker: the
-                // agent owns its model list, and `session/set_config_option` is how
-                // v1 changes it.
-                configOptions={acp && !webReadOnly ? (acpConfigOptions[key] ?? []) : undefined}
+                showModelPicker={connected && !webReadOnly}
                 // The agent is a child process of the desktop: the web client
                 // can neither start one nor reach a conversation running on one.
-                runtimePicker={
-                  isTauri && !isGatewayWeb && !webReadOnly ? (
-                    <RuntimePicker
-                      value={acpAgentId}
-                      locked={!!eid}
-                      onChange={(agentId) => setDraftRuntime(draftKey, agentId)}
-                    />
-                  ) : undefined
-                }
-                onConfigOption={
-                  acp && sid
-                    ? (configId, value) => void setAcpConfigOption(sid, configId, value)
+                agentControl={
+                  connected && isTauri && !isGatewayWeb && !webReadOnly
+                    ? {
+                        value: acpAgentId,
+                        locked: !!eid,
+                        onChange: (agentId) => setDraftRuntime(draftKey, agentId),
+                        options: eid ? (acpConfigOptions[eid] ?? []) : draftAcpOptions,
+                        onOption: (configId, value) =>
+                          eid
+                            ? void setAcpConfigOption(eid, configId, value)
+                            : setDraftAcpOption(draftKey, configId, value),
+                        busy: running,
+                      }
                     : undefined
                 }
                 modelSessionId={key}

@@ -66,7 +66,9 @@ import {
   activeAcpAgent,
   loadAcpAgents,
   loadAcpSessions,
+  saveAcpAgentOptions,
   saveAcpSessions,
+  loadAcpAgentOptions,
   setActiveAcpAgentId,
   type AcpSessionRecord,
 } from "./acpAgents";
@@ -281,6 +283,12 @@ interface RuntimeState {
   /** The agent a new conversation starts on (Settings), or null for OpenCode. */
   defaultRuntime: string | null;
   setDefaultRuntime: (agentId: string | null) => void;
+  /** Each ACP agent's selectors as it last reported them, by agent id. */
+  acpAgentOptions: Record<string, AcpConfigOption[]>;
+  /** A draft's choices among them (configId → value), applied to the session
+   *  the moment its agent creates it. */
+  draftAcpPicks: Record<string, Record<string, string>>;
+  setDraftAcpOption: (draftKey: string, configId: string, value: string) => void;
   /** List an ACP agent's existing session (one started in a terminal) as a
    *  conversation here, so opening it replays it on that agent. Its folder and
    *  title come from the agent's own list; `directory` is the fallback. */
@@ -1052,6 +1060,22 @@ function syncAcpConfig(set: StoreSet, get: StoreGet, sessionId: string): void {
     if (JSON.stringify(current) === JSON.stringify(options)) return {};
     return { acpConfigOptions: { ...s.acpConfigOptions, [sessionId]: options } };
   });
+  rememberAgentOptions(set, get, get().acpSessions[sessionId]?.agentId, options);
+}
+
+/** Keep an agent's latest selector list, for the next new conversation on it. */
+function rememberAgentOptions(
+  set: StoreSet,
+  get: StoreGet,
+  agentId: string | undefined,
+  options: AcpConfigOption[],
+): void {
+  if (!agentId || options.length === 0) return;
+  const known = get().acpAgentOptions;
+  if (JSON.stringify(known[agentId]) === JSON.stringify(options)) return;
+  const acpAgentOptions = { ...known, [agentId]: options };
+  set({ acpAgentOptions });
+  saveAcpAgentOptions(acpAgentOptions);
 }
 
 /** Threads key for the draft conversation — its blocks move to the real
@@ -1996,6 +2020,21 @@ async function performTurn(
           },
         }));
         saveAcpSessions(get().acpSessions);
+        // What the draft chose before the session existed, applied before its
+        // first turn. A choice the agent no longer offers is skipped, not fatal.
+        const picks = get().draftAcpPicks[draftSrc] ?? {};
+        for (const [configId, value] of Object.entries(picks)) {
+          const option = rt.configOptionsFor(created).find((o) => o.id === configId);
+          if (!option?.options?.some((v) => v.value === value) || option.currentValue === value) continue;
+          await rt.setConfigOption(created, configId, value).catch((err) =>
+            logDebug(`acp option ${configId} not applied: ${err instanceof Error ? err.message : String(err)}`),
+          );
+        }
+        set((s) => {
+          const draftAcpPicks = { ...s.draftAcpPicks };
+          delete draftAcpPicks[draftSrc];
+          return { draftAcpPicks };
+        });
       } else {
         id = await withRetry(() => client!.createSession());
       }
@@ -2753,7 +2792,21 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   acpSessions: loadAcpSessions(),
   draftRuntimes: {},
   setDraftRuntime: (draftKey, agentId) =>
-    set((s) => ({ draftRuntimes: { ...s.draftRuntimes, [draftKey]: agentId } })),
+    set((s) => {
+      // Picks belong to the agent they were made for.
+      const draftAcpPicks = { ...s.draftAcpPicks };
+      delete draftAcpPicks[draftKey];
+      return { draftRuntimes: { ...s.draftRuntimes, [draftKey]: agentId }, draftAcpPicks };
+    }),
+  acpAgentOptions: loadAcpAgentOptions(),
+  draftAcpPicks: {},
+  setDraftAcpOption: (draftKey, configId, value) =>
+    set((s) => ({
+      draftAcpPicks: {
+        ...s.draftAcpPicks,
+        [draftKey]: { ...s.draftAcpPicks[draftKey], [configId]: value },
+      },
+    })),
   // A saved default naming an agent no longer configured is OpenCode.
   defaultRuntime: activeAcpAgent()?.id ?? null,
   setDefaultRuntime: (agentId) => {
@@ -2786,6 +2839,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     try {
       const options = await rt.setConfigOption(sessionId, configId, value);
       set((s) => ({ acpConfigOptions: { ...s.acpConfigOptions, [sessionId]: options } }));
+      rememberAgentOptions(set, get, get().acpSessions[sessionId]?.agentId, options);
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
     }

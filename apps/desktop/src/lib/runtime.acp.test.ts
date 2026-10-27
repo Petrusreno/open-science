@@ -410,6 +410,33 @@ describe("ACP conversations beside OpenCode", () => {
     expect(useRuntimeStore.getState().acpConfigOptions[sid]?.[0].currentValue).toBe("gpt-5.6-sol[high]");
   });
 
+  it("remembers an agent's selectors, and applies a new conversation's pick before its first turn", async () => {
+    const { useRuntimeStore, draftKeyFor } = await freshStore("acp-1");
+    await useRuntimeStore.getState().sendPrompt("First", undefined, draftKeyFor("leaf-1"));
+    // Learned from the first session, kept for the next new conversation.
+    expect(useRuntimeStore.getState().acpAgentOptions["acp-1"]).toEqual([MODEL_OPTION]);
+    expect(JSON.parse(window.localStorage.getItem("ai4s.acp.options.v1")!)["acp-1"]).toEqual([MODEL_OPTION]);
+
+    const draft = draftKeyFor("leaf-2");
+    useRuntimeStore.getState().setDraftAcpOption(draft, "model", "gpt-5.6-sol[high]");
+    const before = mocks.agent!.sent.length;
+    await useRuntimeStore.getState().sendPrompt("Second", undefined, draft);
+    const methods = mocks.agent!.sent.slice(before).map((m) => m.method);
+    // Set on the new session, and before the prompt, so the first turn runs on it.
+    expect(methods.indexOf("session/set_config_option")).toBeGreaterThan(methods.indexOf("session/new"));
+    expect(methods.indexOf("session/set_config_option")).toBeLessThan(methods.indexOf("session/prompt"));
+    expect(useRuntimeStore.getState().draftAcpPicks[draft]).toBeUndefined();
+  });
+
+  it("drops a draft's picks when it switches agent", async () => {
+    const { useRuntimeStore, draftKeyFor } = await freshStore(null);
+    const draft = draftKeyFor("leaf-1");
+    useRuntimeStore.getState().setDraftRuntime(draft, "acp-1");
+    useRuntimeStore.getState().setDraftAcpOption(draft, "model", "x");
+    useRuntimeStore.getState().setDraftRuntime(draft, null);
+    expect(useRuntimeStore.getState().draftAcpPicks[draft]).toBeUndefined();
+  });
+
   it("hands this app's own connectors to the agent, per session", async () => {
     mocks.mcp = [
       { name: "pubmed", config: { type: "local", command: ["/opt/app/bin/uvx", "science-mcp"] } },

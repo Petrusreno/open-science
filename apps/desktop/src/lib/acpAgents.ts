@@ -9,6 +9,7 @@
 // Stored locally rather than in OpenCode's config: it is app behaviour (which
 // runtime the desktop drives), and OpenCode must not be asked to describe a
 // runtime that replaces it.
+import type { AcpConfigOption } from "@ai4s/sdk/acp";
 
 /** A configured ACP agent. `id` is also the key the Rust supervisor tracks its
  *  child under, so it must stay stable across edits of the same entry. */
@@ -174,6 +175,36 @@ export function parseCommandArgs(text: string): string[] {
 /** The inverse, for the editor field: quote any argument that contains spaces. */
 export function formatCommandArgs(args: string[]): string {
   return args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
+}
+
+const OPTIONS_KEY = "ai4s.acp.options.v1";
+
+/** The selectors each agent last reported (model, reasoning level, mode), by
+ *  agent id. An agent sends them only once a session exists; remembering them
+ *  lets a new conversation choose before its first message. */
+export function loadAcpAgentOptions(): Record<string, AcpConfigOption[]> {
+  const store = storage();
+  if (!store) return {};
+  try {
+    const raw: unknown = JSON.parse(store.getItem(OPTIONS_KEY) ?? "{}");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, AcpConfigOption[]> = {};
+    for (const [id, list] of Object.entries(raw as Record<string, unknown>))
+      if (Array.isArray(list)) out[id] = list.filter((o) => o && typeof o.id === "string");
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveAcpAgentOptions(options: Record<string, AcpConfigOption[]>): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.setItem(OPTIONS_KEY, JSON.stringify(options));
+  } catch {
+    /* remembered for this run only */
+  }
 }
 
 /** A conversation that runs on an ACP agent rather than on OpenCode. OpenCode
