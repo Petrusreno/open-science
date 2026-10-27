@@ -527,10 +527,13 @@ function readTheme() {
   const style = getComputedStyle(document.documentElement);
   const value = (name: string, fallback: string) =>
     style.getPropertyValue(name).trim() || fallback;
+  const accent = value("--accent", "#c15f3c");
   return {
     background: value("--surface", "#ffffff"),
     foreground: value("--text", "#2a2723"),
-    cursor: value("--accent", "#c15f3c"),
-    selectionBackground: value("--surface-2", "#f2efe7"),
+    cursor: accent,
+    // Accent at 30% (hex alpha 4d): agents paint the input line in a pale
+    // surface tone, so a surface-coloured selection would vanish on it.
+    selectionBackground: `${accent}4d`,
   };
 }
