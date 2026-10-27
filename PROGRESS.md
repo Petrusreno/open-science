@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-27 09:40 · Every push to master is now tested: core CI (3 platforms, crates only) and a new desktop CI (typecheck, lint, vitest), both green on 2798c21. vitest had been exiting 1 despite all tests passing, because layout.ts fire-and-forget imports finished after teardown; layout.test now mocks them. Notarization finalize no longer runs every 30 min: the tag build starts it, it restarts itself every 10 min while Apple is processing (max 18), and a daily cron is the backstop. Empty-queue dispatch checked: finalize ran, retry skipped. Not yet tried on a real tag.
+
 2026-10-27 01:20 · pi sessions move between terminal and conversation like Claude Code and Codex: the terminal probe knows pi by its arguments (it runs under node) and finds its session as the newest file in pi's session folder written since the process started, so the button appears after pi's first message. Checked on a live node process with pi's argv and an isolated PI_CODING_AGENT_DIR; cargo terminal_probe 12 and vitest 1918 green. Not yet tried with a real pi conversation in the packaged app.
 
 2026-10-27 00:55 · pi joins the agents (Run an agent menu, the picker, the Settings presets) through pi-acp, checked against pi 0.84.2 on this machine: protocol 1, loadSession, model and thought_level selectors read without a conversation, and the throwaway session deleted. Moving a pi session between terminal and conversation is not wired: the terminal only recognises Claude Code and Codex.
