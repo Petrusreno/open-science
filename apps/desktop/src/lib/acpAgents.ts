@@ -32,13 +32,14 @@ const ACTIVE_KEY = "ai4s.acp.active.v1";
 
 /** Agents known to speak ACP v1, offered as one-click starting points. Every one
  *  of these was probed against this app's own `initialize` before being listed
- *  (see PROGRESS.md, 2026-08-05): all three answer protocolVersion 1. They are
+ *  (see PROGRESS.md, 2026-08-05 and 2026-10-27): all answer protocolVersion 1. They are
  *  suggestions the user can edit, not an allowlist — any command that speaks ACP
  *  over stdio works. */
 export const ACP_PRESETS: ReadonlyArray<Omit<AcpAgentConfig, "id">> = [
   { name: "Codex", command: "npx", args: ["-y", "@agentclientprotocol/codex-acp"] },
   { name: "Gemini CLI", command: "gemini", args: ["--acp"] },
   { name: "Claude Code", command: "npx", args: ["-y", CLAUDE_ACP_PACKAGE] },
+  { name: "pi", command: "npx", args: ["-y", "pi-acp"] },
 ];
 
 function storage(): Storage | null {

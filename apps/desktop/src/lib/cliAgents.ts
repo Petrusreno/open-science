@@ -50,6 +50,16 @@ export const CLI_AGENTS: readonly CliAgent[] = [
     command: "gemini",
     args: ["--acp"],
   },
+  // pi has no ACP mode of its own; pi-acp (github.com/svkozak/pi-acp) bridges
+  // it and needs pi 0.81 or later. Checked 2026-10-27 against pi 0.84.2:
+  // protocol 1, loadSession, model and thought_level selectors.
+  {
+    id: "cli-pi",
+    name: "pi",
+    detect: "pi",
+    command: "npx",
+    args: ["-y", "pi-acp"],
+  },
 ];
 
 /** Which of the catalog this machine can actually run, in catalog order.
