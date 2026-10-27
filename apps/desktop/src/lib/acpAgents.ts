@@ -22,6 +22,11 @@ export interface AcpAgentConfig {
 }
 
 const AGENTS_KEY = "ai4s.acp.agents.v1";
+
+/** Claude Code's ACP adapter. It was published as `@zed-industries/claude-code-acp`
+ *  until 0.16.2; that name is deprecated and gets no updates. */
+export const CLAUDE_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp";
+const RETIRED_CLAUDE_ACP = /^@zed-industries\/claude-code-acp(@.*)?$/;
 const ACTIVE_KEY = "ai4s.acp.active.v1";
 
 /** Agents known to speak ACP v1, offered as one-click starting points. Every one
@@ -32,7 +37,7 @@ const ACTIVE_KEY = "ai4s.acp.active.v1";
 export const ACP_PRESETS: ReadonlyArray<Omit<AcpAgentConfig, "id">> = [
   { name: "Codex", command: "npx", args: ["-y", "@agentclientprotocol/codex-acp"] },
   { name: "Gemini CLI", command: "gemini", args: ["--acp"] },
-  { name: "Claude Code", command: "npx", args: ["-y", "@zed-industries/claude-code-acp"] },
+  { name: "Claude Code", command: "npx", args: ["-y", CLAUDE_ACP_PACKAGE] },
 ];
 
 function storage(): Storage | null {
@@ -59,7 +64,12 @@ function sanitize(raw: unknown): AcpAgentConfig[] {
       id,
       name: typeof name === "string" && name.trim() ? name.trim() : command.trim(),
       command: command.trim(),
-      args: Array.isArray(args) ? args.filter((a): a is string => typeof a === "string") : [],
+      // A saved entry still naming the retired adapter would keep running it.
+      args: Array.isArray(args)
+        ? args
+            .filter((a): a is string => typeof a === "string")
+            .map((a) => (RETIRED_CLAUDE_ACP.test(a) ? CLAUDE_ACP_PACKAGE : a))
+        : [],
     });
   }
   return out;

@@ -9,6 +9,7 @@
 // Adding an agent is a row here. Nothing else in the app needs to know it.
 import { isTauri } from "./tauri";
 import {
+  CLAUDE_ACP_PACKAGE,
   loadAcpAgents,
   saveAcpAgents,
   setActiveAcpAgentId,
@@ -34,7 +35,7 @@ export const CLI_AGENTS: readonly CliAgent[] = [
     name: "Claude Code",
     detect: "claude",
     command: "npx",
-    args: ["-y", "@zed-industries/claude-code-acp"],
+    args: ["-y", CLAUDE_ACP_PACKAGE],
   },
   {
     id: "cli-codex",
