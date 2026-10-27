@@ -62,7 +62,16 @@ import {
 } from "./tauri";
 import { isGatewayWeb, gatewayToken, gatewayOrigin, setSignedInAccount } from "./webMode";
 import { followEvents } from "./gatewayMux";
-import { activeAcpAgent } from "./acpAgents";
+import {
+  activeAcpAgent,
+  loadAcpAgents,
+  loadAcpSessions,
+  saveAcpAgentOptions,
+  saveAcpSessions,
+  loadAcpAgentOptions,
+  setActiveAcpAgentId,
+  type AcpSessionRecord,
+} from "./acpAgents";
 import { acpTransport } from "./acpTransport";
 import { hasParkedDraft } from "./composerStash";
 import { isWithin, samePath } from "./workspacePath";
@@ -260,18 +269,46 @@ export interface PaneState {
   showTrajectory: boolean;
 }
 
-/** Which runtime the current connection drives: the bundled OpenCode sidecar, or
- *  a user-configured ACP agent (#14). The UI reads it to withhold controls the
- *  ACP dialect cannot honour — a model picker that silently changed nothing
- *  would be worse than no picker (AGENTS.md). */
-export type RuntimeKind = "opencode" | "acp";
+/** Where reading an agent's selectors stands (see `fetchAcpAgentOptions`). */
+export type AcpOptionsProbe =
+  | { status: "loading" }
+  | { status: "empty" }
+  | { status: "error"; error: string };
 
 interface RuntimeState {
   status: RuntimeStatus;
   serverUrl: string;
-  runtimeKind: RuntimeKind;
-  /** The connected ACP agent's display name, or null on OpenCode. */
-  acpAgentName: string | null;
+  /** Conversations that run on an ACP agent (#14), by session id. Every other
+   *  session runs on the bundled OpenCode runtime. OpenCode lists its own
+   *  sessions; this is the app's record of the rest. */
+  acpSessions: Record<string, AcpSessionRecord>;
+  /** A draft's own choice of agent: an ACP agent id, or null for OpenCode. A
+   *  draft with no entry starts on the default agent from Settings. */
+  draftRuntimes: Record<string, string | null>;
+  setDraftRuntime: (draftKey: string, agentId: string | null) => void;
+  /** The agent a new conversation starts on (Settings), or null for OpenCode. */
+  defaultRuntime: string | null;
+  setDefaultRuntime: (agentId: string | null) => void;
+  /** Each ACP agent's selectors as it last reported them, by agent id. */
+  acpAgentOptions: Record<string, AcpConfigOption[]>;
+  /** A draft's choices among them (configId → value), applied to the session
+   *  the moment its agent creates it. */
+  draftAcpPicks: Record<string, Record<string, string>>;
+  setDraftAcpOption: (draftKey: string, configId: string, value: string) => void;
+  /** Reading an agent's selectors before its first conversation, by agent id:
+   *  absent once they are known (`acpAgentOptions`). */
+  acpOptionsProbe: Record<string, AcpOptionsProbe>;
+  /** Read an agent's selectors when none are known yet, so a new conversation
+   *  can choose its model before the first message. */
+  fetchAcpAgentOptions: (agentId: string) => Promise<void>;
+  /** List an ACP agent's existing session (one started in a terminal) as a
+   *  conversation here, so opening it replays it on that agent. Its folder and
+   *  title come from the agent's own list; `directory` is the fallback. */
+  adoptAcpSession: (agentId: string, sessionId: string, directory: string) => Promise<void>;
+  /** Hand an ACP conversation back to a terminal: its agent stops holding the
+   *  session (a running turn is stopped), so only the terminal writes it. It
+   *  stays listed here, to come back to. */
+  releaseAcpSession: (sessionId: string) => Promise<void>;
   /** The ACP agent's OWN selectors per session — model, reasoning level,
    *  permission mode — as it reported them (`configOptions`). This is what the
    *  composer offers instead of our model picker: ACP v1 changes a model through
@@ -412,6 +449,10 @@ interface RuntimeState {
   bootstrap: () => Promise<void>;
   disconnect: () => void;
   refreshSessions: () => Promise<void>;
+  /** Of `ids`, the sessions the runtime confirms deleted. A lookup that fails
+   *  (runtime starting, timeout) counts as still there: dropping a pane on a
+   *  guess is what emptied restored Screens on relaunch. */
+  findDeletedSessions: (ids: string[]) => Promise<Set<string>>;
   startDraft: () => void;
   /** Blank the draft view WITHOUT unpinning the folder the next session
    *  will be created in — only an explicit New may do that (#69). */
@@ -619,8 +660,13 @@ let opencodeClient: OpenCodeClient | null = null;
  *  of where the Agent subprocess was spawned". So a move re-points `setCwd` and
  *  keeps the child, instead of paying an agent cold start (an `npx` boot) and
  *  killing every session that child was holding. */
-let acpRuntime: AcpRuntime | null = null;
-let acpRuntimeAgentId: string | null = null;
+const acpRuntimes = new Map<string, AcpRuntime>();
+/** Agents being started, so two sessions of one agent opened at once share
+ *  one child (the Rust supervisor keeps one child per agent id). */
+const acpStarts = new Map<string, Promise<AcpRuntime>>();
+/** When each agent's session titles were last read (`refreshSessions`). */
+const acpTitleSyncAt = new Map<string, number>();
+const ACP_TITLE_SYNC_MS = 30_000;
 let openSessionSeq = 0;
 /** The model the user last DELIBERATELY switched to, and when. A switch does a
  *  masked reconnect, and connect() fires loadCatalog() un-awaited — so the
@@ -723,13 +769,6 @@ function teardownClient(keep?: AgentRuntime | null) {
   clearStatusBlip();
   if (client && client !== keep) {
     client.close();
-    // Closing the ACP runtime kills its child (the transport's `close` stops it),
-    // so the module handle must go with it — otherwise the next connect would
-    // reuse a runtime whose agent is gone.
-    if (client === acpRuntime) {
-      acpRuntime = null;
-      acpRuntimeAgentId = null;
-    }
   }
   client = null;
   opencodeClient = null;
@@ -825,6 +864,14 @@ function clientForSession(get: StoreGet, sid: string): AgentRuntime | null {
   // yet); resolve to the root session to find the owning folder, mirroring how
   // belongsHere surfaces the ask in the parent's pane.
   const root = rootSessionOf(get().sessionParents, sid);
+  // A conversation on an ACP agent is answered by that agent alone — never by
+  // OpenCode, which has no such session. Not started yet → null; the async
+  // `runtimeForSession` starts it.
+  const agentId = get().acpSessions[root]?.agentId;
+  if (agentId) {
+    const rt = acpRuntimes.get(agentId);
+    return rt && rt.getStatus() === "ready" ? rt : null;
+  }
   const dir = get().sessions.find((x) => x.id === root)?.directory;
   if (dir && dir !== get().workspace) {
     const bg = streamClients.get(dir);
@@ -832,6 +879,116 @@ function clientForSession(get: StoreGet, sid: string): AgentRuntime | null {
   }
   return client;
 }
+
+/**
+ * The ACP agent a conversation (or a draft) runs on, or null for OpenCode.
+ *
+ * A draft follows its own pick, else the default from Settings; a session
+ * follows its record. The composer and the send path both ask this, so what
+ * the composer shows is what the first message runs on.
+ */
+export function acpAgentFor(
+  s: Pick<RuntimeState, "acpSessions" | "draftRuntimes" | "defaultRuntime">,
+  key: string,
+): string | null {
+  if (!isDraftKey(key)) return s.acpSessions[key]?.agentId ?? null;
+  if (key in s.draftRuntimes) return s.draftRuntimes[key];
+  return s.defaultRuntime;
+}
+
+/**
+ * The live runtime for this ACP agent, started on first use.
+ *
+ * The agent runs BESIDE OpenCode, not instead of it: OpenCode keeps serving the
+ * workspace, kernels and every other conversation, and the agent's events fold
+ * through the same handler (they carry their session id). A child that has
+ * exited is replaced; the session it held resumes on the new one
+ * (`AcpRuntime.ensureSession`).
+ */
+async function startAcpRuntime(agentId: string, cwd: string): Promise<AcpRuntime> {
+  const live = acpRuntimes.get(agentId);
+  if (live && live.getStatus() === "ready") {
+    live.setCwd(cwd);
+    return live;
+  }
+  const pending = acpStarts.get(agentId);
+  if (pending) return pending;
+  const agent = loadAcpAgents().find((a) => a.id === agentId);
+  if (!agent) {
+    throw new Error(
+      `The agent this conversation runs on is no longer configured (${agentId}). Add it again in Settings → Agent.`,
+    );
+  }
+  const start = (async () => {
+    if (live) {
+      live.close();
+      acpRuntimes.delete(agentId);
+    }
+    const transport = await acpTransport(agent.id, agent.command, agent.args);
+    const rt = new AcpRuntime({ transport, cwd, name: agent.name });
+    try {
+      if (sharedEventHandler) rt.onEvent(sharedEventHandler);
+      // The app's connectors are per session in ACP, so the agent must know
+      // them before its first session is created.
+      if (streamBaseUrl) await shareMcpServers(rt, streamBaseUrl, streamPassword ?? null);
+      await rt.connect();
+    } catch (err) {
+      rt.close();
+      void logDebug(`acp start FAILED (${agent.command}): ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
+    }
+    acpRuntimes.set(agentId, rt);
+    return rt;
+  })().finally(() => acpStarts.delete(agentId));
+  acpStarts.set(agentId, start);
+  return start;
+}
+
+/** Stop an agent's process (its command changed, or it was removed). Its
+ *  conversations stay listed; the next message starts the agent again. */
+export function stopAcpAgent(agentId: string): void {
+  const rt = acpRuntimes.get(agentId);
+  if (!rt) return;
+  acpRuntimes.delete(agentId);
+  rt.close();
+}
+
+/** The runtime that owns `sid`, starting its ACP agent when it is not running. */
+async function runtimeForSession(get: StoreGet, sid: string): Promise<AgentRuntime | null> {
+  const root = rootSessionOf(get().sessionParents, sid);
+  const record = get().acpSessions[root];
+  if (!record) return clientForSession(get, sid);
+  const cwd = record.directory ?? get().workspace;
+  if (!cwd) throw new Error("No workspace folder to run the ACP agent in.");
+  return startAcpRuntime(record.agentId, cwd);
+}
+
+/** Like `runtimeForSession`, for a call that cannot proceed without one. */
+async function requireRuntime(get: StoreGet, sid: string): Promise<AgentRuntime> {
+  const rt = await runtimeForSession(get, sid);
+  if (!rt) throw new Error("Not connected to the OpenCode runtime.");
+  return rt;
+}
+
+/** The ACP runtime of a session, when it has one and it is running. */
+function acpRuntimeOf(get: StoreGet, sid: string): AcpRuntime | null {
+  const agentId = get().acpSessions[sid]?.agentId;
+  const rt = agentId ? acpRuntimes.get(agentId) : undefined;
+  return rt && rt.getStatus() === "ready" ? rt : null;
+}
+
+/** ACP sessions as sidebar rows. None on the web client: the agent is a child
+ *  process of the desktop, which a phone has no way to reach. */
+function acpSessionRows(records: Record<string, AcpSessionRecord>): SessionMeta[] {
+  if (isGatewayWeb) return [];
+  return Object.entries(records).map(([id, r]) => ({
+    id,
+    title: r.title,
+    ...(r.directory ? { directory: r.directory } : {}),
+    ...(r.updated !== undefined ? { updated: r.updated } : {}),
+  }));
+}
+
 const emptyThread = (): Thread => ({ blocks: [], index: {}, loaded: false });
 
 /** Retire a draft slot's folder — its session was created, or the user asked for
@@ -910,15 +1067,31 @@ async function shareMcpServers(runtime: AcpRuntime, baseUrl: string, password: s
  * actually changed, since this runs on turn boundaries and a needless write
  * repaints every composer.
  */
-function syncAcpConfig(set: StoreSet, sessionId: string): void {
-  const rt = acpRuntime;
-  if (!rt || client !== rt) return;
+function syncAcpConfig(set: StoreSet, get: StoreGet, sessionId: string): void {
+  const rt = acpRuntimeOf(get, sessionId);
+  if (!rt) return;
   const options = rt.configOptionsFor(sessionId);
   set((s) => {
     const current = s.acpConfigOptions[sessionId] ?? [];
     if (JSON.stringify(current) === JSON.stringify(options)) return {};
     return { acpConfigOptions: { ...s.acpConfigOptions, [sessionId]: options } };
   });
+  rememberAgentOptions(set, get, get().acpSessions[sessionId]?.agentId, options);
+}
+
+/** Keep an agent's latest selector list, for the next new conversation on it. */
+function rememberAgentOptions(
+  set: StoreSet,
+  get: StoreGet,
+  agentId: string | undefined,
+  options: AcpConfigOption[],
+): void {
+  if (!agentId || options.length === 0) return;
+  const known = get().acpAgentOptions;
+  if (JSON.stringify(known[agentId]) === JSON.stringify(options)) return;
+  const acpAgentOptions = { ...known, [agentId]: options };
+  set({ acpAgentOptions });
+  saveAcpAgentOptions(acpAgentOptions);
 }
 
 /** Threads key for the draft conversation — its blocks move to the real
@@ -1008,15 +1181,20 @@ export function openDraftScreen(projectId: string, path?: string): string {
  * session lands there; Default's, in a fresh dated folder. What a new Screen
  * is: a Screen with nothing in it is never what the user wanted.
  */
-export async function startSessionScreen(projectId: string): Promise<void> {
+export async function startSessionScreen(projectId: string, agentId?: string): Promise<void> {
   const runtime = useRuntimeStore.getState();
   const project = runtime.projects.find((p) => p.id === projectId);
+  // `agentId`: the conversation runs on that ACP agent. Without one it starts on
+  // the default — set explicitly, since a reused blank draft may hold a pick.
+  const aim = (leafId: string) =>
+    runtime.setDraftRuntime(draftKeyFor(leafId), agentId ?? runtime.defaultRuntime);
   if (!project) {
-    openDraftScreen(DEFAULT_PROJECT);
+    aim(openDraftScreen(DEFAULT_PROJECT));
     runtime.startDraft();
     return;
   }
   const leafId = openDraftScreen(project.id, project.path);
+  aim(leafId);
   await runtime.startDraftInWorkspace(project.path, draftKeyFor(leafId));
 }
 
@@ -1841,7 +2019,48 @@ async function performTurn(
           );
         }
       }
-      id = await withRetry(() => client!.createSession());
+      // The draft's agent creates the session: OpenCode, or the ACP agent the
+      // composer was set to. The folder above is the same either way — it is
+      // where this conversation's files live.
+      const agentId = acpAgentFor(get(), draftSrc);
+      if (agentId) {
+        const cwd = get().workspace;
+        if (!cwd) throw new Error("No workspace folder to run the ACP agent in.");
+        const rt = await startAcpRuntime(agentId, cwd);
+        const created = await rt.createSession();
+        id = created;
+        set((s) => ({
+          acpSessions: {
+            ...s.acpSessions,
+            [created]: { agentId, title: echo.slice(0, 80) || "New session", directory: cwd, updated: Date.now() },
+          },
+        }));
+        saveAcpSessions(get().acpSessions);
+        // What the draft chose before the session existed, applied before its
+        // first turn. A choice the agent no longer offers is skipped, not fatal.
+        const picks = get().draftAcpPicks[draftSrc] ?? {};
+        for (const [configId, value] of Object.entries(picks)) {
+          const option = rt.configOptionsFor(created).find((o) => o.id === configId);
+          if (!option?.options?.some((v) => v.value === value) || option.currentValue === value) continue;
+          await rt.setConfigOption(created, configId, value).catch((err) =>
+            logDebug(`acp option ${configId} not applied: ${err instanceof Error ? err.message : String(err)}`),
+          );
+        }
+        set((s) => {
+          const draftAcpPicks = { ...s.draftAcpPicks };
+          delete draftAcpPicks[draftSrc];
+          return { draftAcpPicks };
+        });
+      } else {
+        id = await withRetry(() => client!.createSession());
+      }
+      // The pick belonged to the draft; the session now carries its own.
+      set((s) => {
+        if (!(draftSrc in s.draftRuntimes)) return {};
+        const draftRuntimes = { ...s.draftRuntimes };
+        delete draftRuntimes[draftSrc];
+        return { draftRuntimes };
+      });
       set((s) => {
         // Graft this pane's draft conversation (and its pane state) from its own
         // slot (`draftSrc`) onto the real session id.
@@ -1900,7 +2119,7 @@ async function performTurn(
       });
       lockKey = id;
       // A fresh ACP session reports the agent's own selectors — surface them.
-      syncAcpConfig(set, id);
+      syncAcpConfig(set, get, id);
       // The draft's model/effort override moved onto the real id — repersist so
       // a relaunch restores this pane's model, not the global default.
       saveRecord(SESSION_MODELS_KEY, get().sessionModels);
@@ -2351,6 +2570,9 @@ function onTurnIdle(set: StoreSet, get: StoreGet, sid: string, reviewable: boole
   const s = get();
   if (
     reviewable &&
+    // The reviewer is an OpenCode agent working in a fork; an ACP agent's
+    // conversation has neither.
+    !s.acpSessions[sid] &&
     shouldAutoReview({
       enabled: s.autoReview,
       changedFiles,
@@ -2405,8 +2627,9 @@ async function revertToMessage(
   sessionId?: string,
 ): Promise<boolean> {
   const sid = sessionId ?? get().currentId;
-  if (!sid || !client) return false;
-  const c = client;
+  if (!sid) return false;
+  const c = clientForSession(get, sid);
+  if (!c) return false;
   if (get().runningSessions[sid]) await get().interrupt(sid);
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
@@ -2454,8 +2677,8 @@ function historyRepairBlock(messages: HistoryMessage[]): ThreadBlock {
  *  failure must be reported the instant it happens rather than when a fetch
  *  finishes. (A reopened session takes the `historyToThread` path instead,
  *  which already holds the messages.) */
-async function diagnoseMalformedHistory(set: StoreSet, sid: string): Promise<void> {
-  const c = client;
+async function diagnoseMalformedHistory(set: StoreSet, get: StoreGet, sid: string): Promise<void> {
+  const c = clientForSession(get, sid);
   if (!c) return;
   let messages: HistoryMessage[];
   try {
@@ -2582,17 +2805,92 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   // (no Tauri, no gateway) has nothing to dial and keeps that card.
   status: isTauri || isGatewayWeb ? "connecting" : "offline",
   serverUrl: initialUrl(),
-  // Reconciled with the saved selection on every connect; OpenCode until then,
-  // which is what a first paint before any connection is actually driving.
-  runtimeKind: "opencode",
-  acpAgentName: null,
+  acpSessions: loadAcpSessions(),
+  draftRuntimes: {},
+  setDraftRuntime: (draftKey, agentId) =>
+    set((s) => {
+      // Picks belong to the agent they were made for.
+      const draftAcpPicks = { ...s.draftAcpPicks };
+      delete draftAcpPicks[draftKey];
+      return { draftRuntimes: { ...s.draftRuntimes, [draftKey]: agentId }, draftAcpPicks };
+    }),
+  acpAgentOptions: loadAcpAgentOptions(),
+  acpOptionsProbe: {},
+  fetchAcpAgentOptions: async (agentId) => {
+    const s = get();
+    if ((s.acpAgentOptions[agentId]?.length ?? 0) > 0 || s.acpOptionsProbe[agentId]?.status === "loading") return;
+    const cwd = s.workspace;
+    if (!cwd) return;
+    const mark = (probe: AcpOptionsProbe | null) =>
+      set((st) => {
+        const acpOptionsProbe = { ...st.acpOptionsProbe };
+        if (probe) acpOptionsProbe[agentId] = probe;
+        else delete acpOptionsProbe[agentId];
+        return { acpOptionsProbe };
+      });
+    mark({ status: "loading" });
+    try {
+      const rt = await startAcpRuntime(agentId, cwd);
+      const options = await rt.probeConfigOptions(cwd);
+      rememberAgentOptions(set, get, agentId, options);
+      mark(options.length > 0 ? null : { status: "empty" });
+    } catch (err) {
+      mark({ status: "error", error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+  draftAcpPicks: {},
+  setDraftAcpOption: (draftKey, configId, value) =>
+    set((s) => ({
+      draftAcpPicks: {
+        ...s.draftAcpPicks,
+        [draftKey]: { ...s.draftAcpPicks[draftKey], [configId]: value },
+      },
+    })),
+  // A saved default naming an agent no longer configured is OpenCode.
+  defaultRuntime: activeAcpAgent()?.id ?? null,
+  setDefaultRuntime: (agentId) => {
+    setActiveAcpAgentId(agentId);
+    set({ defaultRuntime: agentId });
+  },
+  adoptAcpSession: async (agentId, sessionId, directory) => {
+    // The folder matters beyond grouping: Claude Code files a session under the
+    // folder it ran in, and resuming it from any other folder finds nothing.
+    // The shell may have moved since the agent started, so ask the agent.
+    const rt = await startAcpRuntime(agentId, directory);
+    const listed = (await rt.listSessions().catch(() => [])).find((m) => m.id === sessionId);
+    const record: AcpSessionRecord = {
+      agentId,
+      title: listed?.title || get().acpSessions[sessionId]?.title || "Session",
+      directory: listed?.directory || directory,
+      updated: listed?.updated ?? Date.now(),
+    };
+    const row: SessionMeta = { id: sessionId, title: record.title, directory: record.directory, updated: record.updated };
+    set((s) => ({
+      acpSessions: { ...s.acpSessions, [sessionId]: record },
+      sessions: [...s.sessions.filter((m) => m.id !== sessionId), row],
+    }));
+    saveAcpSessions(get().acpSessions);
+  },
+  releaseAcpSession: async (sessionId) => {
+    const rt = acpRuntimeOf(get, sessionId);
+    if (rt) await rt.closeSession(sessionId);
+    set((s) => {
+      const runningSessions = { ...s.runningSessions };
+      delete runningSessions[sessionId];
+      const threads = { ...s.threads };
+      // Reloaded on return: the terminal will have added to it.
+      delete threads[sessionId];
+      return { runningSessions, threads };
+    });
+  },
   acpConfigOptions: {},
   setAcpConfigOption: async (sessionId, configId, value) => {
-    const rt = acpRuntime;
-    if (!rt || client !== rt) return;
+    const rt = acpRuntimeOf(get, sessionId);
+    if (!rt) return;
     try {
       const options = await rt.setConfigOption(sessionId, configId, value);
       set((s) => ({ acpConfigOptions: { ...s.acpConfigOptions, [sessionId]: options } }));
+      rememberAgentOptions(set, get, get().acpSessions[sessionId]?.agentId, options);
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -3103,18 +3401,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       if (connectRetryDepth > 0) set({ status: "connecting" });
       else set({ error: msg, status: "error" });
     };
-    // The runtime SELECTOR, decided before anything is torn down: a live ACP
-    // agent for the SAME configured entry is reused across this reconnect
-    // (see `acpRuntime`) — the workspace moves, the agent process does not.
-    const acpAgent = !isGatewayWeb && isTauri ? activeAcpAgent() : null;
-    const reusableAcp =
-      acpAgent && acpRuntime && acpRuntimeAgentId === acpAgent.id && acpRuntime.getStatus() === "ready"
-        ? acpRuntime
-        : null;
     // Quiet teardown of any previous connection: within a (re)connect the
     // status must never pass through "offline" — on first boot the retry loop
     // runs for minutes (macOS TCC) and each flip repaints the whole page.
-    teardownClient(reusableAcp);
+    // ACP agents are not part of this connection: they run beside it, keep
+    // their sessions across folder moves, and outlive every reconnect.
+    teardownClient();
     let directory: string | null;
     let password: string | null;
     let baseUrl = get().serverUrl;
@@ -3168,76 +3460,20 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // gets null and connects to a user-run passwordless server.
       password = await runtimePassword();
     }
-    // A configured ACP agent replaces `OpenCodeClient` as THE runtime for this
-    // connection (docs/rfc/multi-agent-acp.md) — same `AgentRuntime` seam, so the
-    // store, the thread, provenance and runs are unchanged. Desktop only: the
-    // agent is a child process on this host, which a phone running the gateway
-    // web client does not have.
-    let c: AgentRuntime;
-    if (acpAgent) {
-      // ACP takes the workspace folder per session (`session/new`'s cwd) — so
-      // without one there is nothing to create a session in.
-      if (!directory) {
-        failed("No workspace folder to run the ACP agent in.");
-        return;
-      }
-      let acp: AcpRuntime;
-      try {
-        if (reusableAcp) {
-          // Same agent, still alive: point new sessions at this folder and keep
-          // the process. Sessions it already holds keep their own folder — the
-          // agent binds cwd per session, so nothing that is running moves.
-          reusableAcp.setCwd(directory);
-          acp = reusableAcp;
-        } else {
-          const transport = await acpTransport(acpAgent.id, acpAgent.command, acpAgent.args);
-          acp = new AcpRuntime({ transport, cwd: directory, name: acpAgent.name });
-          acpRuntime = acp;
-          acpRuntimeAgentId = acpAgent.id;
-        }
-        client = acp;
-        c = acp;
-        // No OpenCode instance backs this connection: `getClient()` must answer
-        // null so Settings' provider/MCP surface hides instead of PATCHing a
-        // sidecar that is not driving anything.
-        opencodeClient = null;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        void logDebug(`acp start FAILED (${acpAgent.command}): ${msg}`);
-        set({ runtimeKind: "acp", acpAgentName: acpAgent.name });
-        failed(msg);
-        return;
-      }
-      // The app's own connectors are per-session in ACP, so the agent has to
-      // know them BEFORE any session is created (#14). Awaited only on a fresh
-      // child: on a reuse the list is already loaded, and every new session
-      // reconnects — paying a config round-trip each time would put the
-      // sidecar's latency in front of every "New".
-      if (reusableAcp) void shareMcpServers(acp, baseUrl, password);
-      else await shareMcpServers(acp, baseUrl, password);
-      // The OpenCode catalog belongs to the runtime that is no longer driving:
-      // an ACP agent owns its own model choice (v1 changes it through
-      // `session/set_config_option`, from the agent's own list), so leaving the
-      // old providers on screen would offer a switch that does nothing.
-      set({ runtimeKind: "acp", acpAgentName: acpAgent.name, providers: [], defaultModel: null });
-    } else {
-      const oc = new OpenCodeClient({
-        baseUrl,
-        directory: directory ?? undefined,
-        password: password ?? undefined,
-        eventStream,
-      });
-      opencodeClient = oc;
-      client = oc;
-      c = oc;
-      set({ runtimeKind: "opencode", acpAgentName: null });
-      // Background streams reuse the same sidecar; the foreground now streams
-      // this folder, so drop any background stream that was covering it (avoid a
-      // double fold of the same events).
-      streamBaseUrl = baseUrl;
-      streamPassword = password ?? undefined;
-      if (directory) removeStreamClient(directory);
-    }
+    const c = new OpenCodeClient({
+      baseUrl,
+      directory: directory ?? undefined,
+      password: password ?? undefined,
+      eventStream,
+    });
+    opencodeClient = c;
+    client = c;
+    // Background streams reuse the same sidecar; the foreground now streams
+    // this folder, so drop any background stream that was covering it (avoid a
+    // double fold of the same events).
+    streamBaseUrl = baseUrl;
+    streamPassword = password ?? undefined;
+    if (directory) removeStreamClient(directory);
     clientStatusUnsub = c.onStatus((status) => {
       const shown = visibleStatus(status);
       // Log what the runtime said AND what the UI was given, so a report of
@@ -3442,7 +3678,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
           // This one failure the user cannot act on without help: the bad
           // message is indistinguishable by eye, and every retry resends it.
           if (MALFORMED_HISTORY.test(event.message)) {
-            void diagnoseMalformedHistory(set, sid);
+            void diagnoseMalformedHistory(set, get, sid);
           }
         } else {
           set({ error: message });
@@ -3839,7 +4075,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         }
       }
       if (event.type === "session.idle" && !backgroundReviewParent) {
-        syncAcpConfig(set, sid);
+        syncAcpConfig(set, get, sid);
         void get().refreshSessions();
         // Name the session in the snapshot: a project folder is shared by many
         // sessions, and its git history must say which one made each change.
@@ -4114,17 +4350,73 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   refreshSessions: async () => {
     if (!client) return;
     try {
-      const sessions = await client.listSessions();
+      const listed = await client.listSessions();
       set((s) => {
         // The list also names each subagent session's parent — the recovery
         // path for parent links after a reload (no live task event to learn from).
         const sessionParents = { ...s.sessionParents };
-        for (const m of sessions) if (m.parentId) sessionParents[m.id] = m.parentId;
-        return { sessions, sessionParents };
+        for (const m of listed) if (m.parentId) sessionParents[m.id] = m.parentId;
+        return { sessions: [...listed, ...acpSessionRows(s.acpSessions)], sessionParents };
       });
     } catch {
       /* ignore transient list failures */
     }
+    // A running agent knows its sessions' current titles. Only the sessions this
+    // app records are taken: the agent also lists every conversation it ever
+    // had (Claude Code: every terminal session on the machine), which is also
+    // why this is asked at most every ACP_TITLE_SYNC_MS, not after every turn.
+    for (const [agentId, rt] of acpRuntimes) {
+      if (rt.getStatus() !== "ready") continue;
+      const last = acpTitleSyncAt.get(agentId) ?? 0;
+      if (Date.now() - last < ACP_TITLE_SYNC_MS) continue;
+      acpTitleSyncAt.set(agentId, Date.now());
+      let metas: SessionMeta[];
+      try {
+        metas = await rt.listSessions();
+      } catch {
+        continue;
+      }
+      const prev = get().acpSessions;
+      let changed = false;
+      const next = { ...prev };
+      for (const m of metas) {
+        const r = prev[m.id];
+        if (!r) continue;
+        const title = m.title && m.title !== "Session" && m.title !== "New session" ? m.title : r.title;
+        const updated = m.updated ?? r.updated;
+        if (title === r.title && updated === r.updated) continue;
+        next[m.id] = { ...r, title, ...(updated !== undefined ? { updated } : {}) };
+        changed = true;
+      }
+      if (!changed) continue;
+      saveAcpSessions(next);
+      set((s) => ({
+        acpSessions: next,
+        sessions: s.sessions.map((m) =>
+          next[m.id] ? { ...m, title: next[m.id].title, updated: next[m.id].updated ?? m.updated } : m,
+        ),
+      }));
+    }
+  },
+
+  findDeletedSessions: async (ids) => {
+    const gone = new Set<string>();
+    const c = client;
+    if (!c) return gone;
+    await Promise.all(
+      ids.map(async (id) => {
+        // An ACP conversation exists while the app records it; asking the agent
+        // would mean starting it just to keep a pane open.
+        if (get().acpSessions[id]) return;
+        try {
+          if (!(await c.sessionExists(id))) gone.add(id);
+        } catch {
+          /* unknown → keep */
+        }
+      }),
+    );
+    if (gone.size > 0) void logDebug(`panes closed, sessions deleted: ${[...gone].join(" ")}`);
+    return gone;
   },
 
   // "New" opens a blank draft — no session is created until the first message (#3).
@@ -4381,10 +4673,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // Recover any request the agent is blocked on (asked before connect/reload).
     void (async () => {
       try {
-        const [qs, ps] = await Promise.all([
-          client!.listQuestions(id),
-          client!.listPermissions(id),
-        ]);
+        const rt = await runtimeForSession(get, id);
+        if (!rt) return;
+        const [qs, ps] = await Promise.all([rt.listQuestions(id), rt.listPermissions(id)]);
         // Both lists are workspace-scoped (they include subagent sessions'
         // asks) — replace by requestId so live SSE copies don't duplicate.
         set((s) => {
@@ -4430,7 +4721,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       if (!ready || seq !== openSessionSeq || get().currentId !== id) return;
     }
     try {
-      const messages = await client.getMessages(id);
+      // An ACP conversation replays on its own agent, started here if needed.
+      const messages = await requireRuntime(get, id).then((rt) => rt.getMessages(id));
       // The command templates are what turn a stored expansion back into the
       // "/name args" the user typed. connect() starts the catalog without
       // awaiting it, so on a cold open this can still be in flight — join it
@@ -4440,7 +4732,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       if (seq !== openSessionSeq || get().currentId !== id) return;
       // A replayed ACP session reports its selectors during the load — show the
       // model it is actually on, not the one the last session used.
-      syncAcpConfig(set, id);
+      syncAcpConfig(set, get, id);
       set((s) => ({
         threads: {
           ...s.threads,
@@ -4489,8 +4781,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   },
 
   loadHistory: async (id) => {
-    const c = client;
-    if (!c) return;
+    if (!client) return;
     const cur = get().threads[id];
     // Loaded-and-fine threads are done; everything else — never tried, or tried
     // and failed (historyError) — is fetched. The failure case is what makes a
@@ -4500,7 +4791,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     try {
       // getMessages is session-scoped (server routes by the session's folder),
       // so any connected client works — no folder switch, unlike openSession.
-      const messages = await c.getMessages(id);
+      // An ACP conversation's history is its agent's.
+      const messages = await requireRuntime(get, id).then((rt) => rt.getMessages(id));
       // Same reason as openSession: without the command templates a stored
       // slash-command expansion renders raw.
       if (catalogInFlight && get().commands.length === 0) await catalogInFlight;
@@ -4563,14 +4855,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
               i18n.t("session:composer.error.imageNotSent", { names: dropped.join(", ") }),
             );
           }
-          await client!.sendPrompt(sid, text, agent, model, variant, parts);
+          await (await requireRuntime(get, sid)).sendPrompt(sid, text, agent, model, variant, parts);
         }),
       // An ACP turn is a SYNC turn: `session/prompt` is one JSON-RPC request that
       // answers when the turn is over, where OpenCode's `prompt_async` answers as
       // soon as it is accepted. Without this the running lock would be taken
       // AFTER the turn's own `session.idle` had already cleared it, leaving a
       // spinner turning under a finished answer until the next reconcile.
-      s.runtimeKind === "acp",
+      acpAgentFor(s, key) !== null,
       false,
       sessionId,
       draftKey,
@@ -4584,7 +4876,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       set,
       get,
       `! ${command}`,
-      (sid) => client!.runShell(sid, command, agent),
+      async (sid) => (await requireRuntime(get, sid)).runShell(sid, command, agent),
       true,
       true,
       sessionId,
@@ -4609,7 +4901,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       set,
       get,
       args ? `/${name} ${args}` : `/${name}`,
-      (sid) => client!.runCommand(sid, name, args),
+      async (sid) => (await requireRuntime(get, sid)).runCommand(sid, name, args),
       true,
       false,
       sessionId,
@@ -4619,7 +4911,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   compactContext: async (sessionId) => {
     const sid = sessionId ?? get().currentId;
-    if (!sid || !client) return;
+    const c = sid ? clientForSession(get, sid) : null;
+    if (!sid || !c) return;
     // Compacting while a turn streams would race the model loop (the endpoint
     // refuses a busy session too). The composer disables the button while the
     // session is working, so this guard is for programmatic callers.
@@ -4633,7 +4926,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     const meta = get().sessions.find((s) => s.id === sid);
     set((s) => ({ compactingSessions: { ...s.compactingSessions, [sid]: true } }));
     try {
-      await client.compactSession(sid, meta?.model?.providerID, meta?.model?.id);
+      await c.compactSession(sid, meta?.model?.providerID, meta?.model?.id);
     } catch (err) {
       set((s) => {
         const compactingSessions = { ...s.compactingSessions };
@@ -4655,7 +4948,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // the one the user is trying to stop (#59). Aborting an idle session is a
     // no-op server-side: the handler cancels whatever it finds (nothing) and
     // answers true, so there is nothing to protect against here.
-    if (!sid || !client) return;
+    // An ACP agent that is not running has no turn to stop (null here).
+    const rt = sid ? clientForSession(get, sid) : null;
+    if (!sid || !rt) return;
     // Arm the guard BEFORE the abort POST: the server answers an abort with its
     // own SSE burst (an "aborted" error and one or more session.idle events)
     // that streams back WHILE this POST is still awaited. If we armed it after
@@ -4670,7 +4965,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     );
     for (const id of descendants) remember(interruptedSessions, id);
     try {
-      await client.abortSession(sid);
+      await rt.abortSession(sid);
     } catch (err) {
       // The abort did NOT land. Saying "Interrupted" here would be a lie that
       // also hides the Stop button (the lock is what renders it), leaving a
@@ -4742,10 +5037,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   revertMessage: async (messageID, sessionId) => revertToMessage(set, get, messageID, sessionId),
 
   reconcileRunning: async () => {
-    const c = client;
     const running = Object.keys(get().runningSessions);
-    if (!c || running.length === 0) return;
+    if (!client || running.length === 0) return;
     for (const sid of running) {
+      const c = clientForSession(get, sid);
+      if (!c) continue;
       try {
         const messages = await c.getMessages(sid);
         // Still ours to answer for? The lock may have cleared while we fetched.
@@ -4776,7 +5072,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   },
 
   deleteSession: async (id) => {
-    if (client) {
+    if (get().acpSessions[id]) {
+      // Forgotten here, kept on the agent: the conversation may be one the user
+      // started in a terminal, and its history there is not ours to erase.
+      const acpSessions = { ...get().acpSessions };
+      delete acpSessions[id];
+      set({ acpSessions });
+      saveAcpSessions(acpSessions);
+    } else if (client) {
       try {
         await client.deleteSession(id);
       } catch (err) {
@@ -4814,11 +5117,19 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     const trimmed = title.trim();
     const current = get().sessions.find((s) => s.id === id);
     if (!client || !trimmed || !current || trimmed === current.title) return false;
-    try {
-      await client.renameSession(id, trimmed);
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-      return false;
+    const record = get().acpSessions[id];
+    if (record) {
+      // ACP has no rename; the title is the app's own.
+      const acpSessions = { ...get().acpSessions, [id]: { ...record, title: trimmed } };
+      set({ acpSessions });
+      saveAcpSessions(acpSessions);
+    } else {
+      try {
+        await client.renameSession(id, trimmed);
+      } catch (err) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+        return false;
+      }
     }
     // Rename locally rather than re-listing: the sidebar row must change under
     // the pointer, and a full refresh would also reorder the list.
@@ -4869,9 +5180,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   },
 
   setSessionArchived: async (id, archived) => {
-    if (!client) return false;
+    const c = clientForSession(get, id);
+    if (!c) return false;
     try {
-      await client.setSessionArchived(id, archived);
+      await c.setSessionArchived(id, archived);
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
       return false;
@@ -4958,9 +5270,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         get,
         echo,
         (sid) => withRetry(() => client!.sendPrompt(sid, prompt, undefined, model)),
-        // Same reason as the composer's send: an ACP `session/prompt` answers
-        // when the turn is OVER, so its lock has to be taken before the call.
-        get().runtimeKind === "acp",
+        // A skill install always runs on OpenCode, which streams its turn.
+        false,
         false,
         id,
       );

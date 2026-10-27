@@ -8,7 +8,9 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
+import type { AcpConfigOption } from "@ai4s/sdk/acp";
 import {
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -20,8 +22,9 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { agentForTurn, useRuntimeStore } from "@/lib/runtime";
+import { agentForTurn, useRuntimeStore, type AcpOptionsProbe } from "@/lib/runtime";
 import { useIsMobile } from "@/lib/useIsMobile";
+import { useAgentChoices } from "@/lib/agentChoices";
 import { cn } from "@/lib/cn";
 import {
   flattenModelOptions,
@@ -211,14 +214,37 @@ function ReasoningSlider({
  * One picker body renders in two shells: an anchored popover on desktop/wide
  * web, a bottom sheet on phone-width viewports (`useIsMobile`).
  */
+/** Which agent a conversation runs on, and that agent's own selectors. Given
+ *  on the desktop, where an ACP agent can run; the picker then leads with the
+ *  agent and shows the chosen agent's models below it. */
+export interface AgentControl {
+  /** ACP agent id, or null for OpenCode. */
+  value: string | null;
+  /** An existing conversation keeps its agent; only a new one chooses. */
+  locked: boolean;
+  onChange: (agentId: string | null) => void;
+  /** The ACP agent's selectors (model, reasoning level, mode) as it reported
+   *  them; for a new conversation, as it last reported them. */
+  options: AcpConfigOption[];
+  onOption: (configId: string, value: string) => void;
+  /** A turn is running: the agent's selectors wait for it to end. */
+  busy?: boolean;
+  /** Reading the selectors of an agent that has never reported any. */
+  probe?: AcpOptionsProbe;
+  /** Asked when the picker shows an agent with no selectors known yet. */
+  onNeedOptions?: () => void;
+}
+
 export function ModelPicker({
   sessionId,
   compact,
+  agent,
 }: {
   sessionId?: string;
   /** Narrow composer: show the chip as an icon only. The button keeps its
    *  aria-label and title, so the model stays discoverable without the words. */
   compact?: boolean;
+  agent?: AgentControl;
 } = {}) {
   const { t } = useTranslation(["session", "common"]);
   const navigate = useNavigate();
@@ -274,6 +300,15 @@ export function ModelPicker({
   // so it's clear an effort can be set (and where).
   const [flash, setFlash] = useState(0);
   const [prefs, setPrefs] = useState<ModelPreferences>(() => loadModelPreferences());
+  const closeButton = (
+    <button
+      aria-label={t("composer.model.close")}
+      className="shrink-0 rounded-full p-1 text-muted hover:bg-surface-2 hover:text-text"
+      onClick={() => setOpen(false)}
+    >
+      <X size={14} />
+    </button>
+  );
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -367,7 +402,29 @@ export function ModelPicker({
     }
   };
 
-  const chipLabel = current?.modelName ?? t("composer.model.none");
+  const acp = agent?.value != null;
+  const { choices, pick } = useAgentChoices(agent?.value ?? null);
+  const agentName = choices.find((c) => c.id === (agent?.value ?? null))?.name ?? "";
+  const acpOptions = (agent?.options ?? []).filter(
+    (o) => o.type !== "boolean" && (o.options?.length ?? 0) > 0,
+  );
+  // The agent's model selector, for the chip: by category, which is what the
+  // spec offers for it, else by the id agents use in practice.
+  const acpModel = acpOptions.find((o) => o.category === "model") ?? acpOptions.find((o) => o.id === "model");
+  const acpModelName = acpModel?.options?.find((v) => v.value === acpModel.currentValue)?.name;
+  // An agent shown with nothing to choose from: ask for its list now rather
+  // than make the user send a message first.
+  const needsOptions = open && acp && acpOptions.length === 0 && !agent?.probe;
+  const onNeedOptions = agent?.onNeedOptions;
+  useEffect(() => {
+    if (needsOptions) onNeedOptions?.();
+  }, [needsOptions, onNeedOptions, agent?.value]);
+
+  const chipLabel = acp
+    ? acpModelName
+      ? `${agentName} · ${acpModelName}`
+      : agentName
+    : (current?.modelName ?? t("composer.model.none"));
 
   const filterChips: { key: string; label: string; icon?: typeof Star; value: ModelFilter }[] = [
     { key: "all", label: t("composer.model.filter.all"), value: { kind: "all" } },
@@ -389,8 +446,8 @@ export function ModelPicker({
     (value.kind !== "provider" ||
       (filter.kind === "provider" && value.providerID === filter.providerID));
 
-  const body = (
-    <div className="flex min-h-0 flex-col">
+  const opencodeBody = (
+    <div className="flex min-h-0 flex-1 flex-col">
       {/* Search */}
       <div className="flex shrink-0 items-center gap-2 border-b border-faint px-2.5 py-2">
         <Search size={13} className="shrink-0 text-muted" />
@@ -401,15 +458,7 @@ export function ModelPicker({
           placeholder={t("composer.model.search")}
           className="min-w-0 flex-1 bg-transparent text-xs text-text placeholder:text-muted focus:outline-none"
         />
-        {isMobile && (
-          <button
-            aria-label={t("composer.model.close")}
-            className="shrink-0 rounded-full p-1 text-muted hover:bg-surface-2 hover:text-text"
-            onClick={() => setOpen(false)}
-          >
-            <X size={14} />
-          </button>
-        )}
+        {isMobile && !agent && closeButton}
       </div>
 
       {/* Where this pane's model comes from. Rendered ONLY when it is not the
@@ -604,6 +653,125 @@ export function ModelPicker({
     </div>
   );
 
+  // The agent leads: which one answers decides which models exist at all. A
+  // new conversation picks it here; an existing one names it and says how to
+  // use another, since its history lives with the agent that wrote it.
+  const agentRow = agent && (
+    <div className="flex shrink-0 items-end gap-4 border-b border-faint px-3 pt-2.5">
+      {agent.locked ? (
+        <>
+          <span className="pb-2 text-xs font-medium text-text">{agentName}</span>
+          <span className="min-w-0 flex-1 truncate pb-2 text-right text-[11px] text-muted">
+            {t("composer.agent.locked")}
+          </span>
+        </>
+      ) : (
+        <div role="tablist" aria-label={t("composer.agent.aria")} className="no-scrollbar flex min-w-0 flex-1 gap-4 overflow-x-auto">
+          {choices.map((c) => {
+            const selected = c.id === agent.value;
+            return (
+              <button
+                key={c.id ?? "opencode"}
+                role="tab"
+                aria-selected={selected}
+                className={cn(
+                  "shrink-0 border-b-[1.5px] pb-2 text-xs transition-colors",
+                  selected
+                    ? "border-accent font-medium text-text"
+                    : "border-transparent text-muted hover:text-text",
+                )}
+                onClick={() => {
+                  if (!selected) agent.onChange(pick(c.id));
+                }}
+              >
+                {c.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {isMobile && <div className="pb-1.5">{closeButton}</div>}
+    </div>
+  );
+
+  // An ACP agent's own selectors, each a short list. Before its first session
+  // the agent has reported none, so the list says when they arrive.
+  const acpBody = (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto pb-1">
+        {acpOptions.length === 0 ? (
+          <p
+            className={cn(
+              "flex items-start gap-2 px-3 py-5 text-xs leading-relaxed",
+              agent?.probe?.status === "error" ? "text-error" : "text-muted",
+            )}
+          >
+            {agent?.probe?.status === "error" ? (
+              t("composer.agent.optionsFailed", { agent: agentName, error: agent.probe.error })
+            ) : agent?.probe?.status !== "loading" && !agent?.onNeedOptions ? (
+              // Nothing to read and nothing being read: the agent offered none.
+              t("composer.agent.optionsNone", { agent: agentName })
+            ) : agent?.probe?.status === "empty" ? (
+              t("composer.agent.optionsNone", { agent: agentName })
+            ) : (
+              <>
+                <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" />
+                {t("composer.agent.optionsLoading", { agent: agentName })}
+              </>
+            )}
+          </p>
+        ) : (
+          acpOptions.map((option, i) => (
+            <section key={option.id} className={cn("px-1 pt-1", i > 0 && "mt-1 border-t border-faint")}>
+              <div className="px-2 pb-0.5 pt-1.5 text-[11px] text-muted">{option.name ?? option.id}</div>
+              {option.options!.map((v) => {
+                const isCurrent = v.value === option.currentValue;
+                return (
+                  <button
+                    key={v.value}
+                    disabled={agent?.busy}
+                    title={v.description}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-input px-2 py-1.5 text-left disabled:opacity-50",
+                      isCurrent ? "bg-surface-2" : "hover:bg-surface-2",
+                    )}
+                    onClick={() => {
+                      if (!isCurrent) agent!.onOption(option.id, v.value);
+                    }}
+                  >
+                    <Check size={13} className={cn("shrink-0 text-accent", isCurrent ? "" : "opacity-0")} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs text-text">{v.name ?? v.value}</span>
+                      {v.description && (
+                        <span className="block truncate text-[11px] text-muted">{v.description}</span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </section>
+          ))
+        )}
+      </div>
+      <button
+        className="shrink-0 border-t border-faint px-3 py-2 text-left text-xs text-accent hover:underline"
+        onClick={() => {
+          setOpen(false);
+          navigate("/settings/runtime");
+        }}
+      >
+        {t("composer.agent.manage")}
+      </button>
+    </div>
+  );
+
+  const body = (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {agentRow}
+      {acp ? acpBody : opencodeBody}
+    </div>
+  );
+
   return (
     // `min-w-0`, NOT `shrink-0`: this chip carries the longest text in the
     // toolbar ("Kimi For Coding High…"), so it is the one that must give way.
@@ -613,7 +781,15 @@ export function ModelPicker({
       {/* Chip trigger */}
       <button
         aria-label={t("composer.model.aria")}
-        title={t("composer.model.title")}
+        // A retired model fails every turn: say so on the chip, where it shows
+        // without opening the picker, not only inside it.
+        title={
+          acp
+            ? t("composer.agent.title")
+            : currentRetired
+              ? t("composer.model.retiredTitle")
+              : t("composer.model.title")
+        }
         aria-haspopup="dialog"
         aria-expanded={open}
         className={cn(
@@ -622,13 +798,17 @@ export function ModelPicker({
         )}
         onClick={() => setOpen((o) => !o)}
       >
-        {switching ? (
+        {switching && !acp ? (
           <Loader2 size={12} className="shrink-0 animate-spin" />
+        ) : acp ? (
+          <Bot size={12} className="shrink-0" />
+        ) : currentRetired ? (
+          <TriangleAlert size={12} className="shrink-0 text-warn" aria-hidden />
         ) : (
           <Cpu size={12} className="shrink-0" />
         )}
         {!compact && <span className="truncate text-text">{chipLabel}</span>}
-        {!compact && activeVariant && (
+        {!compact && !acp && activeVariant && (
           <span className="shrink-0 text-muted">· {labelVariant(activeVariant)}</span>
         )}
         {!compact && <ChevronDown size={11} className="shrink-0" />}

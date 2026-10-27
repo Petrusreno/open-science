@@ -160,7 +160,16 @@
       "add": "Mettre en attente",
       "addTitle": "Envoyer après ce tour (Entrée) · Cmd/Ctrl+Entrée intervient maintenant"
     },
-    "busyCommand": "Attendez la fin de ce tour avant de lancer une commande."
+    "busyCommand": "Attendez la fin de ce tour avant de lancer une commande.",
+    "agent": {
+      "aria": "Agent",
+      "title": "Agent et modèle",
+      "locked": "Un autre agent dans une nouvelle conversation",
+      "manage": "Gérer les agents",
+      "optionsLoading": "Lecture des modèles de {{agent}}…",
+      "optionsNone": "{{agent}} ne propose aucun modèle au choix.",
+      "optionsFailed": "{{agent}} n’a pas démarré : {{error}}"
+    }
   },
   "localCommand": {
     "newDescription": "Nouvelle conversation dans ce dossier",
@@ -330,7 +339,6 @@
     "via": "· via {{tool}}",
     "open": "Ouvrir",
     "maximize": "Agrandir",
-    "close": "Fermer",
     "collapse": "Replier",
     "expand": "Déplier"
   },
@@ -551,7 +559,18 @@
       "none": "aucun résultat",
       "find": "Rechercher…"
     },
-    "recentInput": "Saisies récentes venues de l’extérieur :"
+    "recentInput": "Saisies récentes venues de l’extérieur :",
+    "continueInApp": {
+      "label": "Ouvrir en conversation",
+      "confirmTitle": "Continuer en conversation ?",
+      "confirmBody": "Cette session {{agent}} se poursuit dans la vue conversation de l’app, et ce terminal se ferme. Vous pourrez la remettre dans un terminal à tout moment."
+    },
+    "continueInTerminal": {
+      "label": "Continuer dans le terminal",
+      "confirmTitle": "Continuer dans un terminal ?",
+      "confirmBody": "Cette conversation reprend dans un terminal là où elle en était, et ce volet devient ce terminal. Elle reste dans la barre latérale, vous pourrez y revenir.",
+      "confirmBodyRunning": "La réponse en cours s’arrête, puis cette conversation reprend dans un terminal là où elle en était. Elle reste dans la barre latérale, vous pourrez y revenir."
+    }
   },
   "splitInto": {
     "session": "Session"

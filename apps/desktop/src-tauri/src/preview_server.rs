@@ -425,6 +425,33 @@ mod tests {
     /// what a <video> asks for first and it names the WHOLE file, so this is the
     /// case that used to allocate the entire file into one Vec.
     #[test]
+    fn an_html_page_gets_its_stylesheets_and_scripts_under_nosniff() {
+        // The page itself rendered while its assets were refused: the server
+        // sends nosniff, and css/js went out as octet-stream/text/plain.
+        let root = std::env::temp_dir().join(format!("ai4s-preview-assets-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        for f in ["index.html", "assets/app.css", "assets/app.js", "assets/m.mjs"] {
+            std::fs::write(root.join(f), b"x").unwrap();
+        }
+        let port = serve("tok", {
+            let root = root.clone();
+            move |scope| (scope == "w").then(|| root.clone())
+        })
+        .unwrap();
+        for (path, mime) in [
+            ("/tok/w/index.html", "text/html"),
+            ("/tok/w/assets/app.css", "text/css"),
+            ("/tok/w/assets/app.js", "text/javascript"),
+            ("/tok/w/assets/m.mjs", "text/javascript"),
+        ] {
+            let (h, _) = get(port, path);
+            assert!(h.contains(&format!("Content-Type: {mime}")), "{path}: {h}");
+            assert!(h.contains("X-Content-Type-Options: nosniff"), "{h}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn bodies_larger_than_one_chunk_stream_intact() {
         let root = std::env::temp_dir().join(format!("ai4s-preview-big-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();

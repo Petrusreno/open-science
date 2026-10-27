@@ -217,6 +217,13 @@ fn resolve(args: &Args) -> Result<(String, String, String), String> {
     if let Some((base, token)) = local_gateway(args) {
         return Ok((base, token, "a gateway running on this machine".into()));
     }
+    // The app's gateway is switched on but not listening: the app is closed,
+    // or restarting (an update). Its terminals keep running meanwhile.
+    if local_gateway_enabled(args) {
+        return Err("the Open Science app is not running, or is restarting. Its terminals keep \
+                    running; retry in a few seconds once the app is open."
+            .into());
+    }
     Err("no gateway found. Start one with `osd server`, or point at one with \
          `osd login --gateway <url> --token <token>`."
         .into())
@@ -250,6 +257,16 @@ fn local_gateway(args: &Args) -> Option<(String, String)> {
         return None;
     }
     Some((format!("http://127.0.0.1:{port}"), p.token))
+}
+
+/// Whether the gateway on this machine is switched on (it may not be up).
+fn local_gateway_enabled(args: &Args) -> bool {
+    osd_core::Env::headless(
+        None,
+        args.value("state-dir").map(PathBuf::from),
+        env!("CARGO_PKG_VERSION").to_string(),
+    )
+    .is_ok_and(|env| osd_core::gateway::read_persisted(&env).enabled)
 }
 
 pub fn config_file() -> PathBuf {

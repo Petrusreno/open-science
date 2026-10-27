@@ -271,15 +271,21 @@ fn read_run_file(path: &Path) -> Vec<RunRecord> {
     }
 }
 
-/// All recorded runs, newest first — local runs (`runs.jsonl`) merged with
-/// remote runs the skills recorded (`remote-runs.jsonl`), sorted by start time.
-pub fn read_runs(root: &Path) -> Vec<RunRecord> {
+/// Legacy JSONL helper for unit tests. Production callers use
+/// `read_runs_checked`, which propagates transactional storage errors.
+#[cfg(test)]
+fn read_runs(root: &Path) -> Vec<RunRecord> {
+    read_runs_checked(root).unwrap_or_default()
+}
+
+/// Built-in readers propagate transactional storage errors, never fall back.
+pub fn read_runs_checked(root: &Path) -> Result<Vec<RunRecord>, String> {
     let dir = root.join(STORE_DIR);
-    let mut v = read_run_file(&dir.join(RUNS_FILE));
+    let mut v = if crate::ledger_v1::enabled(root) { crate::ledger_v1::runs(root)? } else { read_run_file(&dir.join(RUNS_FILE)) };
     v.extend(read_run_file(&dir.join(REMOTE_RUNS_FILE)));
     // Newest first; sort is stable so same-ts records keep file order.
     v.sort_by_key(|r| std::cmp::Reverse(r.ts));
-    v
+    Ok(v)
 }
 
 /// Build and store a run record, linking each output file back to the run in
@@ -298,9 +304,7 @@ pub fn record_run_inner(
     model: Option<String>,
     env: Option<EnvInfo>,
 ) -> Result<RunRecord, String> {
-    // Hold the ledger lock across deduplication, the run append and the output
-    // links: a retry of the same run, from any process, must reuse its stored
-    // record and fill only missing provenance links.
+    // One workspace lock protects legacy JSONL and the opt-in migration path.
     let guard = lock_ledger(root)?;
 
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
@@ -309,7 +313,9 @@ pub fn record_run_inner(
     // Millisecond precision so two identical commands a second apart don't
     // collide on the same run id.
     let run_id = run_id(command, start_ms);
-    let record = if let Some(stored) = read_run_file(&runs_file(root))
+    let transactional = crate::ledger_v1::enabled(root);
+    let previous = if transactional { crate::ledger_v1::runs(root)? } else { read_run_file(&runs_file(root)) };
+    let record = if let Some(stored) = previous
         .into_iter()
         .find(|stored| stored.run_id == run_id)
     {
@@ -350,9 +356,14 @@ pub fn record_run_inner(
             log_hash,
             env: env.clone(),
         };
-        append_run(&guard, root, &record)?;
+        if !transactional { append_run(&guard, root, &record)?; }
         record
     };
+
+    if transactional {
+        crate::ledger_v1::commit_run(root, &record)?;
+        return Ok(record);
+    }
 
     // Link the produced files to this run in provenance (their lineage shows
     // "produced by run X" + the reproduce recipe) — but only for a run that
@@ -379,7 +390,7 @@ pub fn record_run_inner(
 
 /// Every run recorded in the active workspace, newest first.
 pub fn list_runs(env: &Env) -> Result<Vec<RunRecord>, String> {
-    Ok(read_runs(&workspace_dir(env)?))
+    read_runs_checked(&workspace_dir(env)?)
 }
 
 /// Read a run's captured stdout/stderr by its log hash.
@@ -494,6 +505,16 @@ mod tests {
         commands.sort();
         assert_eq!(commands, ["echo first", "echo second"]);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn child_records_same_run_under_workspace_lock() {
+        let Ok(root) = std::env::var("OSD_RUN_LEDGER_TEST_ROOT") else { return; };
+        let child = std::env::var("OSD_RUN_LEDGER_TEST_CHILD").unwrap();
+        let root = Path::new(&root);
+        std::fs::write(root.join(format!(".openscience/child-{child}-ready")), "ready").unwrap();
+        let now_ms: u64 = std::env::var("OSD_RUN_LEDGER_TEST_NOW").unwrap().parse().unwrap();
+        record_run_inner(root, "echo synthetic", None, Some(now_ms - 2_000), Some(now_ms + 2_000), "ok", Some("local".into()), None, None, None).unwrap();
     }
 
     #[test]

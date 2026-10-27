@@ -9,6 +9,7 @@
 // Stored locally rather than in OpenCode's config: it is app behaviour (which
 // runtime the desktop drives), and OpenCode must not be asked to describe a
 // runtime that replaces it.
+import type { AcpConfigOption } from "@ai4s/sdk/acp";
 
 /** A configured ACP agent. `id` is also the key the Rust supervisor tracks its
  *  child under, so it must stay stable across edits of the same entry. */
@@ -22,17 +23,23 @@ export interface AcpAgentConfig {
 }
 
 const AGENTS_KEY = "ai4s.acp.agents.v1";
+
+/** Claude Code's ACP adapter. It was published as `@zed-industries/claude-code-acp`
+ *  until 0.16.2; that name is deprecated and gets no updates. */
+export const CLAUDE_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp";
+const RETIRED_CLAUDE_ACP = /^@zed-industries\/claude-code-acp(@.*)?$/;
 const ACTIVE_KEY = "ai4s.acp.active.v1";
 
 /** Agents known to speak ACP v1, offered as one-click starting points. Every one
  *  of these was probed against this app's own `initialize` before being listed
- *  (see PROGRESS.md, 2026-08-05): all three answer protocolVersion 1. They are
+ *  (see PROGRESS.md, 2026-08-05 and 2026-10-27): all answer protocolVersion 1. They are
  *  suggestions the user can edit, not an allowlist — any command that speaks ACP
  *  over stdio works. */
 export const ACP_PRESETS: ReadonlyArray<Omit<AcpAgentConfig, "id">> = [
   { name: "Codex", command: "npx", args: ["-y", "@agentclientprotocol/codex-acp"] },
   { name: "Gemini CLI", command: "gemini", args: ["--acp"] },
-  { name: "Claude Code", command: "npx", args: ["-y", "@zed-industries/claude-code-acp"] },
+  { name: "Claude Code", command: "npx", args: ["-y", CLAUDE_ACP_PACKAGE] },
+  { name: "pi", command: "npx", args: ["-y", "pi-acp"] },
 ];
 
 function storage(): Storage | null {
@@ -59,7 +66,12 @@ function sanitize(raw: unknown): AcpAgentConfig[] {
       id,
       name: typeof name === "string" && name.trim() ? name.trim() : command.trim(),
       command: command.trim(),
-      args: Array.isArray(args) ? args.filter((a): a is string => typeof a === "string") : [],
+      // A saved entry still naming the retired adapter would keep running it.
+      args: Array.isArray(args)
+        ? args
+            .filter((a): a is string => typeof a === "string")
+            .map((a) => (RETIRED_CLAUDE_ACP.test(a) ? CLAUDE_ACP_PACKAGE : a))
+        : [],
     });
   }
   return out;
@@ -85,7 +97,8 @@ export function saveAcpAgents(agents: AcpAgentConfig[]): void {
   }
 }
 
-/** The selected agent's id, or null for the bundled OpenCode runtime. */
+/** The agent new conversations start on, or null for the bundled OpenCode
+ *  runtime. A draft's own pick in the composer overrides it. */
 export function activeAcpAgentId(): string | null {
   return storage()?.getItem(ACTIVE_KEY) || null;
 }
@@ -102,7 +115,7 @@ export function setActiveAcpAgentId(id: string | null): void {
 }
 
 /**
- * The agent to run, or null for the bundled OpenCode runtime.
+ * The agent new conversations start on, or null for the bundled OpenCode runtime.
  *
  * A selection naming an agent that is no longer configured resolves to null, not
  * to an error: deleting the selected entry must fall back to OpenCode rather
@@ -163,4 +176,80 @@ export function parseCommandArgs(text: string): string[] {
 /** The inverse, for the editor field: quote any argument that contains spaces. */
 export function formatCommandArgs(args: string[]): string {
   return args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
+}
+
+const OPTIONS_KEY = "ai4s.acp.options.v1";
+
+/** The selectors each agent last reported (model, reasoning level, mode), by
+ *  agent id. An agent sends them only once a session exists; remembering them
+ *  lets a new conversation choose before its first message. */
+export function loadAcpAgentOptions(): Record<string, AcpConfigOption[]> {
+  const store = storage();
+  if (!store) return {};
+  try {
+    const raw: unknown = JSON.parse(store.getItem(OPTIONS_KEY) ?? "{}");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, AcpConfigOption[]> = {};
+    for (const [id, list] of Object.entries(raw as Record<string, unknown>))
+      if (Array.isArray(list)) out[id] = list.filter((o) => o && typeof o.id === "string");
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveAcpAgentOptions(options: Record<string, AcpConfigOption[]>): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.setItem(OPTIONS_KEY, JSON.stringify(options));
+  } catch {
+    /* remembered for this run only */
+  }
+}
+
+/** A conversation that runs on an ACP agent rather than on OpenCode. OpenCode
+ *  lists its own sessions; these are the app's record of the others, so they
+ *  stay in the sidebar across restarts and reopen on the agent that owns them. */
+export interface AcpSessionRecord {
+  agentId: string;
+  title: string;
+  directory?: string;
+  updated?: number;
+}
+
+const SESSIONS_KEY = "ai4s.acp.sessions.v1";
+
+export function loadAcpSessions(): Record<string, AcpSessionRecord> {
+  const store = storage();
+  if (!store) return {};
+  try {
+    const raw: unknown = JSON.parse(store.getItem(SESSIONS_KEY) ?? "{}");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, AcpSessionRecord> = {};
+    for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const { agentId, title, directory, updated } = value as Record<string, unknown>;
+      if (typeof agentId !== "string" || !agentId) continue;
+      out[id] = {
+        agentId,
+        title: typeof title === "string" && title ? title : "Session",
+        ...(typeof directory === "string" && directory ? { directory } : {}),
+        ...(typeof updated === "number" && Number.isFinite(updated) ? { updated } : {}),
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveAcpSessions(records: Record<string, AcpSessionRecord>): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.setItem(SESSIONS_KEY, JSON.stringify(records));
+  } catch {
+    /* storage full/unavailable: the record lives until the app closes */
+  }
 }

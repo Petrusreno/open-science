@@ -13,10 +13,15 @@ import {
   PanelLeft,
   PanelRight,
   PlugZap,
+  SquareTerminal,
   X,
 } from "lucide-react";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { terminalKindOf } from "@/lib/cliAgents";
+import { toast } from "@/lib/toast";
 import type { RuntimeStatus } from "@ai4s/shared";
 import {
+  acpAgentFor,
   contextLimitFor,
   draftKeyFor,
   inheritedDraftFolder,
@@ -189,6 +194,24 @@ export function SessionView({
   // independent draft and each create their own session on first send (#2).
   const draftKey = draftKeyFor(leafId);
   const key = eid ?? draftKey;
+  // The ACP agent this conversation runs on, or null for OpenCode (#14).
+  const acpAgentId = useRuntimeStore((s) => acpAgentFor(s, key));
+  const acp = acpAgentId !== null;
+  const setDraftRuntime = useRuntimeStore((s) => s.setDraftRuntime);
+  const setDraftAcpOption = useRuntimeStore((s) => s.setDraftAcpOption);
+  const fetchAcpAgentOptions = useRuntimeStore((s) => s.fetchAcpAgentOptions);
+  const acpProbe = useRuntimeStore((s) => (acpAgentId ? s.acpOptionsProbe[acpAgentId] : undefined));
+  // A new conversation's agent has no session yet, so its selectors are the
+  // ones it last reported, with this draft's picks shown as chosen.
+  const agentOptions = useRuntimeStore((s) => (acpAgentId ? s.acpAgentOptions[acpAgentId] : undefined));
+  const draftPicks = useRuntimeStore((s) => s.draftAcpPicks[draftKey]);
+  const draftAcpOptions = useMemo(
+    () =>
+      (agentOptions ?? []).map((o) =>
+        draftPicks?.[o.id] !== undefined ? { ...o, currentValue: draftPicks[o.id] } : o,
+      ),
+    [agentOptions, draftPicks],
+  );
 
   // Per-field selection (never a bare useRuntimeStore()): a background session's
   // SSE folds must not repaint this pane. The active thread is selected on its
@@ -255,6 +278,30 @@ export function SessionView({
   const [finding, setFinding] = useState(false);
   const dockSession = useLayoutStore((s) => s.dockSession);
   const openContentPane = useLayoutStore((s) => s.openContentPane);
+  const replacePane = useLayoutStore((s) => s.replacePane);
+  const releaseAcpSession = useRuntimeStore((s) => s.releaseAcpSession);
+  // A Claude Code or Codex conversation can go back to a terminal, where the
+  // same session resumes (desktop only: the terminal is this machine's).
+  const acpRecord = useRuntimeStore((s) => (eid ? s.acpSessions[eid] : undefined));
+  const terminalKind = acpRecord && isTauri && !isGatewayWeb ? terminalKindOf(acpRecord.agentId) : null;
+  const [confirmTerminal, setConfirmTerminal] = useState(false);
+  const continueInTerminal = async () => {
+    if (!eid || !acpRecord || !terminalKind) return;
+    try {
+      // The agent lets go first: two processes writing one session would fork it.
+      await releaseAcpSession(eid);
+      replacePane(leafId, {
+        content: {
+          kind: "terminal",
+          cwd: acpRecord.directory,
+          // Running: the terminal resumes it on open (`terminalStartup`).
+          agent: { kind: terminalKind, sessionId: eid, running: true },
+        },
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
   const [renaming, setRenaming] = useState(false);
   const setLeafZoom = useLayoutStore((s) => s.setLeafZoom);
   // Any real interaction with a tentative (preview) screen pins it (#3).
@@ -333,9 +380,11 @@ export function SessionView({
       { name: "new", description: t("localCommand.newDescription"), source: "local", immediate: true },
       { name: "clear", description: t("localCommand.clearDescription"), source: "local", immediate: true },
     ];
+    // OpenCode's commands, skills and MCP prompts mean nothing to an ACP agent.
+    if (acp) return local;
     const localNames = new Set(local.map((c) => c.name));
     return [...local, ...commands.filter((c) => !localNames.has(c.name))];
-  }, [commands, t]);
+  }, [commands, t, acp]);
 
   // Which subagent the transcript last asked the panel to show. The counter
   // makes a repeat ask distinct from the previous one (see SubagentPane).
@@ -441,11 +490,10 @@ export function SessionView({
       ? (sessions.find((s) => s.id === activeRequest.sessionId)?.title ?? t("live.subagentFallback"))
       : undefined;
 
-  // An ACP agent is driving instead of the bundled OpenCode runtime (#14).
-  const acp = useRuntimeStore((s) => s.runtimeKind) === "acp";
   const acpConfigOptions = useRuntimeStore((s) => s.acpConfigOptions);
   const setAcpConfigOption = useRuntimeStore((s) => s.setAcpConfigOption);
-  const planAvailable = agents.some((a) => a.name === "plan");
+  // Plan mode is an OpenCode agent; an ACP agent brings its own modes.
+  const planAvailable = !acp && agents.some((a) => a.name === "plan");
   const agentMode = sessionAgents[key] ?? "build";
   const activeArtifact = pane?.artifact ?? null;
   const showFiles = !activeArtifact && !!pane?.showFiles;
@@ -860,6 +908,16 @@ export function SessionView({
               {showToolLabels && <span>{t("subagents.title")}</span>}
             </button>
           )}
+          {terminalKind && (
+            <button
+              onClick={() => setConfirmTerminal(true)}
+              className="rounded-md p-1 text-muted transition-colors hover:bg-surface-2 hover:text-text"
+              title={t("terminal.continueInTerminal.label")}
+              aria-label={t("terminal.continueInTerminal.label")}
+            >
+              <SquareTerminal size={13} strokeWidth={1.5} />
+            </button>
+          )}
           {/* Split this pane — the visible, discoverable way to tile (no
               keyboard shortcut needed). Right = side-by-side, down = stacked. */}
           {canSplit && (
@@ -940,6 +998,24 @@ export function SessionView({
             // longer in the document.
             generation={blocksCount}
             onClose={() => setFinding(false)}
+          />
+        )}
+        {confirmTerminal && terminalKind && (
+          <ConfirmDialog
+            title={t("terminal.continueInTerminal.confirmTitle")}
+            body={t(
+              running ? "terminal.continueInTerminal.confirmBodyRunning" : "terminal.continueInTerminal.confirmBody",
+            )}
+            confirmLabel={t("terminal.continueInTerminal.label")}
+            // eslint-disable-next-line i18next/no-literal-string -- tone enum, not UI copy
+            tone="default"
+            // eslint-disable-next-line i18next/no-literal-string -- scope enum, not UI copy
+            scope="pane"
+            onConfirm={() => {
+              setConfirmTerminal(false);
+              void continueInTerminal();
+            }}
+            onCancel={() => setConfirmTerminal(false)}
           />
         )}
         {/* The turn rail overlays the scroll box's right edge, so the two share
@@ -1148,14 +1224,25 @@ export function SessionView({
                 onApprovalModeChange={acp ? undefined : (mode) => void setApprovalMode(mode)}
                 agentMode={planAvailable ? agentMode : undefined}
                 onAgentModeChange={planAvailable ? (mode) => setAgentMode(mode, key) : undefined}
-                showModelPicker={connected && !webReadOnly && !acp}
-                // The ACP agent's own selectors stand in for the model picker: the
-                // agent owns its model list, and `session/set_config_option` is how
-                // v1 changes it.
-                configOptions={acp && !webReadOnly ? (acpConfigOptions[key] ?? []) : undefined}
-                onConfigOption={
-                  acp && sid
-                    ? (configId, value) => void setAcpConfigOption(sid, configId, value)
+                showModelPicker={connected && !webReadOnly}
+                // The agent is a child process of the desktop: the web client
+                // can neither start one nor reach a conversation running on one.
+                agentControl={
+                  connected && isTauri && !isGatewayWeb && !webReadOnly
+                    ? {
+                        value: acpAgentId,
+                        locked: !!eid,
+                        onChange: (agentId) => setDraftRuntime(draftKey, agentId),
+                        options: eid ? (acpConfigOptions[eid] ?? []) : draftAcpOptions,
+                        onOption: (configId, value) =>
+                          eid
+                            ? void setAcpConfigOption(eid, configId, value)
+                            : setDraftAcpOption(draftKey, configId, value),
+                        busy: running,
+                        probe: acpProbe,
+                        onNeedOptions:
+                          !eid && acpAgentId ? () => void fetchAcpAgentOptions(acpAgentId) : undefined,
+                      }
                     : undefined
                 }
                 modelSessionId={key}

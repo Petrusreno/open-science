@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { FileRoot } from "@ai4s/shared";
+import type { FileRoot, ThreadBlock } from "@ai4s/shared";
 import { isTauri, openExternal, workspaceBase } from "@/lib/tauri";
 import { listDir, openArtifactExternally, resolveArtifactPath, type DirEntry } from "@/lib/artifactFile";
 import { GLOBAL_FILES_LOCATION, rememberDirectory } from "@/lib/filesLocation";
@@ -34,9 +34,14 @@ export function cleanUrl(raw: string): string {
   return raw.replace(/[.,;:!?]+$/, "");
 }
 
-/** A printed path without its `:12:3` position or trailing punctuation. */
+/** A printed path without its position (`:12`, `:12:3`, `:12-30`, `#L12-L30`)
+ *  or trailing punctuation. */
 export function cleanPath(raw: string): string {
-  return raw.replace(/(?::\d+){1,2}$/, "").replace(/[.,;:!?]+$/, "");
+  const bare = raw.replace(/[.,;:!?]+$/, "");
+  return bare
+    .replace(/(?::\d+(?:[-–]\d+)?){1,2}$/, "")
+    .replace(/#L\d+(?:-L?\d+)?$/, "")
+    .replace(/[.,;:!?]+$/, "");
 }
 
 /** Could `text` name a file? A slash, or a name with an extension — not every
@@ -71,6 +76,61 @@ export function linkCandidates(line: string): LinkSpan[] {
   return spans.sort((a, b) => a.start - b.start);
 }
 
+/** Absolute paths (`/…`, `~/…`) a text names, most recent (last) first —
+ *  the anchors a relative path near them is resolved against (see
+ *  `resolveLink`). Read from a conversation's messages and tool calls, or a
+ *  terminal's output. */
+const ANCHOR_RE = /(?<![\w.:/~])~?\/[^\s"'`()<>[\]{},;|&*?\u3000-\u303f\uff00-\uffef]+/g;
+export function anchorPaths(text: string): string[] {
+  const found: string[] = [];
+  for (const m of text.matchAll(ANCHOR_RE)) {
+    const path = cleanPath(m[0]);
+    // At least two segments: a lone "/x" is as likely an option or a route.
+    if (/^~?\/[^/]+\/./.test(path)) found.push(path);
+  }
+  return found.reverse();
+}
+
+/** Anchors are capped: the most recent ones are the ones a path is about. */
+export const MAX_ANCHORS = 200;
+
+/** Most recent first, each once, at most MAX_ANCHORS. */
+export function mergeAnchors(lists: Iterable<readonly string[]>): string[] {
+  const out = new Set<string>();
+  for (const list of lists) {
+    for (const a of list) {
+      out.add(a);
+      if (out.size >= MAX_ANCHORS) return [...out];
+    }
+  }
+  return [...out];
+}
+
+/** What each block names, once per block: a thread is re-read on every
+ *  streamed token, and only the block being written changes. */
+const blockAnchors = new WeakMap<ThreadBlock, string[]>();
+
+/** The anchors of a conversation, most recent first: absolute paths in its
+ *  messages and in the commands, files and output of its tool calls. */
+export function threadAnchors(blocks: readonly ThreadBlock[]): string[] {
+  const of = (b: ThreadBlock): string[] => {
+    let hit = blockAnchors.get(b);
+    if (!hit) {
+      const text =
+        b.kind === "user" ? b.text
+        : b.kind === "agent" ? b.markdown
+        : b.kind === "tool-call" ? [b.filePath, b.command, b.output].filter(Boolean).join("\n")
+        : "";
+      hit = text ? anchorPaths(text) : [];
+      blockAnchors.set(b, hit);
+    }
+    return hit;
+  };
+  return mergeAnchors((function* () {
+    for (let i = blocks.length - 1; i >= 0; i--) yield of(blocks[i]);
+  })());
+}
+
 interface LocalPath {
   rel: string;
   is_dir: boolean;
@@ -82,13 +142,13 @@ interface LocalPath {
 const cache = new Map<string, { at: number; value: Promise<LocalPath | null> }>();
 const MISS_TTL_MS = 5_000;
 
-function locateLocal(path: string, cwd?: string): Promise<LocalPath | null> {
-  const key = `${cwd ?? ""}\n${path}`;
+function locateLocal(path: string, cwd: string | undefined, anchors: readonly string[]): Promise<LocalPath | null> {
+  const key = `${cwd ?? ""}\n${path}\n${anchors.join("\n")}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < MISS_TTL_MS) return hit.value;
   const value = (async () => {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<LocalPath | null>("locate_local_path", { path, cwd });
+    return invoke<LocalPath | null>("locate_local_path", { path, cwd, anchors });
   })().catch(() => null);
   cache.set(key, { at: Date.now(), value });
   void value.then((found) => {
@@ -98,30 +158,49 @@ function locateLocal(path: string, cwd?: string): Promise<LocalPath | null> {
   return value;
 }
 
+/** Where a link was printed: a terminal (its directory, null while unknown),
+ *  or an answer (the folders of its conversation and of those it names). Both
+ *  carry the anchors seen around it — see `anchorPaths`. */
+export type LinkContext =
+  | { cwd: string | null; anchors?: readonly string[] }
+  | { folders?: string | readonly string[]; anchors?: readonly string[] };
+
 /**
  * The link a clicked-at string stands for, or null when there is nothing to
- * open. Absolute and `~/` paths are looked up on disk under home. A relative
- * one is looked up against `from`: a terminal's directory (`{ cwd }`, null
- * while unknown — then only absolute paths link), or by default the session
- * workspace, the way file mentions in answers are.
+ * open. One rule for answers and terminals; only what exists is a link:
+ *
+ * 1. Absolute and `~/` paths, literally (desktop: under home; web: under the
+ *    base folder).
+ * 2. A relative path: under the answer's folders, in order, or the terminal's
+ *    directory; then against the anchors, most recent first (an answer about
+ *    another repo writes that repo's paths, and its conversation has opened
+ *    files there); last, in an answer, by name in the workspace.
+ *
+ * A path a writer broke over lines arrives with the break as a space; it is
+ * tried again without it.
  */
-export async function resolveLink(
-  text: string,
-  from: { cwd: string | null } | "workspace" = "workspace",
-  /** The folders a relative path in this text may be in, in order: the
-   *  conversation's own when the text is one of its answers, then those of the
-   *  conversations it names — an agent reporting on another session writes
-   *  that session's paths. A path found there is a link on any machine the
-   *  workbench is reached from, the web client included. */
-  folders?: string | readonly string[],
-): Promise<LinkTarget | null> {
+export async function resolveLink(text: string, from: LinkContext = {}): Promise<LinkTarget | null> {
+  const found = await resolveOnce(text, from);
+  if (found) return found;
+  // Every piece made of path characters, and a slash somewhere: prose is not
+  // glued together, and what is glued counts only if it exists.
+  const pieces = text.trim().split(/\s+/);
+  const pathy = new RegExp(String.raw`^[~/]?${NAME}*(?:[/:]${NAME}*)*$`);
+  return pieces.length > 1 && pieces.join("").includes("/") && pieces.every((p) => pathy.test(p))
+    ? resolveOnce(pieces.join(""), from)
+    : null;
+}
+
+async function resolveOnce(text: string, from: LinkContext): Promise<LinkTarget | null> {
   const url = cleanUrl(text);
   if (/^https?:\/\//.test(url)) return { kind: "url", url };
   const path = cleanPath(text);
   if (!looksLikePath(path)) return null;
   const absolute = path.startsWith("/") || path.startsWith("~/") || /^[A-Za-z]:[\\/]/.test(path);
-  if (!absolute && from === "workspace" && folders) {
-    for (const folder of typeof folders === "string" ? [folders] : folders) {
+  const terminal = "cwd" in from;
+  const anchors = from.anchors ?? [];
+  if (!absolute && !terminal && from.folders) {
+    for (const folder of typeof from.folders === "string" ? [from.folders] : from.folders) {
       const found = await inFolder(folder, path);
       if (found) return found;
     }
@@ -130,13 +209,10 @@ export async function resolveLink(
   if (isGatewayWeb && path.startsWith("/")) return inFolder("/", path);
   // Anywhere else on disk is only reachable from the machine itself.
   if (!isTauri || isGatewayWeb) return null;
-  const cwd = from === "workspace" ? undefined : (from.cwd ?? undefined);
-  if (absolute || from !== "workspace") {
-    if (!absolute && !cwd) return null;
-    const found = await locateLocal(path, cwd);
-    return found
-      ? { kind: "path", path: found.rel, root: "home", isDir: found.is_dir, display: path }
-      : null;
+  if (absolute || terminal || anchors.length > 0) {
+    const found = await locateLocal(path, terminal ? (from.cwd ?? undefined) : undefined, anchors);
+    if (found) return { kind: "path", path: found.rel, root: "home", isDir: found.is_dir, display: path };
+    if (absolute || terminal) return null;
   }
   const inWorkspace = await resolveArtifactPath(path).catch(() => null);
   return inWorkspace

@@ -55,6 +55,20 @@ describe("configured ACP agents", () => {
     ]);
   });
 
+  it("moves a saved Claude Code entry off the retired adapter package", () => {
+    window.localStorage.setItem(
+      "ai4s.acp.agents.v1",
+      JSON.stringify([
+        { id: "cli-claude-code", name: "Claude Code", command: "npx", args: ["-y", "@zed-industries/claude-code-acp"] },
+        { id: "acp-2", name: "Pinned", command: "npx", args: ["-y", "@zed-industries/claude-code-acp@0.16.2"] },
+      ]),
+    );
+    expect(loadAcpAgents().map((a) => a.args)).toEqual([
+      ["-y", "@agentclientprotocol/claude-agent-acp"],
+      ["-y", "@agentclientprotocol/claude-agent-acp"],
+    ]);
+  });
+
   it("names a new agent with the first free id", () => {
     expect(newAcpAgentId([])).toBe("acp-1");
     expect(newAcpAgentId([codex])).toBe("acp-2");

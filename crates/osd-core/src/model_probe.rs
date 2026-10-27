@@ -51,7 +51,7 @@ pub fn probe_endpoint_models(
 const ZEN_MODELS_URL: &str = "https://opencode.ai/zen/v1/models";
 
 pub fn fetch_zen_models() -> Result<Vec<String>, String> {
-    let body = client()?
+    let body = client(ZEN_MODELS_URL)?
         .get(ZEN_MODELS_URL)
         .send()
         .and_then(|r| r.error_for_status())
@@ -92,19 +92,32 @@ fn probe(base_url: &str, api_key: Option<&str>, kind: &str) -> Result<ProbeResul
     }
 }
 
-fn client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
+/// A client for `target`. A server on this machine (Ollama, LM Studio, vLLM)
+/// is reached directly: an app started from a terminal inherits HTTP(S)_PROXY,
+/// and a proxy cannot reach the user's loopback. Anything else keeps the
+/// proxy, which a remote endpoint may need.
+fn client(target: &str) -> Result<reqwest::blocking::Client, String> {
+    let mut builder = reqwest::blocking::Client::builder()
         .user_agent("Open Science Desktop model probe")
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| format!("could not create HTTP client: {e}"))
+        .timeout(Duration::from_secs(5));
+    if is_loopback(target) {
+        builder = builder.no_proxy();
+    }
+    builder.build().map_err(|e| format!("could not create HTTP client: {e}"))
+}
+
+fn is_loopback(target: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(target) else { return false };
+    let host = url.host_str().unwrap_or("").trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Ollama native API: GET /api/tags lists models, POST /api/show reports
 /// `model_info["<arch>.context_length"]`. Returns None when this is not an
 /// Ollama server (any transport/HTTP/parse failure on /api/tags).
 fn probe_ollama(root: &str) -> Option<Vec<ProbedModel>> {
-    let client = client().ok()?;
+    let client = client(root).ok()?;
     let body = client
         .get(format!("{root}/api/tags"))
         .send()
@@ -156,7 +169,7 @@ fn parse_ollama_show_context(body: &str) -> Option<u64> {
 /// servers report it (vLLM `max_model_len`, OpenRouter `context_length`,
 /// LM Studio `max_context_length`).
 fn probe_openai(base: &str, api_key: Option<&str>) -> Result<Vec<ProbedModel>, String> {
-    let mut req = client()?.get(format!("{base}/models"));
+    let mut req = client(base)?.get(format!("{base}/models"));
     if let Some(key) = api_key.filter(|k| !k.is_empty()) {
         req = req.bearer_auth(key);
     }
@@ -196,7 +209,7 @@ fn parse_openai_models(body: &str) -> Result<Vec<ProbedModel>, String> {
 
 /// Anthropic-compatible: GET /models with x-api-key. No context info.
 fn probe_anthropic(base: &str, api_key: Option<&str>) -> Result<Vec<ProbedModel>, String> {
-    let mut req = client()?
+    let mut req = client(base)?
         .get(format!("{base}/models"))
         .header("anthropic-version", "2023-06-01");
     if let Some(key) = api_key.filter(|k| !k.is_empty()) {
@@ -213,6 +226,16 @@ fn probe_anthropic(base: &str, api_key: Option<&str>) -> Result<Vec<ProbedModel>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_this_machine_skips_the_proxy() {
+        for local in ["http://localhost:11434", "http://127.0.0.1:1234/v1", "http://[::1]:8000"] {
+            assert!(super::is_loopback(local), "{local}");
+        }
+        for remote in ["https://api.deepseek.com", "http://192.168.1.5:11434", "not a url"] {
+            assert!(!super::is_loopback(remote), "{remote}");
+        }
+    }
+
     use super::*;
 
     #[test]

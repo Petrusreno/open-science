@@ -1,10 +1,11 @@
 import { memo, useEffect, useState } from "react";
-import { ChevronRight, Maximize2, X } from "lucide-react";
+import { ChevronRight, Maximize2, Minimize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ArtifactBlock } from "@ai4s/shared";
 import { cn } from "@/lib/cn";
 import { fileInspectorFromBlock } from "@/lib/artifacts";
 import { FilePreviewInspector } from "@/components/inspector/FilePreviewInspector";
+import { PaneHeaderClearsLights } from "@/components/inspector/RightPane";
 
 /** How tall an inline preview may get before it is worth opening full-screen.
  *
@@ -31,7 +32,7 @@ export const InlineArtifact = memo(function InlineArtifact({
   block: ArtifactBlock;
   workspaceDirectory?: string;
 }) {
-  const { t } = useTranslation(["session", "common"]);
+  const { t } = useTranslation(["session", "common", "inspector"]);
   const [collapsed, setCollapsed] = useState(false);
   const [full, setFull] = useState(false);
   const inspector = fileInspectorFromBlock(block);
@@ -50,11 +51,11 @@ export const InlineArtifact = memo(function InlineArtifact({
   if (inspector.variant === "notebook-file") return null;
   const title = block.presentation?.title ?? block.filename;
 
-  const preview = (controls?: React.ReactNode, folded = false) => (
+  const preview = (controls?: React.ReactNode, folded = false, embedded = true) => (
     <FilePreviewInspector
       data={inspector}
       workspaceDirectory={workspaceDirectory}
-      embedded
+      embedded={embedded}
       title={block.presentation?.title}
       controls={controls}
       collapsed={folded}
@@ -97,30 +98,26 @@ export const InlineArtifact = memo(function InlineArtifact({
         )}
       </div>
 
+      {/* Full view fills the window edge to edge, like a maximized panel: no
+          margin, backdrop or second title row. Its header is the window's top
+          row, so it clears the traffic lights the way a maximized pane does. */}
       {full && (
-        <div
-          className="fixed inset-0 z-50 flex flex-col bg-black/40 p-6 backdrop-blur-sm"
-          role="dialog"
-          aria-modal="true"
-          aria-label={title}
-          // The backdrop closes it; a click that began inside the panel must not,
-          // or a drag-select over the content would dismiss what it selected.
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setFull(false);
-          }}
-        >
-          <div className="flex items-center gap-2 pb-2 text-sm text-white">
-            <span className="min-w-0 flex-1 truncate">{title}</span>
-            <button
-              type="button"
-              onClick={() => setFull(false)}
-              aria-label={t("artifact.close")}
-              className="shrink-0 rounded-input p-1 hover:bg-white/15"
-            >
-              <X size={16} />
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-hidden rounded-card bg-surface">{preview()}</div>
+        <div className="fixed inset-0 z-50 bg-surface" role="dialog" aria-modal="true" aria-label={title}>
+          <PaneHeaderClearsLights.Provider value>
+            {preview(
+              <button
+                type="button"
+                className={iconBtn}
+                aria-label={t("inspector:shell.restorePanel")}
+                title={t("inspector:shell.restorePanel")}
+                onClick={() => setFull(false)}
+              >
+                <Minimize2 size={14} strokeWidth={1.5} />
+              </button>,
+              false,
+              false,
+            )}
+          </PaneHeaderClearsLights.Provider>
         </div>
       )}
     </>

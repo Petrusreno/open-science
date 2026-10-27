@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Terminal as TerminalIcon, X } from "lucide-react";
-import { useLayoutStore, type PaneContent } from "@/lib/layout";
+import { MessagesSquare, Terminal as TerminalIcon, X } from "lucide-react";
+import { useLayoutStore, type PaneContent, type TerminalAgent } from "@/lib/layout";
+import { CLI_AGENTS, ensureCliAgent } from "@/lib/cliAgents";
+import { isTauri } from "@/lib/tauri";
+import { isGatewayWeb } from "@/lib/webMode";
+import { toast } from "@/lib/toast";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { draftKeyFor, useRuntimeStore } from "@/lib/runtime";
 import { startPaneDrag } from "@/lib/dragPane";
 import { extOf } from "@/lib/artifacts";
@@ -42,6 +47,9 @@ export function ContentPane({
   const showDocumentPane = useLayoutStore((s) => s.showDocumentPane);
   const renamePane = useLayoutStore((s) => s.renamePane);
   const dockSession = useLayoutStore((s) => s.dockSession);
+  const replacePane = useLayoutStore((s) => s.replacePane);
+  const [confirmContinue, setConfirmContinue] = useState(false);
+  const adoptAcpSession = useRuntimeStore((s) => s.adoptAcpSession);
   const aimDraft = useRuntimeStore((s) => s.aimDraft);
   const [renaming, setRenaming] = useState(false);
   const isMobile = useIsMobile();
@@ -55,8 +63,35 @@ export function ContentPane({
     if (created && folder) aimDraft(draftKeyFor(created), folder);
   };
 
+  /** The CLI agent the terminal is running, when the app can drive it over ACP
+   *  (desktop only: the agent is a process on this machine). */
+  const cliAgentOf = (agent?: TerminalAgent) =>
+    agent && isTauri && !isGatewayWeb ? CLI_AGENTS.find((a) => a.detect === agent.kind) : undefined;
+
+  /**
+   * Continue the terminal's agent session as a conversation in the app, in the
+   * terminal's place, after the user confirms. The terminal closes: two
+   * processes writing one session would fork its history. The conversation
+   * offers the way back (SessionView's terminal button).
+   */
+  const continueInApp = async (agent: TerminalAgent) => {
+    const cli = cliAgentOf(agent);
+    if (!cli) return;
+    try {
+      const entry = ensureCliAgent(cli);
+      const folder = content.kind === "terminal" ? content.cwd : undefined;
+      const fallback = folder ?? useRuntimeStore.getState().workspace;
+      if (!fallback) throw new Error("No folder to resume this conversation in.");
+      await adoptAcpSession(entry.id, agent.sessionId, fallback);
+      replacePane(leafId, { sessionId: agent.sessionId });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   switch (content.kind) {
-    case "terminal":
+    case "terminal": {
+      const cli = cliAgentOf(content.agent);
       return (
         <div className="flex h-full flex-col bg-surface">
           {/* 32px, like every pane beside a conversation (see `PANE_HEADER`),
@@ -103,6 +138,16 @@ export function ContentPane({
               </span>
             )}
             <div className="flex-1" />
+            {cli && content.agent && (
+              <button
+                onClick={() => setConfirmContinue(true)}
+                className="rounded-md p-1 text-muted transition-colors hover:bg-border hover:text-text"
+                aria-label={t("terminal.continueInApp.label")}
+                title={t("terminal.continueInApp.label")}
+              >
+                <MessagesSquare size={13} strokeWidth={1.5} />
+              </button>
+            )}
             <TerminalSenders leafId={leafId} />
             <button
               onClick={onClose}
@@ -112,6 +157,22 @@ export function ContentPane({
               <X size={13} strokeWidth={1.5} />
             </button>
           </header>
+          {confirmContinue && cli && content.agent && (
+            <ConfirmDialog
+              title={t("terminal.continueInApp.confirmTitle")}
+              body={t("terminal.continueInApp.confirmBody", { agent: cli.name })}
+              confirmLabel={t("terminal.continueInApp.label")}
+              // eslint-disable-next-line i18next/no-literal-string -- tone enum, not UI copy
+              tone="default"
+              // eslint-disable-next-line i18next/no-literal-string -- scope enum, not UI copy
+              scope="pane"
+              onConfirm={() => {
+                setConfirmContinue(false);
+                void continueInApp(content.agent!);
+              }}
+              onCancel={() => setConfirmContinue(false)}
+            />
+          )}
           <div className="min-h-0 flex-1 overflow-hidden">
             <TerminalPane
               leafId={leafId}
@@ -136,6 +197,7 @@ export function ContentPane({
           </div>
         </div>
       );
+    }
 
     case "files":
       return (

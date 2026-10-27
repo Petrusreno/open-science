@@ -70,6 +70,33 @@ fn build_env(app: &AppHandle) -> Result<Env, String> {
     ))
 }
 
+/// The variables Claude Code puts on the processes it starts. When the app was
+/// launched from inside a Claude Code session (a `pnpm tauri dev`, an `open` it
+/// ran) they leak into every terminal, sidecar and ACP agent, and a `claude`
+/// started in one of our terminals takes itself for a nested child session: it
+/// registers no `~/.claude/sessions/<pid>.json`, so the terminal probe never
+/// sees it and `osd term read` / `--wait` treat the pane as a plain shell.
+const LAUNCHING_AGENT_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+];
+
+/// Drop them before anything is spawned. Runs first in `run`, while the process
+/// is still single-threaded.
+fn forget_launching_agent() {
+    for name in LAUNCHING_AGENT_VARS {
+        std::env::remove_var(name);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK's DMA-BUF renderer fails to hand out a GL context on a good
@@ -82,6 +109,14 @@ pub fn run() {
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
+    forget_launching_agent();
+    // Ask the user's shell for its PATH now, beside the rest of startup: the
+    // sidecar, kernels and agents all wait on it (`enriched_path`), and an
+    // interactive profile takes most of a second to answer.
+    #[cfg(unix)]
+    std::thread::spawn(|| {
+        let _ = osd_core::runtime::login_shell_path();
+    });
     tauri::Builder::default()
         // Single instance MUST be the first plugin. A second launch (or a reinstall
         // while the app is still running) focuses the existing window instead of
@@ -250,7 +285,7 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
-            terminal::terminal_event_names,
+            terminal::terminal_subscribe,
             terminal::terminal_probe,
             terminal_env::terminal_env_prune,
             runs::record_run,
@@ -307,9 +342,8 @@ pub fn run() {
                 ssh_session::shutdown(app);
                 // An ACP agent child must not outlive the window that started it.
                 acp::shutdown(app);
-                // A PTY child outlives its parent unless it is killed: quitting
-                // with an open terminal would leave a detached shell running.
-                terminal::close_all(&app.state::<terminal::TerminalState>());
+                // Terminals are left running on purpose: they live in the
+                // terminal host, and the next app reattaches them (terminal.rs).
                 status_bar::shutdown(&app.state::<status_bar::AwakeState>());
                 // A child webview is a native view over the window; it does not
                 // go away with the React tree that asked for it.

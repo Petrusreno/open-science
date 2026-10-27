@@ -38,11 +38,15 @@ pub fn run(args: &Args) -> Result<(), String> {
         ("screen", "show") => crate::screens::screen_show(args),
         ("term", "read") => crate::screens::term_read(args),
         ("term", "send") => crate::screens::term_send(args),
+        ("term", "key") => crate::screens::term_key(args),
         ("audit", _) => crate::screens::audit(args),
         ("project", "ls") | ("project", "list") => projects(args),
         ("project", "new") | ("project", "create") => new_project(args),
         ("run", "ls") | ("run", "list") => runs(args),
         ("run", "log") => run_log(args),
+        ("provenance", "dump") => provenance_dump(args),
+        ("ledger", "export") => ledger_export(args),
+        ("ledger", "migrate") => ledger_migrate(args),
         ("fs", "ls") | ("fs", "list") => fs_ls(args),
         ("fs", "get") | ("fs", "read") => fs_get(args),
         ("model", "") | ("model", "show") => model_show(args),
@@ -57,6 +61,75 @@ pub fn run(args: &Args) -> Result<(), String> {
         (cmd, "") => Err(format!("unknown command {cmd:?} — try `osd help`")),
         (cmd, sub) => Err(format!("unknown command {cmd} {sub:?} — try `osd help`")),
     }
+}
+
+fn provenance_dump(args: &Args) -> Result<(), String> {
+    let root = args
+        .value("workspace")
+        .ok_or("usage: osd provenance dump --workspace <directory> [--json]")?;
+    let root = std::path::Path::new(&root);
+    if !root.is_dir() {
+        return Err(format!("workspace directory unavailable: {}", root.display()));
+    }
+    let records = osd_core::provenance::all_records_for(root)?;
+    if args.has("json") {
+        println!("{}", serde_json::to_string(&records).map_err(|e| e.to_string())?);
+    } else {
+        for record in records {
+            println!("{}", serde_json::to_string(&record).map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(())
+}
+
+fn ledger_export(args: &Args) -> Result<(), String> {
+    const USAGE: &str = "usage: osd ledger export --workspace <directory> --output <new-directory> [--json]";
+    let root = args.value("workspace").ok_or(USAGE)?;
+    let output = args.value("output").ok_or(USAGE)?;
+    let summary = osd_core::ledger_v1::export_v1(
+        std::path::Path::new(&root),
+        std::path::Path::new(&output),
+    )?;
+    if args.has("json") {
+        println!("{}", serde_json::to_string(&summary).map_err(|e| e.to_string())?);
+    } else {
+        println!(
+            "Exported {} runs and {} provenance records to {}",
+            summary.runs, summary.provenance, output
+        );
+    }
+    Ok(())
+}
+
+fn ledger_migrate(args: &Args) -> Result<(), String> {
+    const USAGE: &str = "usage: osd ledger migrate --workspace <directory> --apply [--json]";
+    if !args.positional.is_empty()
+        || !args.only_flags(&["workspace"], &["apply", "json"])
+        || !args.has("apply")
+    {
+        return Err(USAGE.into());
+    }
+    let root = args.value("workspace").ok_or(USAGE)?;
+    let root = std::path::Path::new(&root)
+        .canonicalize()
+        .map_err(|e| format!("workspace unavailable: {e}"))?;
+    if !root.is_dir() {
+        return Err(format!("workspace directory unavailable: {}", root.display()));
+    }
+    let source_dir = root.join(".openscience");
+    if !source_dir.join("runs.jsonl").is_file()
+        && !source_dir.join("provenance.jsonl").is_file()
+        && !source_dir.join("ledger-v1.sqlite").is_file()
+    {
+        return Err("no legacy ledger sources or active ledger in workspace".into());
+    }
+    osd_core::ledger_v1::migrate_v1(&root)?;
+    if args.has("json") {
+        println!("{}", serde_json::json!({"format":"ledger-v1","workspace":root,"status":"active"}));
+    } else {
+        println!("Activated ledger v1 in {}", root.display());
+    }
+    Ok(())
 }
 
 // ---- connection -------------------------------------------------------------
@@ -225,7 +298,7 @@ fn wait_for_reply(
         let messages = status["messages"].as_u64().unwrap_or(0) as usize;
         ever_worked |= state == "working";
         if let Some(err) = status.get("lastError").filter(|e| !e.is_null()) {
-            return Err(format!("the turn failed: {err}"));
+            return Err(turn_failed(err));
         }
         if state == "idle" && messages > before && status["lastRole"].as_str() == Some("assistant")
         {
@@ -374,7 +447,7 @@ fn session_wait(args: &Args) -> Result<(), String> {
     loop {
         let status = client.get(&format!("/v1/sessions/{session}/status"))?;
         if let Some(err) = status.get("lastError").filter(|e| !e.is_null()) {
-            return Err(format!("the turn failed: {err}"));
+            return Err(turn_failed(err));
         }
         // A message just sent reads as idle until its turn starts: the last
         // word is still the user's. Give it the time a turn takes to start
@@ -953,9 +1026,55 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+
+/// A failed turn, said plainly: the provider's own message rather than the whole
+/// error object, and the next step when the model itself is what failed (it was
+/// retired or renamed), since every later turn on it fails the same way.
+fn turn_failed(err: &Value) -> String {
+    let message = err["data"]["message"]
+        .as_str()
+        .or_else(|| err["message"].as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| err.to_string());
+    let text = err.to_string().to_ascii_lowercase();
+    let model_gone = text.contains("model")
+        && ["deprecated", "not supported", "not found", "no longer"]
+            .iter()
+            .any(|p| text.contains(p));
+    if model_gone {
+        format!(
+            "the turn failed: {message}\nThat model is no longer served. Pick another with \
+             `osd model ls`, then `osd model set <provider/model>` (or `--model` on this send)."
+        )
+    } else {
+        format!("the turn failed: {message}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_turn_shows_the_providers_message() {
+        let err = json!({"name": "APIError", "data": {"message": "Rate limit reached", "statusCode": 429}});
+        assert_eq!(turn_failed(&err), "the turn failed: Rate limit reached");
+        assert_eq!(turn_failed(&json!("boom")), "the turn failed: \"boom\"");
+    }
+
+    #[test]
+    fn a_retired_model_says_how_to_pick_another() {
+        // The shape OpenCode Zen returned for a retired free model (410).
+        let err = json!({"name": "APIError", "data": {
+            "message": "Model longcat-2.5-preview-free has been deprecated.",
+            "statusCode": 410,
+        }});
+        let out = turn_failed(&err);
+        assert!(out.starts_with("the turn failed: Model longcat-2.5-preview-free has been deprecated."));
+        assert!(out.contains("osd model set"), "{out}");
+        let unsupported = json!({"data": {"message": "Model ling-3.0-flash-free is not supported"}});
+        assert!(turn_failed(&unsupported).contains("osd model ls"));
+    }
 
     #[test]
     fn the_answer_is_the_last_assistant_text_not_the_last_message() {

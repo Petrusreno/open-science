@@ -520,3 +520,83 @@ One line:
 **Use Tauri for a high-performance modern desktop shell, a bundled+isolated OpenCode as
 the Claude Code alternative layer, scientific skills and MCP as the research capability
 layer, and provenance/reviewer as the real moat of an open-source Claude Science alternative.**
+
+
+### Opt-in transactional local ledger v1
+
+The default remains JSONL. An integrator can explicitly call
+`osd_core::ledger_v1::migrate_v1(workspace)` or run
+`osd ledger migrate --workspace DIR --apply` while the workspace is quiescent
+and all writers use the current core. The command requires an existing legacy
+source or active ledger and rejects unknown options. There is deliberately no
+automatic upgrade or desktop toggle. Back up the complete workspace, including
+`.openscience`, before activation. Stage or disable direct JSONL
+consumers and older app versions before invoking this API. This is an opt-in
+incompatible storage switch, not a transparent JSONL projection.
+
+Migration holds the existing cross-process workspace ledger lock, strictly
+parses both local JSONL files (UTF-8, complete lines, typed records), rejects
+duplicate run IDs/provenance versions and successful runs missing output links,
+and imports runs, provenance, original source bytes and schema version in one
+SQLite transaction into `.openscience/ledger-v1.sqlite`. Original JSONL files
+are never rewritten or appended after activation; existing direct consumers
+can still read the exact pre-migration history, but cannot see new records.
+The traceability-review skill uses `osd provenance dump --workspace <dir>` to
+read committed records in this mode; if the CLI is unavailable it reports Check
+3 unavailable instead of consulting frozen history. Remote skill writers still append
+`remote-runs.jsonl`; remote provenance is outside the local transaction contract.
+
+The DB is authoritative and must be backed up as data; it is **not** the
+rebuildable `.openscience/runs.db` index. Built-in artifact History, list-runs,
+and index ingestion read committed DB records after activation. Local run
+recording commits the immutable run snapshot and every successful output link
+in one transaction. Authored provenance writes use the same DB and workspace
+lock. Retries reuse the original run and existing links. Standalone link APIs
+are rejected in this mode; use run recording. Independent UI requests can span
+a commit and therefore are not a shared multi-request snapshot. Production
+callers use `read_runs_checked` and propagate storage errors; the legacy Vec
+helper is restricted to unit tests.
+
+An existing DB of unknown version, malformed DB, changed/missing legacy source,
+or incomplete migration causes readers and writers to fail closed, with no
+JSONL fallback. After an interrupted migration, rerun `migrate_v1`: SQLite
+recovers its rollback journal, and only a version-zero database with no schema
+objects can restart import. Unknown/nonempty partial states require operator
+review. Do not delete an activated DB to roll back: that would hide post-switch
+records. `osd ledger export --workspace <dir> --output <new-dir>` writes a
+consistent local runs/provenance JSONL snapshot to a new directory outside the
+workspace, with `complete.json` written last after file sync. On Unix, the
+export directory and its parent are also synced; Windows directory-entry
+durability under power loss remains unverified. It retains original imported
+JSONL bytes as the prefix and appends committed SQLite rows. Export does not
+alter or deactivate the DB. For an offline downgrade, stop every writer and
+reader first; archive the entire `.openscience` directory, export to a separate
+location, verify `complete.json` and parse both files, then stage the exported
+JSONL in a copy of the workspace with no `ledger-v1.sqlite`, rebuild the
+disposable `runs.db` index there, and test it with the older binary. Only then
+consider replacing a live workspace while all processes remain stopped. A
+process-interrupted export lacks `complete.json` and must be discarded; after
+power loss, verify every file even if the marker exists. This is a manual
+recovery procedure, not an automated
+rollback command. Stop legacy/external writers before activation; source-byte
+checks detect later changes but cannot serialize uncooperative writers. Remote
+JSONL keeps its prior tolerant parsing and must be preserved separately.
+
+A local synthetic probe on macOS imported 10,000 linked runs in 156 ms and
+100,000 in 1.66 s; committing one run after 100,000 rows took 851 ms. Run the
+`imports_many_linked_runs_without_changing_source_bytes` test with
+`OSD_LEDGER_IMPORT_ROWS=100000` to reproduce the probe. These are debug-build
+synthetic timings on one machine, not a real-workspace or release benchmark.
+
+Durability contract: connections request SQLite `synchronous=FULL`; migration
+selects rollback journaling (`journal_mode=DELETE`), and acknowledged writes
+require a successful SQLite commit. Tests exercise process exit without Rust
+destructors during migration and a run write, then journal recovery on reopen.
+This establishes logical transaction visibility and process-crash recovery in
+local macOS tests, **not verified physical power-loss durability**. No storage
+fault injection, hardware cache/flush proof, directory-fsync proof, or macOS
+fullfsync evidence is supplied. Logs, environment lockfiles, and output artifact
+bytes are outside the transaction and retain their existing best-effort storage
+behavior; a committed provenance record is not proof those files are durable.
+Source-byte verification and DB reads currently scan the whole local history;
+this bounded implementation favors safety over large-ledger performance.
