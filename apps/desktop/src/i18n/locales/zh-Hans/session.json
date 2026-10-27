@@ -160,7 +160,16 @@
       "add": "排队发送",
       "addTitle": "本轮结束后发送（Enter）· Cmd/Ctrl+Enter 立即插话"
     },
-    "busyCommand": "等这一轮结束再运行命令。"
+    "busyCommand": "等这一轮结束再运行命令。",
+    "agent": {
+      "aria": "智能体",
+      "title": "智能体与模型",
+      "locked": "换智能体请新建对话",
+      "manage": "管理智能体",
+      "optionsLoading": "正在读取 {{agent}} 的模型…",
+      "optionsNone": "{{agent}} 没有提供可选的模型。",
+      "optionsFailed": "{{agent}} 没能启动：{{error}}"
+    }
   },
   "localCommand": {
     "newDescription": "在当前文件夹开始新对话",
@@ -537,7 +546,18 @@
       "none": "无结果",
       "find": "查找…"
     },
-    "recentInput": "最近来自外部的输入："
+    "recentInput": "最近来自外部的输入：",
+    "continueInApp": {
+      "label": "在对话中继续",
+      "confirmTitle": "转到对话里继续？",
+      "confirmBody": "这个 {{agent}} 会话会在应用的对话界面里接着进行，这个终端会关闭。之后随时可以切回终端。"
+    },
+    "continueInTerminal": {
+      "label": "在终端中继续",
+      "confirmTitle": "转到终端里继续？",
+      "confirmBody": "这个对话会在终端里原样接着进行，这个窗格会变成那个终端。侧栏里会保留它，之后还能回到这里。",
+      "confirmBodyRunning": "正在进行的回复会先停下，然后这个对话在终端里原样接着进行。侧栏里会保留它，之后还能回到这里。"
+    }
   },
   "splitInto": {
     "session": "会话"

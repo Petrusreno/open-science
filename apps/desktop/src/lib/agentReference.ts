@@ -3,7 +3,7 @@
 // to it — so any agent that can run a shell command can act on them, including
 // a Claude Code in a terminal that has never heard of this app. English on
 // purpose: the commands are, and so is every agent's best reading.
-import { leaves, type LayoutGroup, type PaneLeaf, type TerminalAgent } from "./layout";
+import { leaves, terminalAgentName, type LayoutGroup, type PaneLeaf, type TerminalAgent } from "./layout";
 import { terminalShellId } from "./terminalTransport";
 import { copyText } from "./clipboard";
 import { toast } from "./toast";
@@ -22,7 +22,6 @@ export interface ReferencedTerminal {
   agent?: TerminalAgent;
 }
 
-const AGENT_NAMES: Record<TerminalAgent["kind"], string> = { claude: "Claude Code", codex: "Codex" };
 
 /** `osd` arguments are pasted into a shell: quote anything that is not a plain id. */
 const arg = (s: string) => (/^[A-Za-z0-9_.-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
@@ -37,7 +36,7 @@ export function sessionReference(s: ReferencedSession): string {
 }
 
 export function terminalReference(t: ReferencedTerminal): string {
-  const what = t.agent ? AGENT_NAMES[t.agent.kind] : t.name?.trim() || "shell";
+  const what = t.agent ? terminalAgentName(t.agent.kind) : t.name?.trim() || "shell";
   const head = `[OSD terminal] ${[what, t.shellId, t.cwd].filter(Boolean).join(" · ")}`;
   // A plain shell runs what is sent; an agent in it reads it as a message.
   const send = t.agent

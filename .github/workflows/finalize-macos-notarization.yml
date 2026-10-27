@@ -1,12 +1,23 @@
 name: finalize macOS notarization
 
+# Started by build.yml once a tag build has queued its macOS app. While Apple
+# is still processing, it starts itself again 10 minutes later, up to
+# MAX_ATTEMPTS times; the daily schedule picks up anything left after that.
+# With nothing queued, nothing runs.
 on:
   workflow_dispatch:
+    inputs:
+      attempt:
+        description: Attempt number in this chain (1 starts a new chain)
+        default: "1"
   schedule:
-    - cron: "17,47 * * * *"
+    - cron: "17 3 * * *"
 
 permissions:
   contents: write
+
+env:
+  MAX_ATTEMPTS: 18
 
 concurrency:
   group: finalize-macos-notarization
@@ -16,6 +27,8 @@ jobs:
   finalize:
     runs-on: macos-latest
     timeout-minutes: 30
+    outputs:
+      pending: ${{ steps.remaining.outputs.pending }}
     env:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -175,6 +188,17 @@ jobs:
 
           echo "produced=$produced" >> "$GITHUB_OUTPUT"
 
+      - name: Count what is still queued
+        id: remaining
+        shell: bash
+        run: |
+          left=$(gh api --method GET "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '
+            [.[] | select(.draft) | .assets[]
+              | select((.name | endswith(".submitted.app.zip")) or (.name | endswith(".submitted.dmg")))
+            ] | length')
+          echo "Still queued: $left"
+          echo "pending=$([ "$left" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
       - name: Upload finalized macOS installers
         if: steps.finalize.outputs.produced == 'true'
         uses: actions/upload-artifact@v4
@@ -182,3 +206,25 @@ jobs:
           name: finalized-macos-${{ github.run_id }}
           path: ${{ runner.temp }}/finalized-macos/*.dmg
           if-no-files-found: error
+
+  # Apple is still processing: wait on a cheap runner, then go again.
+  retry:
+    needs: finalize
+    if: needs.finalize.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ATTEMPT: ${{ inputs.attempt || '1' }}
+    steps:
+      - name: Start the next attempt in 10 minutes
+        shell: bash
+        run: |
+          if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+            echo "::warning::Still queued after $ATTEMPT attempts; the daily run will pick it up."
+            exit 0
+          fi
+          sleep 600
+          gh workflow run finalize-macos-notarization.yml -R "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF_NAME" -f attempt=$((ATTEMPT + 1))

@@ -34,6 +34,7 @@ pub mod session_sync;
 pub mod specialists;
 pub mod system_proxy;
 pub mod terminal_read;
+pub mod termd;
 pub mod usage;
 pub mod usage_pricing;
 pub mod web_accounts;

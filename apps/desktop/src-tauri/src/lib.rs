@@ -110,6 +110,13 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
     forget_launching_agent();
+    // Ask the user's shell for its PATH now, beside the rest of startup: the
+    // sidecar, kernels and agents all wait on it (`enriched_path`), and an
+    // interactive profile takes most of a second to answer.
+    #[cfg(unix)]
+    std::thread::spawn(|| {
+        let _ = osd_core::runtime::login_shell_path();
+    });
     tauri::Builder::default()
         // Single instance MUST be the first plugin. A second launch (or a reinstall
         // while the app is still running) focuses the existing window instead of
@@ -278,7 +285,7 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
-            terminal::terminal_event_names,
+            terminal::terminal_subscribe,
             terminal::terminal_probe,
             terminal_env::terminal_env_prune,
             runs::record_run,
@@ -335,9 +342,8 @@ pub fn run() {
                 ssh_session::shutdown(app);
                 // An ACP agent child must not outlive the window that started it.
                 acp::shutdown(app);
-                // A PTY child outlives its parent unless it is killed: quitting
-                // with an open terminal would leave a detached shell running.
-                terminal::close_all(&app.state::<terminal::TerminalState>());
+                // Terminals are left running on purpose: they live in the
+                // terminal host, and the next app reattaches them (terminal.rs).
                 status_bar::shutdown(&app.state::<status_bar::AwakeState>());
                 // A child webview is a native view over the window; it does not
                 // go away with the React tree that asked for it.

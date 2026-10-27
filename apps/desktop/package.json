@@ -50,7 +50,7 @@
     "highlight.js": "^11.10.0",
     "i18next": "^26",
     "jszip": "^3.10.1",
-    "katex": "^0.17.0",
+    "katex": "^0.18.2",
     "lucide-react": "^0.454.0",
     "monaco-editor": "^0.56.0",
     "openchemlib": "^9.24.0",
@@ -89,7 +89,7 @@
     "postcss": "^8.5.25",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
-    "vite": "^6.4.3",
-    "vitest": "^4.1.11"
+    "vite": "^6.4.5",
+    "vitest": "^4.1.12"
   }
 }

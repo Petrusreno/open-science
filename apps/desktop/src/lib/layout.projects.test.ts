@@ -206,5 +206,14 @@ describe("a terminal remembers where it was and what ran in it", () => {
     expect(isPaneContent({ kind: "terminal", agent: { kind: "claude", sessionId: "a", running: true } })).toBe(true);
     expect(isPaneContent({ kind: "terminal", agent: { kind: "bash", sessionId: "a", running: true } })).toBe(false);
     expect(isPaneContent({ kind: "terminal", agent: { kind: "claude", sessionId: 7, running: true } })).toBe(false);
+    expect(isPaneContent({ kind: "terminal", agent: { kind: "pi", sessionId: "a", running: true } })).toBe(true);
+  });
+
+  it("resumes each terminal agent with its own command", async () => {
+    const { resumeCommand } = await fresh([group("g1", "", null)]);
+    const id = "01a01595-5d28-7ba3-98c7-323282fa41ad";
+    expect(resumeCommand({ kind: "claude", sessionId: id, running: true })).toBe(`claude --resume ${id}`);
+    expect(resumeCommand({ kind: "codex", sessionId: id, running: true })).toBe(`codex resume ${id}`);
+    expect(resumeCommand({ kind: "pi", sessionId: id, running: true })).toBe(`pi --session ${id}`);
   });
 });

@@ -1,8 +1,9 @@
-// The runtime SELECTOR (#14): with an ACP agent configured and selected, the
-// store drives it INSTEAD of the bundled OpenCode client — same `AgentRuntime`
-// seam, so a turn still lands in the thread. The agent here is a fake that
-// answers the real wire shapes (see src/test/acp-runtime.test.ts, where they
-// were read off live agents); what is under test is the wiring in `connect()`.
+// ACP agents run BESIDE OpenCode, per conversation (#14). OpenCode stays the
+// connection (workspace, kernels, every OpenCode conversation); a conversation
+// started on an ACP agent is recorded as that agent's and every call for it
+// goes to that agent. The agent here is a fake that answers the real wire
+// shapes (see src/test/acp-runtime.test.ts, where they were read off live
+// agents); what is under test is the routing in the store.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonRpcTransport } from "@ai4s/sdk/acp";
 
@@ -18,7 +19,83 @@ const mocks = vi.hoisted(() => ({
   failStart: false,
   /** The active workspace folder, as the Rust side would report it. */
   workspace: "/ws/project",
+  /** Calls the OpenCode fake received, by method. */
+  oc: [] as Array<{ method: string; args: unknown[] }>,
+  /** Connectors OpenCode's config holds (`listMcpServers`). */
+  mcp: [] as Array<{ name: string; config?: Record<string, unknown> }>,
 }));
+
+vi.mock("@ai4s/sdk", () => {
+  class OpenCodeClient {
+    private status = "offline";
+    private statusCb: (s: string) => void = () => {};
+    getStatus() {
+      return this.status;
+    }
+    onStatus(cb: (s: string) => void) {
+      this.statusCb = (s) => {
+        this.status = s;
+        cb(s);
+      };
+      return () => {
+        this.statusCb = () => {};
+      };
+    }
+    onEvent() {}
+    async connect() {
+      this.statusCb("ready");
+    }
+    close() {}
+    private call(method: string, ...args: unknown[]) {
+      mocks.oc.push({ method, args });
+    }
+    async listSessions() {
+      return [{ id: "ses_oc", title: "An OpenCode conversation", directory: "/ws/project" }];
+    }
+    async createSession() {
+      this.call("createSession");
+      return "ses_oc_new";
+    }
+    async sendPrompt(sid: string, text: string) {
+      this.call("sendPrompt", sid, text);
+    }
+    async deleteSession(sid: string) {
+      this.call("deleteSession", sid);
+    }
+    async sessionExists() {
+      return true;
+    }
+    async getMessages() {
+      return [];
+    }
+    async listQuestions() {
+      return [];
+    }
+    async listPermissions() {
+      return [];
+    }
+    async listSkills() {
+      return [];
+    }
+    async listAgents() {
+      return [];
+    }
+    async listCommands() {
+      return [];
+    }
+    async getDefaultModel() {
+      return null;
+    }
+    async listProviders() {
+      return [];
+    }
+    async listMcpServers() {
+      return mocks.mcp;
+    }
+  }
+  const isApiStatus = () => false;
+  return { OpenCodeClient, isApiStatus, DEFAULT_OPENCODE_URL: "http://127.0.0.1:4096" };
+});
 
 /** One fake agent, reused across reconnects: `connect()` runs again whenever the
  *  store creates a session in a fresh folder, and a test still has to be able to
@@ -43,7 +120,7 @@ function fakeAgent() {
             agentInfo: { name: "@agentclientprotocol/codex-acp", title: "Codex" },
             agentCapabilities: {
               loadSession: true,
-              sessionCapabilities: { list: {}, delete: {} },
+              sessionCapabilities: { list: {}, delete: {}, close: {} },
             },
           },
         });
@@ -76,6 +153,8 @@ function fakeAgent() {
             ],
           },
         });
+      if (msg.method === "session/close" || msg.method === "session/delete")
+        push({ jsonrpc: "2.0", id: msg.id, result: {} });
       if (msg.method === "session/load") {
         // History arrives as notifications, then the request is answered.
         const sessionId = (msg.params as { sessionId: string }).sessionId;
@@ -202,74 +281,87 @@ const CODEX = {
   args: ["-y", "@agentclientprotocol/codex-acp"],
 };
 
-async function freshStore(selected: string | null) {
+async function freshStore(defaultAgent: string | null, sessions?: Record<string, unknown>) {
   window.localStorage.clear();
   window.localStorage.setItem("ai4s.acp.agents.v1", JSON.stringify([CODEX]));
-  if (selected) window.localStorage.setItem("ai4s.acp.active.v1", selected);
+  if (defaultAgent) window.localStorage.setItem("ai4s.acp.active.v1", defaultAgent);
+  if (sessions) window.localStorage.setItem("ai4s.acp.sessions.v1", JSON.stringify(sessions));
   vi.resetModules();
-  return await import("./runtime");
+  const runtime = await import("./runtime");
+  await runtime.useRuntimeStore.getState().connect();
+  return runtime;
 }
 
-describe("runtime selector", () => {
+const PAST = { "acp-past-1": { agentId: "acp-1", title: "Yesterday's run", directory: "/ws/older-project" } };
+
+describe("ACP conversations beside OpenCode", () => {
   beforeEach(() => {
     mocks.started = [];
     mocks.agent = null;
     mocks.failStart = false;
     mocks.workspace = "/ws/project";
+    mocks.oc = [];
+    mocks.mcp = [];
   });
 
-  it("drives the selected ACP agent instead of the OpenCode client", async () => {
+  it("connects to OpenCode and starts no agent until a conversation needs one", async () => {
     const { useRuntimeStore, getClient } = await freshStore("acp-1");
-    await useRuntimeStore.getState().connect();
+    expect(useRuntimeStore.getState().status).toBe("ready");
+    expect(getClient()).not.toBeNull();
+    expect(mocks.started).toEqual([]);
+  });
 
+  it("runs a draft set to an agent on that agent, and records the conversation as its", async () => {
+    const { useRuntimeStore, draftKeyFor } = await freshStore(null);
+    const draft = draftKeyFor("leaf-1");
+    useRuntimeStore.getState().setDraftRuntime(draft, "acp-1");
+    const sid = await useRuntimeStore.getState().sendPrompt("Summarize the data", undefined, draft);
+
+    expect(sid).toBe("acp-session-1");
     expect(mocks.started).toEqual([
       { agentId: "acp-1", command: "npx", args: ["-y", "@agentclientprotocol/codex-acp"] },
     ]);
-    const s = useRuntimeStore.getState();
-    expect(s.status).toBe("ready");
-    expect(s.runtimeKind).toBe("acp");
-    expect(s.acpAgentName).toBe("Codex");
-    // No OpenCode instance backs this connection: Settings' provider/MCP surface
-    // must hide rather than PATCH a sidecar that is not driving anything.
-    expect(getClient()).toBeNull();
-    expect(s.providers).toEqual([]);
-  });
-
-  it("runs a whole turn through the ACP agent", async () => {
-    const { useRuntimeStore, DRAFT_KEY } = await freshStore("acp-1");
-    await useRuntimeStore.getState().connect();
-    const sid = await useRuntimeStore.getState().sendPrompt("Summarize the data");
-
-    expect(sid).toBe("acp-session-1");
+    // OpenCode created nothing and was sent nothing.
+    expect(mocks.oc.filter((c) => c.method === "createSession" || c.method === "sendPrompt")).toEqual([]);
     const created = mocks.agent?.sent.find((m) => m.method === "session/new");
-    // ACP takes the workspace folder per session, and a first send gives the
-    // draft its own dated folder — so the session is created in THAT one.
+    // The session is created in the draft's own dated folder.
     expect(created?.params).toEqual({ cwd: mocks.workspace, mcpServers: [] });
     expect(mocks.workspace).toMatch(/^\/ws\/\d{4}-/);
     const blocks = useRuntimeStore.getState().threads[sid!]?.blocks ?? [];
     expect(blocks[0]).toMatchObject({ kind: "user", text: "Summarize the data" });
-    // Deltas accumulate into one assistant block — passing them through would
-    // render "Half an answer." as "an answer.".
+    // Deltas accumulate into one assistant block.
     expect(blocks.some((b) => b.kind === "agent" && b.markdown === "Half an answer.")).toBe(true);
-    // The turn ended: the composer is unlocked again.
     expect(useRuntimeStore.getState().runningSessions[sid!]).toBeUndefined();
-    expect(useRuntimeStore.getState().threads[DRAFT_KEY]).toBeUndefined();
+    // Recorded, so it survives a restart and stays listed beside OpenCode's.
+    expect(JSON.parse(window.localStorage.getItem("ai4s.acp.sessions.v1")!)[sid!]).toMatchObject({
+      agentId: "acp-1",
+      directory: mocks.workspace,
+    });
+    await useRuntimeStore.getState().refreshSessions();
+    const ids = useRuntimeStore.getState().sessions.map((m) => m.id);
+    expect(ids).toEqual(expect.arrayContaining(["ses_oc", sid!]));
   });
 
-  it("lists the agent's own past sessions and reopens one with its history", async () => {
-    const { useRuntimeStore } = await freshStore("acp-1");
-    await useRuntimeStore.getState().connect();
-    await useRuntimeStore.getState().refreshSessions();
+  it("starts a draft with no pick on the default agent from Settings", async () => {
+    const { useRuntimeStore, draftKeyFor } = await freshStore("acp-1");
+    const sid = await useRuntimeStore.getState().sendPrompt("Hello", undefined, draftKeyFor("leaf-1"));
+    expect(sid).toBe("acp-session-1");
+  });
 
-    // The agent keeps the history, so a session from a previous RUN of this app
-    // is in the sidebar — with the folder it belongs to, which is what groups it
-    // under its project.
+  it("keeps a draft set to OpenCode on OpenCode, whatever the default", async () => {
+    const { useRuntimeStore, draftKeyFor } = await freshStore("acp-1");
+    const draft = draftKeyFor("leaf-1");
+    useRuntimeStore.getState().setDraftRuntime(draft, null);
+    const sid = await useRuntimeStore.getState().sendPrompt("Hello", undefined, draft);
+    expect(sid).toBe("ses_oc_new");
+    expect(mocks.started).toEqual([]);
+    expect(mocks.oc.find((c) => c.method === "sendPrompt")?.args).toEqual(["ses_oc_new", "Hello"]);
+  });
+
+  it("lists a recorded conversation after a restart and replays it on its agent", async () => {
+    const { useRuntimeStore } = await freshStore(null, PAST);
     expect(useRuntimeStore.getState().sessions).toContainEqual(
-      expect.objectContaining({
-        id: "acp-past-1",
-        title: "Yesterday's run",
-        directory: "/ws/older-project",
-      }),
+      expect.objectContaining({ id: "acp-past-1", title: "Yesterday's run", directory: "/ws/older-project" }),
     );
 
     await useRuntimeStore.getState().openSession("acp-past-1");
@@ -278,102 +370,137 @@ describe("runtime selector", () => {
       { kind: "user", text: "What changed?" },
       { kind: "agent", markdown: "Two files." },
     ]);
-    // Replayed history is finished history: no spinner, no Stop button for a
-    // turn that ended before the app started.
+    // Replayed history is finished history: no spinner.
     expect(useRuntimeStore.getState().runningSessions["acp-past-1"]).toBeUndefined();
-    // Following the session into its folder reuses the same agent process.
     expect(mocks.started).toHaveLength(1);
   });
 
-  it("keeps one agent process across workspace moves", async () => {
-    const { useRuntimeStore } = await freshStore("acp-1");
-    await useRuntimeStore.getState().connect();
-    // A first send moves the workspace (its own dated folder) and reconnects —
-    // the path every new session takes.
-    await useRuntimeStore.getState().sendPrompt("Summarize the data");
-    await useRuntimeStore.getState().switchWorkspace({ path: "/ws/other-project" });
+  it("opens a session started outside the app (a terminal) once it is adopted", async () => {
+    const { useRuntimeStore } = await freshStore(null);
+    // The terminal's folder is only a fallback: the agent says where the
+    // session lives (the shell may have moved), and that is where it resumes.
+    await useRuntimeStore.getState().adoptAcpSession("acp-1", "acp-past-1", "/ws/project");
+    expect(useRuntimeStore.getState().sessions).toContainEqual(
+      expect.objectContaining({ id: "acp-past-1", title: "Yesterday's run", directory: "/ws/older-project" }),
+    );
+    await useRuntimeStore.getState().openSession("acp-past-1");
+    expect(useRuntimeStore.getState().threads["acp-past-1"]?.blocks).toHaveLength(2);
+    const load = mocks.agent?.sent.find((m) => m.method === "session/load");
+    expect((load?.params as { sessionId: string; cwd: string }).cwd).toBe("/ws/older-project");
+  });
 
-    // ACP binds the folder per SESSION (`session/new`'s cwd), so two workspace
-    // moves must not cost two agent cold starts — nor kill the sessions the
-    // child is holding.
+  it("keeps one agent process across workspace moves", async () => {
+    const { useRuntimeStore, draftKeyFor } = await freshStore("acp-1");
+    await useRuntimeStore.getState().sendPrompt("Summarize the data", undefined, draftKeyFor("leaf-1"));
+    await useRuntimeStore.getState().switchWorkspace({ path: "/ws/other-project" });
+    await useRuntimeStore.getState().sendPrompt("And again", "acp-session-1");
+
     expect(mocks.started).toHaveLength(1);
     expect(mocks.agent?.sent.filter((m) => m.method === "initialize")).toHaveLength(1);
-    expect(useRuntimeStore.getState().status).toBe("ready");
+    expect(mocks.agent?.sent.filter((m) => m.method === "session/prompt")).toHaveLength(2);
     expect(useRuntimeStore.getState().workspace).toBe("/ws/other-project");
   });
 
   it("offers the agent's own selectors, and sets them through the agent", async () => {
-    const { useRuntimeStore } = await freshStore("acp-1");
-    await useRuntimeStore.getState().connect();
-    const sid = (await useRuntimeStore.getState().sendPrompt("Summarize the data"))!;
-
-    // The model picker is OpenCode's; an ACP agent reports its own options and
-    // this is what the composer renders instead.
+    const { useRuntimeStore, draftKeyFor } = await freshStore("acp-1");
+    const sid = (await useRuntimeStore.getState().sendPrompt("Summarize", undefined, draftKeyFor("leaf-1")))!;
     expect(useRuntimeStore.getState().acpConfigOptions[sid]).toEqual([MODEL_OPTION]);
 
     await useRuntimeStore.getState().setAcpConfigOption(sid, "model", "gpt-5.6-sol[high]");
     const sent = mocks.agent?.sent.find((m) => m.method === "session/set_config_option");
     expect(sent?.params).toEqual({ sessionId: sid, configId: "model", value: "gpt-5.6-sol[high]" });
-    // The agent's answer replaces the list wholesale — picking a model can
-    // change which reasoning levels exist.
-    expect(useRuntimeStore.getState().acpConfigOptions[sid]?.[0].currentValue).toBe(
-      "gpt-5.6-sol[high]",
-    );
+    expect(useRuntimeStore.getState().acpConfigOptions[sid]?.[0].currentValue).toBe("gpt-5.6-sol[high]");
+  });
+
+  it("remembers an agent's selectors, and applies a new conversation's pick before its first turn", async () => {
+    const { useRuntimeStore, draftKeyFor } = await freshStore("acp-1");
+    await useRuntimeStore.getState().sendPrompt("First", undefined, draftKeyFor("leaf-1"));
+    // Learned from the first session, kept for the next new conversation.
+    expect(useRuntimeStore.getState().acpAgentOptions["acp-1"]).toEqual([MODEL_OPTION]);
+    expect(JSON.parse(window.localStorage.getItem("ai4s.acp.options.v1")!)["acp-1"]).toEqual([MODEL_OPTION]);
+
+    const draft = draftKeyFor("leaf-2");
+    useRuntimeStore.getState().setDraftAcpOption(draft, "model", "gpt-5.6-sol[high]");
+    const before = mocks.agent!.sent.length;
+    await useRuntimeStore.getState().sendPrompt("Second", undefined, draft);
+    const methods = mocks.agent!.sent.slice(before).map((m) => m.method);
+    // Set on the new session, and before the prompt, so the first turn runs on it.
+    expect(methods.indexOf("session/set_config_option")).toBeGreaterThan(methods.indexOf("session/new"));
+    expect(methods.indexOf("session/set_config_option")).toBeLessThan(methods.indexOf("session/prompt"));
+    expect(useRuntimeStore.getState().draftAcpPicks[draft]).toBeUndefined();
+  });
+
+  it("reads an agent's selectors before its first conversation, and leaves no session behind", async () => {
+    const { useRuntimeStore } = await freshStore(null);
+    await useRuntimeStore.getState().fetchAcpAgentOptions("acp-1");
+    expect(useRuntimeStore.getState().acpAgentOptions["acp-1"]).toEqual([MODEL_OPTION]);
+    expect(useRuntimeStore.getState().acpOptionsProbe["acp-1"]).toBeUndefined();
+    const sent = mocks.agent!.sent;
+    const created = sent.find((m) => m.method === "session/new");
+    // No connectors for a session nothing runs in.
+    expect((created?.params as { mcpServers: unknown[] }).mcpServers).toEqual([]);
+    expect(sent.find((m) => m.method === "session/delete")?.params).toEqual({ sessionId: "acp-session-1" });
+    expect(useRuntimeStore.getState().sessions.map((m) => m.id)).not.toContain("acp-session-1");
+  });
+
+  it("reports an agent whose selectors could not be read", async () => {
+    mocks.failStart = true;
+    const { useRuntimeStore } = await freshStore(null);
+    await useRuntimeStore.getState().fetchAcpAgentOptions("acp-1");
+    expect(useRuntimeStore.getState().acpOptionsProbe["acp-1"]).toMatchObject({ status: "error" });
+  });
+
+  it("drops a draft's picks when it switches agent", async () => {
+    const { useRuntimeStore, draftKeyFor } = await freshStore(null);
+    const draft = draftKeyFor("leaf-1");
+    useRuntimeStore.getState().setDraftRuntime(draft, "acp-1");
+    useRuntimeStore.getState().setDraftAcpOption(draft, "model", "x");
+    useRuntimeStore.getState().setDraftRuntime(draft, null);
+    expect(useRuntimeStore.getState().draftAcpPicks[draft]).toBeUndefined();
   });
 
   it("hands this app's own connectors to the agent, per session", async () => {
-    // ACP takes MCP servers per session; OpenCode keeps them in its global
-    // config. Without this an ACP agent runs with none of the connectors the
-    // user configured — which reads as the feature being broken.
-    const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: unknown) => {
-        const at = String(url);
-        if (at.endsWith("/mcp")) return json({ pubmed: { status: "connected" } });
-        if (at.endsWith("/global/config"))
-          return json({
-            mcp: {
-              pubmed: { type: "local", command: ["/opt/app/bin/uvx", "science-mcp"] },
-              off: { type: "local", command: ["/opt/app/bin/other"], enabled: false },
-            },
-          });
-        return { ok: false, status: 404, json: async () => ({}) };
-      }),
-    );
-    try {
-      const { useRuntimeStore } = await freshStore("acp-1");
-      await useRuntimeStore.getState().connect();
-      await useRuntimeStore.getState().sendPrompt("Search PubMed");
-
-      const created = mocks.agent?.sent.find((m) => m.method === "session/new");
-      expect((created?.params as { mcpServers: unknown }).mcpServers).toEqual([
-        // `env` travels even when empty: the published schema requires it, and
-        // an agent validating with the official SDK refuses the session without it.
-        { name: "pubmed", command: "/opt/app/bin/uvx", args: ["science-mcp"], env: [] },
-      ]);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    mocks.mcp = [
+      { name: "pubmed", config: { type: "local", command: ["/opt/app/bin/uvx", "science-mcp"] } },
+      { name: "off", config: { type: "local", command: ["/opt/app/bin/other"], enabled: false } },
+    ];
+    const { useRuntimeStore, draftKeyFor } = await freshStore("acp-1");
+    await useRuntimeStore.getState().sendPrompt("Search PubMed", undefined, draftKeyFor("leaf-1"));
+    const created = mocks.agent?.sent.find((m) => m.method === "session/new");
+    expect((created?.params as { mcpServers: unknown }).mcpServers).toEqual([
+      { name: "pubmed", command: "/opt/app/bin/uvx", args: ["science-mcp"], env: [] },
+    ]);
   });
 
-  it("keeps the bundled runtime when no agent is selected", async () => {
-    const { useRuntimeStore } = await freshStore(null);
-    await useRuntimeStore.getState().connect();
-    expect(mocks.started).toEqual([]);
-    expect(useRuntimeStore.getState().runtimeKind).toBe("opencode");
-  });
-
-  it("reports a command that would not start, and starts nothing else", async () => {
-    // A wrong command is the common first-run failure; it has to name itself in
-    // the UI rather than leaving the app silently on no runtime at all.
+  it("reports an agent that would not start, and leaves OpenCode connected", async () => {
     mocks.failStart = true;
-    const { useRuntimeStore, getClient } = await freshStore("acp-1");
-    await useRuntimeStore.getState().connect();
+    const { useRuntimeStore, draftKeyFor } = await freshStore("acp-1");
+    const sid = await useRuntimeStore.getState().sendPrompt("Hello", undefined, draftKeyFor("leaf-1"));
+    expect(sid).toBeNull();
     const s = useRuntimeStore.getState();
-    expect(s.status).toBe("error");
-    expect(s.error).toMatch(/could not start npx/);
-    expect(s.runtimeKind).toBe("acp");
-    expect(getClient()).toBeNull();
+    expect(JSON.stringify({ error: s.error, threads: s.threads })).toMatch(/could not start npx/);
+    expect(s.status).toBe("ready");
+  });
+
+  it("lets go of a conversation moved to a terminal, and keeps it listed", async () => {
+    const { useRuntimeStore } = await freshStore(null, PAST);
+    await useRuntimeStore.getState().openSession("acp-past-1");
+    await useRuntimeStore.getState().releaseAcpSession("acp-past-1");
+    expect(mocks.agent?.sent.find((m) => m.method === "session/close")?.params).toEqual({
+      sessionId: "acp-past-1",
+    });
+    expect(useRuntimeStore.getState().sessions.map((m) => m.id)).toContain("acp-past-1");
+    // Reloaded on return, since the terminal adds to it meanwhile.
+    expect(useRuntimeStore.getState().threads["acp-past-1"]).toBeUndefined();
+  });
+
+  it("forgets a deleted conversation here and leaves its history on the agent", async () => {
+    const { useRuntimeStore } = await freshStore(null, PAST);
+    await useRuntimeStore.getState().openSession("acp-past-1");
+    await useRuntimeStore.getState().deleteSession("acp-past-1");
+    expect(useRuntimeStore.getState().sessions.map((m) => m.id)).not.toContain("acp-past-1");
+    expect(window.localStorage.getItem("ai4s.acp.sessions.v1")).toBe("{}");
+    expect(mocks.agent?.sent.some((m) => m.method === "session/delete")).toBe(false);
+    expect(mocks.oc.some((c) => c.method === "deleteSession")).toBe(false);
   });
 });

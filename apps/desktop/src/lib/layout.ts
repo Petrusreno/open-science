@@ -50,9 +50,18 @@ export type PaneContent =
  *  foreground program when last looked at, i.e. the user left it open; a
  *  relaunch then resumes it instead of leaving a bare shell. */
 export interface TerminalAgent {
-  kind: "claude" | "codex";
+  kind: TerminalAgentKind;
   sessionId: string;
   running: boolean;
+}
+
+/** The terminal agents whose sessions the app can resume and move. */
+export type TerminalAgentKind = "claude" | "codex" | "pi";
+const TERMINAL_AGENT_KINDS: readonly string[] = ["claude", "codex", "pi"];
+
+/** The product name of a terminal agent, shown as-is in every language. */
+export function terminalAgentName(kind: TerminalAgentKind): string {
+  return { claude: "Claude Code", codex: "Codex", pi: "pi" }[kind];
 }
 
 /** The command that resumes `agent`'s session in a shell, or null when the
@@ -61,9 +70,14 @@ export interface TerminalAgent {
  *  it safe unquoted in every shell (cmd.exe has no single quotes). */
 export function resumeCommand(agent: TerminalAgent): string | null {
   if (!/^[A-Za-z0-9_-]+$/.test(agent.sessionId)) return null;
-  return agent.kind === "claude"
-    ? `claude --resume ${agent.sessionId}`
-    : `codex resume ${agent.sessionId}`;
+  switch (agent.kind) {
+    case "claude":
+      return `claude --resume ${agent.sessionId}`;
+    case "codex":
+      return `codex resume ${agent.sessionId}`;
+    case "pi":
+      return `pi --session ${agent.sessionId}`;
+  }
 }
 
 /** What `terminal_probe` reports for one terminal (see terminal_probe.rs). */
@@ -83,7 +97,8 @@ function isTerminalAgent(v: unknown): v is TerminalAgent {
   if (!v || typeof v !== "object") return false;
   const a = v as Record<string, unknown>;
   return (
-    (a.kind === "claude" || a.kind === "codex") &&
+    typeof a.kind === "string" &&
+    TERMINAL_AGENT_KINDS.includes(a.kind) &&
     typeof a.sessionId === "string" &&
     typeof a.running === "boolean"
   );
@@ -743,6 +758,10 @@ interface LayoutState {
   /** Close the focused leaf (no-op on the last pane). */
   closeFocused: () => void;
   closePane: (leafId: string) => void;
+  /** Put something else where a pane is: a conversation where a terminal was,
+   *  or a terminal where a conversation was. The pane gets a new id, so what
+   *  it held (a terminal's shell) closes the way a closed pane's does. */
+  replacePane: (leafId: string, next: { sessionId: string } | { content: PaneContent }) => void;
   focusLeaf: (leafId: string) => void;
   focusAdjacent: (dir: "next" | "prev") => void;
   setSplitSizes: (splitId: string, sizes: number[]) => void;
@@ -1346,6 +1365,20 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       if (!res) return;
       const nextFocus = leafId === focusedLeafId ? res.nextFocusId : focusedLeafId;
       commitActive({ tree: res.tree, focusedLeafId: nextFocus, zoomedLeafId: null });
+    },
+    replacePane: (leafId, next) => {
+      const leaf = "content" in next ? makeContentLeaf(next.content) : makeLeaf(next.sessionId);
+      const swap = (node: PaneNode): PaneNode =>
+        node.kind === "leaf"
+          ? node.id === leafId
+            ? leaf
+            : node
+          : { ...node, children: node.children.map(swap) };
+      commitLeafGroup(leafId, (g) => ({
+        tree: swap(g.tree!),
+        focusedLeafId: leaf.id,
+        zoomedLeafId: g.zoomedLeafId === leafId ? null : g.zoomedLeafId,
+      }));
     },
     focusLeaf: (leafId) => {
       const { tree } = get();

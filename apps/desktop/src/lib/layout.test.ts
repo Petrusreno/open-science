@@ -1,4 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// layout.ts fires these off without awaiting them. Loaded for real, they can
+// finish after the test environment is torn down, which fails the whole run.
+// Their behavior is tested in their own files.
+vi.mock("./layoutSync", () => ({ layoutChanged: vi.fn() }));
+vi.mock("./terminalSessions", () => ({ pruneTerminals: vi.fn(), pruneTerminalEnv: vi.fn() }));
 import {
   makeLeaf,
   makeContentLeaf,

@@ -74,9 +74,9 @@
   },
   "acp": {
     "title": "Agent",
-    "hint": "L'agent que cette application pilote : le runtime OpenCode fourni, ou tout agent qui parle l'Agent Client Protocol (ACP) via stdio.",
+    "hint": "Les agents sur lesquels une conversation peut tourner, et celui que prend une nouvelle conversation. Le choix par conversation se fait dans la zone de saisie.",
     "bundled": "OpenCode (fourni)",
-    "bundledHint": "Le runtime par défaut — fournisseurs, compétences, mode plan et conversations enregistrées.",
+    "bundledHint": "L’environnement intégré, avec fournisseurs, compétences, mode plan et conversations enregistrées.",
     "add": "Ajouter un agent",
     "edit": "Modifier",
     "remove": "Supprimer",
@@ -86,9 +86,7 @@
     "commandPlaceholder": "Commande (npx, gemini, …)",
     "argsLabel": "Arguments",
     "argsPlaceholder": "Arguments (-y @agentclientprotocol/codex-acp)",
-    "limits": "Un agent ACP s'exécute comme une commande sur cet ordinateur, dans le dossier de l'espace de travail actuel. Il gère lui-même son modèle, ses compétences et son historique : le sélecteur de modèle, le mode plan et les conversations enregistrées restent propres à OpenCode, et les sessions lancées sur un agent ACP n'apparaissent que tant que l'application est ouverte.",
-    "running": "Connecté à l'agent ACP.",
-    "starting": "Démarrage de l'agent ACP…"
+    "limits": "Un agent ACP s’exécute comme une commande sur cet ordinateur, dans le dossier de la conversation, à côté d’OpenCode. Il gère lui-même modèle, commandes et historique, donc le sélecteur de modèle et le mode plan ne s’appliquent qu’aux conversations OpenCode."
   },
   "updates": {
     "title": "Mises à jour de l'app",

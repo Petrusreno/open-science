@@ -346,6 +346,34 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
     return result.sessionId;
   }
 
+  /**
+   * The selectors a new session would offer (model, reasoning level, mode),
+   * read before there is one to offer them. ACP v1 reports them only with
+   * `session/new`, so this creates a session in `cwd`, reads them, and removes
+   * it again: `session/delete` where the agent supports it, else
+   * `session/close`. No connectors are passed: nothing runs in it. Measured on
+   * Claude Code (claude-agent-acp 0.97.0): about 1.5 s, and nothing is written
+   * for a session that never had a message.
+   */
+  async probeConfigOptions(cwd: string): Promise<AcpConfigOption[]> {
+    let result: AcpNewSessionResult;
+    try {
+      result = await this.peer.request<AcpNewSessionResult>("session/new", { cwd, mcpServers: [] });
+    } catch (err) {
+      throw this.explainAuthRequired(err);
+    }
+    const sessionId = result.sessionId;
+    const cleanup = this.supportsSessionDelete
+      ? "session/delete"
+      : this.agentCapabilities?.sessionCapabilities?.close !== undefined
+        ? "session/close"
+        : null;
+    // Not awaited: the options are already in hand, and an agent slow to tidy
+    // up must not hold the picker on its spinner.
+    if (cleanup) void this.peer.request(cleanup, { sessionId }).catch(() => {});
+    return result.configOptions ?? [];
+  }
+
   async forkSession(_sessionId: string, _messageId?: string): Promise<string> {
     throw new Error(`${this.displayName} does not support session forks`);
   }
@@ -566,7 +594,7 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
       `${this.displayName} is not signed in: ${err.message}. ` +
         `Its sign-in is its own — run the agent's login command in a terminal` +
         (offers.length > 0 ? ` (it offers ${offers.join(", ")})` : "") +
-        `, then reconnect in Settings → Runtime.`,
+        `, then send the message again.`,
     );
   }
 
@@ -637,6 +665,20 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
       });
       this.emit({ type: "session.idle", sessionId });
     }
+  }
+
+  /**
+   * Let go of a session so another process can take it over (the user moved it
+   * to a terminal). A running turn is cancelled first; the agent frees what it
+   * holds when it supports `session/close`, and this client forgets the session
+   * either way, so a later message resumes it rather than assuming it is open.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    const state = this.sessions.get(sessionId);
+    if (state?.promptRunning) await this.abortSession(sessionId);
+    this.sessions.delete(sessionId);
+    if (this.agentCapabilities?.sessionCapabilities?.close === undefined) return;
+    await this.peer.request("session/close", { sessionId });
   }
 
   async abortSession(sessionId: string): Promise<void> {

@@ -78,36 +78,14 @@ fn shim_name() -> &'static str {
     }
 }
 
-/// The PATH a NEW TERMINAL would have.
-///
-/// Not this process's PATH: a GUI app launched from Finder inherits launchd's
-/// minimal `/usr/bin:/bin:/usr/sbin:/sbin`, so asking it whether `~/bin` is on
-/// PATH answers a different question than the one that matters — measured on
-/// this machine, the login shell has `~/bin` and the app would never have seen
-/// it, and would have edited a profile that needed no editing. So the login
-/// shell is asked directly, once per process (a heavy profile makes this slow,
-/// and nothing here changes while the app runs).
+/// The PATH a NEW TERMINAL would have (see `osd_core::runtime::login_shell_path`),
+/// or this process's own when the shell would not answer.
 #[cfg(not(windows))]
 fn login_shell_path() -> Vec<PathBuf> {
-    static CACHE: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-            let printed = osd_core::runtime::quiet_command(&shell)
-                .args(["-l", "-c", "printf %s \"$PATH\""])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|p| !p.is_empty());
-            match printed {
-                Some(path) => std::env::split_paths(&path).collect(),
-                // A login shell that will not run leaves this process's PATH as
-                // the only evidence available.
-                None => process_path(),
-            }
-        })
-        .clone()
+    match osd_core::runtime::login_shell_path() {
+        Some(path) => std::env::split_paths(&path).collect(),
+        None => process_path(),
+    }
 }
 
 #[cfg(windows)]

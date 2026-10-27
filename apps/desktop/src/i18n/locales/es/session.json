@@ -160,7 +160,16 @@
       "add": "Poner en cola",
       "addTitle": "Enviar al terminar este turno (Enter) · Cmd/Ctrl+Enter interviene ahora"
     },
-    "busyCommand": "Espera a que termine este turno para ejecutar un comando."
+    "busyCommand": "Espera a que termine este turno para ejecutar un comando.",
+    "agent": {
+      "aria": "Agente",
+      "title": "Agente y modelo",
+      "locked": "Otro agente en una conversación nueva",
+      "manage": "Gestionar agentes",
+      "optionsLoading": "Leyendo los modelos de {{agent}}…",
+      "optionsNone": "{{agent}} no ofrece modelos para elegir.",
+      "optionsFailed": "{{agent}} no arrancó: {{error}}"
+    }
   },
   "localCommand": {
     "newDescription": "Nueva conversación en esta carpeta",
@@ -550,7 +559,18 @@
       "none": "sin resultados",
       "find": "Buscar…"
     },
-    "recentInput": "Entradas recientes desde fuera:"
+    "recentInput": "Entradas recientes desde fuera:",
+    "continueInApp": {
+      "label": "Abrir como conversación",
+      "confirmTitle": "¿Continuar en una conversación?",
+      "confirmBody": "Esta sesión de {{agent}} sigue en la vista de conversación de la app y esta terminal se cierra. Puedes volver a una terminal cuando quieras."
+    },
+    "continueInTerminal": {
+      "label": "Continuar en la terminal",
+      "confirmTitle": "¿Continuar en una terminal?",
+      "confirmBody": "Esta conversación sigue en una terminal donde la dejaste, y este panel pasa a ser esa terminal. Se queda en la barra lateral, así que puedes volver aquí.",
+      "confirmBodyRunning": "La respuesta en curso se detiene y luego esta conversación sigue en una terminal donde la dejaste. Se queda en la barra lateral, así que puedes volver aquí."
+    }
   },
   "splitInto": {
     "session": "Sesión"

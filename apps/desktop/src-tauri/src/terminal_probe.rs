@@ -1,6 +1,6 @@
 // What a terminal is doing right now: which folder its shell is in, and which
-// coding agent — Claude Code or Codex — is running in it, with the session id
-// that agent is writing to.
+// coding agent — Claude Code, Codex or pi — is running in it, with the session
+// id that agent is writing to.
 //
 // The layout records both on the terminal's pane so a relaunch reopens the
 // shell where it was and resumes the agent (`claude --resume <id>` /
@@ -19,6 +19,13 @@
 //     (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, whose first line is
 //     `session_meta` with the id), so the file it holds names the session.
 //     The newest one wins: the desktop Codex app holds several at once.
+//   - pi runs under node (its process name is `node`), so it is known by its
+//     arguments. It neither records its pid nor keeps its session open (each
+//     entry is an append), so its session is the newest file in its folder's
+//     session directory written since the process started
+//     (`<agent dir>/sessions/--<cwd with / as ->--/<time>_<id>.jsonl`, first
+//     line `{"type":"session","id":…}`). None before its first message: pi
+//     writes nothing until then, and there is nothing to resume.
 //
 // Windows has neither a foreground process group nor a cheap cwd query, so
 // nothing is reported there and terminals restore as before.
@@ -30,7 +37,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProbe {
-    /// "claude" | "codex"
+    /// "claude" | "codex" | "pi"
     pub kind: &'static str,
     pub session_id: String,
 }
@@ -142,6 +149,62 @@ fn is_codex_name(name: &str) -> bool {
     name == "codex" || name.starts_with("codex-")
 }
 
+/// The session id from a pi session file's first line.
+fn parse_pi_session_head(first_line: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(first_line).ok()?;
+    if value.get("type")?.as_str()? != "session" {
+        return None;
+    }
+    let id = value.get("id")?.as_str()?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Whether a process's arguments are pi's interactive CLI: `node …/bin/pi` on
+/// macOS, or `pi` itself where the process title rewrites argv (Linux). The
+/// RPC mode (`--mode rpc`) is pi run by another program, never a terminal's.
+fn is_pi_args(args: &[String]) -> bool {
+    let named_pi = args.iter().take(2).any(|a| {
+        Path::new(a).file_name().is_some_and(|n| n == "pi") || a.contains("pi-coding-agent/dist/cli.js")
+    });
+    named_pi && !args.iter().any(|a| a == "--mode")
+}
+
+/// pi's session folder for a working directory, as pi names it.
+fn pi_session_dir(agent_dir: &Path, cwd: &str) -> PathBuf {
+    let trimmed = cwd.strip_prefix('/').or_else(|| cwd.strip_prefix('\\')).unwrap_or(cwd);
+    let safe: String = trimmed.chars().map(|c| if matches!(c, '/' | '\\' | ':') { '-' } else { c }).collect();
+    agent_dir.join("sessions").join(format!("--{safe}--"))
+}
+
+fn pi_agent_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    home_dir().map(|h| h.join(".pi").join("agent"))
+}
+
+/// The session file in `dir` written last at or after `since`, if any.
+fn newest_pi_session(dir: &Path, since: std::time::SystemTime) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+        .filter(|(modified, _)| *modified >= since)
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, p)| p)
+}
+
+fn pi_session_of(pid: u32) -> Option<String> {
+    if !is_pi_args(&platform::process_args(pid)) {
+        return None;
+    }
+    let dir = pi_session_dir(&pi_agent_dir()?, &platform::process_cwd(pid)?);
+    let started = platform::process_start(pid)?;
+    parse_pi_session_head(&read_first_line(&newest_pi_session(&dir, started)?)?)
+}
+
 fn agent_of(pid: u32) -> Option<AgentProbe> {
     if let Some(session_id) = claude_session_of(pid) {
         return Some(AgentProbe {
@@ -154,6 +217,9 @@ fn agent_of(pid: u32) -> Option<AgentProbe> {
             kind: "codex",
             session_id,
         });
+    }
+    if let Some(session_id) = pi_session_of(pid) {
+        return Some(AgentProbe { kind: "pi", session_id });
     }
     None
 }
@@ -200,6 +266,22 @@ mod platform {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn process_args(pid: u32) -> Vec<String> {
+        std::fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|raw| {
+                raw.split(|b| *b == 0)
+                    .filter(|a| !a.is_empty())
+                    .map(|a| String::from_utf8_lossy(a).into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// When the process started: its `/proc` entry is made then.
+    pub fn process_start(pid: u32) -> Option<std::time::SystemTime> {
+        std::fs::metadata(format!("/proc/{pid}")).ok()?.modified().ok()
     }
 
     pub fn open_files(pid: u32) -> Vec<PathBuf> {
@@ -279,6 +361,67 @@ mod platform {
             .collect()
     }
 
+    /// argv, from `KERN_PROCARGS2`: argc, the executable path, padding, then
+    /// the arguments, each NUL-terminated.
+    pub fn process_args(pid: u32) -> Vec<String> {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+        let mut size: libc::size_t = 0;
+        // SAFETY: a null buffer asks only for the size.
+        let sized = unsafe {
+            libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0)
+        };
+        if sized != 0 || size < 4 {
+            return Vec::new();
+        }
+        let mut buf = vec![0u8; size];
+        // SAFETY: `buf` is writable for `size` bytes, which sysctl updates.
+        let read = unsafe {
+            libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0)
+        };
+        if read != 0 || size < 4 {
+            return Vec::new();
+        }
+        parse_procargs(&buf[..size])
+    }
+
+    pub(super) fn parse_procargs(buf: &[u8]) -> Vec<String> {
+        let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]).max(0) as usize;
+        let rest = &buf[4..];
+        // Skip the executable path and the NULs after it.
+        let Some(end) = rest.iter().position(|b| *b == 0) else {
+            return Vec::new();
+        };
+        let start = rest[end..].iter().position(|b| *b != 0).map(|i| end + i).unwrap_or(rest.len());
+        rest[start..]
+            .split(|b| *b == 0)
+            .take(argc)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect()
+    }
+
+    pub fn process_start(pid: u32) -> Option<std::time::SystemTime> {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: `info` is a correctly sized, writable proc_bsdinfo.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        if written != size {
+            return None;
+        }
+        Some(
+            std::time::UNIX_EPOCH
+                + std::time::Duration::from_secs(info.pbi_start_tvsec)
+                + std::time::Duration::from_micros(info.pbi_start_tvusec),
+        )
+    }
+
     /// Files `pid` holds open. `lsof`, as Orca uses: the kernel call for an fd's
     /// path needs a struct libc does not bind. Called once per Codex process
     /// (the result is cached upstream).
@@ -313,6 +456,14 @@ mod platform {
         Vec::new()
     }
 
+    pub fn process_args(_pid: u32) -> Vec<String> {
+        Vec::new()
+    }
+
+    pub fn process_start(_pid: u32) -> Option<std::time::SystemTime> {
+        None
+    }
+
     pub fn open_files(_pid: u32) -> Vec<PathBuf> {
         Vec::new()
     }
@@ -321,6 +472,76 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_session_from_a_pi_session_file() {
+        let head = r#"{"type":"session","version":3,"id":"01a01595-5d28-7ba3-98c7-323282fa41ad","timestamp":"2026-08-18T15:55:05.384Z","cwd":"/Users/asq"}"#;
+        assert_eq!(
+            parse_pi_session_head(head).as_deref(),
+            Some("01a01595-5d28-7ba3-98c7-323282fa41ad")
+        );
+        assert_eq!(parse_pi_session_head(r#"{"type":"model_change","id":"e19e10f2"}"#), None);
+    }
+
+    #[test]
+    fn knows_pi_by_its_arguments_and_skips_its_rpc_mode() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(is_pi_args(&args(&["node", "/Users/me/.nvm/versions/node/v24/bin/pi"])));
+        assert!(is_pi_args(&args(&["pi", "--session", "01a0"])));
+        assert!(is_pi_args(&args(&["node", "/x/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"])));
+        assert!(!is_pi_args(&args(&["node", "/x/bin/pi", "--mode", "rpc"])));
+        assert!(!is_pi_args(&args(&["node", "/x/bin/pip"])));
+        assert!(!is_pi_args(&args(&["node", "server.js", "pi"])));
+    }
+
+    #[test]
+    fn names_the_session_folder_the_way_pi_does() {
+        // Measured: pi files sessions for /Users/asq under `--Users-asq--`.
+        assert_eq!(
+            pi_session_dir(Path::new("/h/.pi/agent"), "/Users/asq"),
+            PathBuf::from("/h/.pi/agent/sessions/--Users-asq--")
+        );
+        assert_eq!(
+            pi_session_dir(Path::new("/a"), "/private/tmp/-x/y"),
+            PathBuf::from("/a/sessions/--private-tmp--x-y--")
+        );
+    }
+
+    #[test]
+    fn takes_the_newest_pi_session_written_since_the_process_started() {
+        let dir = std::env::temp_dir().join(format!("osd-pi-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("2026-01-01T00-00-00-000Z_old.jsonl");
+        std::fs::write(&old, "{}\n").unwrap();
+        let started = std::time::SystemTime::now() + std::time::Duration::from_millis(5);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        // Before the process wrote anything, the older session must not answer.
+        assert_eq!(newest_pi_session(&dir, started), None);
+        let new = dir.join("2026-01-02T00-00-00-000Z_new.jsonl");
+        std::fs::write(&new, "{}\n").unwrap();
+        assert_eq!(newest_pi_session(&dir, started), Some(new));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn reads_this_process_arguments() {
+        let args = platform::process_args(std::process::id());
+        // The test binary itself is argv[0].
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_name().unwrap().to_string_lossy();
+        assert!(args.first().is_some_and(|a| a.ends_with(name.as_ref())), "{args:?}");
+        assert!(platform::process_start(std::process::id()).is_some());
+    }
+
+    /// Against a live process: `PI_PID=<pid> cargo test … -- --ignored live_pi`.
+    #[test]
+    #[ignore]
+    fn live_pi() {
+        let pid: u32 = std::env::var("PI_PID").unwrap().parse().unwrap();
+        eprintln!("args {:?}", platform::process_args(pid));
+        eprintln!("probe {:?}", agent_of(pid));
+    }
 
     #[test]
     fn reads_the_session_from_a_claude_process_record() {

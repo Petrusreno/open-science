@@ -2,7 +2,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRuntimeStore } from "@/lib/runtime";
-import { leaves, makeLeaf, useLayoutStore } from "@/lib/layout";
+import { leaves, makeContentLeaf, makeLeaf, useLayoutStore } from "@/lib/layout";
 import { renderAt } from "@/test/render";
 
 // The route change is asserted through useNavigate: react-router's own
@@ -111,5 +111,35 @@ describe("Sidebar session history", () => {
     await userEvent.type(input, "Spike sorting{Enter}");
 
     expect(renameSession).toHaveBeenCalledWith("A", "Spike sorting");
+  });
+});
+
+describe("Sidebar terminals", () => {
+  it("lists an open terminal under its Screen's project, and a click brings it back", async () => {
+    const project = { id: "p1", name: "BCI-Trends", path: "/base/BCI-Trends", pinned: true };
+    const session = makeLeaf("A");
+    const term = makeContentLeaf({ kind: "terminal", cwd: "/base/BCI-Trends", agent: { kind: "claude", sessionId: "x", running: true } });
+    useLayoutStore.setState({
+      groups: [
+        { id: "g0", name: "", tree: session, focusedLeafId: session.id, zoomedLeafId: null },
+        { id: "g1", name: "", projectId: "p1", tree: term, focusedLeafId: term.id, zoomedLeafId: null },
+      ],
+      activeGroupId: "g0",
+      tree: session,
+      focusedLeafId: session.id,
+      zoomedLeafId: null,
+      ephemeralGroupId: null,
+    });
+    useRuntimeStore.setState({ projects: [project as never] });
+    renderAt("/skills");
+
+    const row = await screen.findByRole("button", { name: "Terminal · BCI-Trends · Claude Code" });
+    // Filed under the project, not among the loose sessions.
+    expect(row.closest("[data-drop-project]")?.getAttribute("data-drop-project")).toBe("p1");
+
+    await userEvent.click(row);
+    expect(navigateSpy).toHaveBeenCalledWith("/live");
+    expect(useLayoutStore.getState().activeGroupId).toBe("g1");
+    expect(useLayoutStore.getState().focusedLeafId).toBe(term.id);
   });
 });

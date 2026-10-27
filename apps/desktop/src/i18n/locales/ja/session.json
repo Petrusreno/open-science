@@ -160,7 +160,16 @@
       "add": "キューに追加",
       "addTitle": "このターンの後に送信（Enter）· Cmd/Ctrl+Enter で今すぐ割り込み"
     },
-    "busyCommand": "このターンが終わってからコマンドを実行してください。"
+    "busyCommand": "このターンが終わってからコマンドを実行してください。",
+    "agent": {
+      "aria": "エージェント",
+      "title": "エージェントとモデル",
+      "locked": "別のエージェントは新しい会話で",
+      "manage": "エージェントを管理",
+      "optionsLoading": "{{agent}} のモデルを読み込んでいます…",
+      "optionsNone": "{{agent}} には選べるモデルがありません。",
+      "optionsFailed": "{{agent}} を起動できませんでした：{{error}}"
+    }
   },
   "localCommand": {
     "newDescription": "このフォルダで新しい会話を始める",
@@ -537,7 +546,18 @@
       "none": "該当なし",
       "find": "検索…"
     },
-    "recentInput": "外部からの最近の入力："
+    "recentInput": "外部からの最近の入力：",
+    "continueInApp": {
+      "label": "会話で続ける",
+      "confirmTitle": "会話で続けますか？",
+      "confirmBody": "この {{agent}} セッションはアプリの会話画面で続き、このターミナルは閉じます。いつでもターミナルに戻せます。"
+    },
+    "continueInTerminal": {
+      "label": "ターミナルで続ける",
+      "confirmTitle": "ターミナルで続けますか？",
+      "confirmBody": "この会話はターミナルでそのまま続き、このペインはそのターミナルになります。サイドバーに残るので、ここに戻れます。",
+      "confirmBodyRunning": "進行中の返答を止めてから、この会話をターミナルでそのまま続けます。サイドバーに残るので、ここに戻れます。"
+    }
   },
   "splitInto": {
     "session": "セッション"

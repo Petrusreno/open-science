@@ -160,7 +160,16 @@
       "add": "Queue message",
       "addTitle": "Queue for after this turn (Enter) · Cmd/Ctrl+Enter steers it in now"
     },
-    "busyCommand": "Wait for this turn to finish before running a command."
+    "busyCommand": "Wait for this turn to finish before running a command.",
+    "agent": {
+      "aria": "Agent",
+      "title": "Agent and model",
+      "locked": "New conversation to use another agent",
+      "manage": "Manage agents",
+      "optionsLoading": "Reading {{agent}}'s models…",
+      "optionsNone": "{{agent}} offers no models to choose from.",
+      "optionsFailed": "{{agent}} did not start: {{error}}"
+    }
   },
   "localCommand": {
     "newDescription": "New conversation in this folder",
@@ -550,7 +559,18 @@
       "none": "no results",
       "find": "Find…"
     },
-    "recentInput": "Recent input from outside:"
+    "recentInput": "Recent input from outside:",
+    "continueInApp": {
+      "label": "Open as conversation",
+      "confirmTitle": "Continue in a conversation?",
+      "confirmBody": "This {{agent}} session continues in the app's conversation view, and this terminal closes. You can move it back to a terminal at any time."
+    },
+    "continueInTerminal": {
+      "label": "Continue in terminal",
+      "confirmTitle": "Continue in a terminal?",
+      "confirmBody": "This conversation reopens in a terminal where it is, and this pane becomes that terminal. It stays in the sidebar, so you can come back to it here.",
+      "confirmBodyRunning": "The reply in progress stops, then this conversation reopens in a terminal where it is. It stays in the sidebar, so you can come back to it here."
+    }
   },
   "splitInto": {
     "session": "Session"
