@@ -637,14 +637,13 @@ pub fn ensure(dir: &Path, osd: &Path) -> Result<Client, String> {
     }
 }
 
-/// The binary the host runs from. Outside macOS, a copy in the data folder:
+/// The binary the host runs from: a copy in the data folder, never the file
+/// in the install. Nothing of the install may be running while it is replaced:
 /// the Windows installer kills every process imaged under the install folder,
-/// and an AppImage's files vanish when the app that mounted them exits. A
-/// macOS update swaps the bundle while the running file stays intact.
+/// an AppImage's files vanish when the app that mounted them exits, and on
+/// macOS a manual install (closing the app, dragging the new one over it) must
+/// not meet a running file inside the old bundle.
 fn host_binary(dir: &Path, osd: &Path) -> Result<PathBuf, String> {
-    if cfg!(target_os = "macos") {
-        return Ok(osd.to_path_buf());
-    }
     let len = std::fs::metadata(osd).map_err(|e| format!("{}: {e}", osd.display()))?.len();
     let folder = dir.join("termd");
     std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
