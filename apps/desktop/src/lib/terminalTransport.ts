@@ -45,17 +45,20 @@ const desktop: TerminalTransport = {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("terminal_close", { id });
   },
+  // Recent output first: a shell that outlived the last app (it lives in the
+  // terminal host) comes back with its screen, not blank.
   async subscribe(id, { onData, onExit }) {
-    const [{ invoke }, { listen }] = await Promise.all([
-      import("@tauri-apps/api/core"),
-      import("@tauri-apps/api/event"),
-    ]);
-    const [dataEvent, exitEvent] = await invoke<[string, string]>("terminal_event_names", { id });
-    const unlistenData = await listen<string>(dataEvent, (event) => onData(event.payload));
-    const unlistenExit = await listen(exitEvent, () => onExit());
+    const { invoke, Channel } = await import("@tauri-apps/api/core");
+    let stopped = false;
+    const onEvent = new Channel<{ kind: "data"; data: string } | { kind: "exit" }>();
+    onEvent.onmessage = (event) => {
+      if (stopped) return;
+      if (event.kind === "data") onData(event.data);
+      else onExit();
+    };
+    await invoke("terminal_subscribe", { id, onEvent });
     return () => {
-      unlistenData();
-      unlistenExit();
+      stopped = true;
     };
   },
 };

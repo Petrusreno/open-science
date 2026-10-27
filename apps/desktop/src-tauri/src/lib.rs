@@ -278,7 +278,7 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
-            terminal::terminal_event_names,
+            terminal::terminal_subscribe,
             terminal::terminal_probe,
             terminal_env::terminal_env_prune,
             runs::record_run,
@@ -335,9 +335,8 @@ pub fn run() {
                 ssh_session::shutdown(app);
                 // An ACP agent child must not outlive the window that started it.
                 acp::shutdown(app);
-                // A PTY child outlives its parent unless it is killed: quitting
-                // with an open terminal would leave a detached shell running.
-                terminal::close_all(&app.state::<terminal::TerminalState>());
+                // Terminals are left running on purpose: they live in the
+                // terminal host, and the next app reattaches them (terminal.rs).
                 status_bar::shutdown(&app.state::<status_bar::AwakeState>());
                 // A child webview is a native view over the window; it does not
                 // go away with the React tree that asked for it.

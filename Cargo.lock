@@ -2857,6 +2857,7 @@ dependencies = [
  "getrandom 0.4.3",
  "image",
  "notify",
+ "portable-pty",
  "reqwest",
  "rusqlite",
  "serde",

@@ -7,9 +7,11 @@ vi.mock("@/lib/tauri", () => ({ isTauri: true, isMacUA: () => true }));
 vi.mock("./terminalLinks", () => ({ registerTerminalLinks: () => ({ dispose() {} }) }));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => (cmd === "terminal_event_names" ? ["data", "exit"] : null)),
+  invoke: vi.fn(async () => null),
+  Channel: class {
+    onmessage: (message: unknown) => void = () => {};
+  },
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
 // The one xterm instance, and the key handler it was given when created.
 // `cols` is what the fit addon last measured; a test changes it to resize.

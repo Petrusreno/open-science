@@ -130,6 +130,9 @@ fn main() {
         "server" | "serve" => server::run(&args),
         "auth" => auth::run(&args),
         "account" => account::run(&args),
+        // Internal: the desktop app's terminal host (osd-core termd.rs), which
+        // the app starts on its own. Not in USAGE.
+        "termd" => termd(&args),
         "version" | "--version" => {
             println!("osd {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -154,4 +157,15 @@ pub fn env(args: &Args) -> Result<osd_core::Env, String> {
 fn fail(message: &str) -> ! {
     eprintln!("osd: {message}");
     std::process::exit(1);
+}
+
+/// The terminal host. Its own session first, so nothing aimed at the app's
+/// terminal or process group (a hangup, a Ctrl-C) reaches the shells it holds.
+fn termd(args: &Args) -> Result<(), String> {
+    let dir = args.value("dir").ok_or("termd needs --dir")?;
+    #[cfg(unix)]
+    unsafe {
+        libc::setsid();
+    }
+    osd_core::termd::serve(std::path::Path::new(&dir))
 }
