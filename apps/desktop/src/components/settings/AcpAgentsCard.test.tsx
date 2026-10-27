@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadAcpAgents, activeAcpAgentId } from "@/lib/acpAgents";
+import { useRuntimeStore } from "@/lib/runtime";
 import { AcpAgentsCard } from "./AcpAgentsCard";
 
 // The card edits the agent list and the default for new conversations; a
@@ -9,11 +10,15 @@ import { AcpAgentsCard } from "./AcpAgentsCard";
 const stopAcpAgent = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", () => ({ isTauri: true }));
-vi.mock("@/lib/runtime", () => ({ stopAcpAgent }));
+vi.mock("@/lib/runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/runtime")>()),
+  stopAcpAgent,
+}));
 
 beforeEach(() => {
   window.localStorage.clear();
   stopAcpAgent.mockClear();
+  useRuntimeStore.setState({ defaultRuntime: null });
 });
 
 describe("Settings → the agents conversations run on", () => {
@@ -46,7 +51,7 @@ describe("Settings → the agents conversations run on", () => {
       "ai4s.acp.agents.v1",
       JSON.stringify([{ id: "acp-1", name: "Gemini CLI", command: "gemini", args: ["--acp"] }]),
     );
-    window.localStorage.setItem("ai4s.acp.active.v1", "acp-1");
+    useRuntimeStore.getState().setDefaultRuntime("acp-1");
     render(<AcpAgentsCard />);
 
     expect(screen.getByRole("radio", { name: "Gemini CLI" })).toHaveAttribute("aria-checked", "true");

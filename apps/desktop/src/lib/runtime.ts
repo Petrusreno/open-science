@@ -67,6 +67,7 @@ import {
   loadAcpAgents,
   loadAcpSessions,
   saveAcpSessions,
+  setActiveAcpAgentId,
   type AcpSessionRecord,
 } from "./acpAgents";
 import { acpTransport } from "./acpTransport";
@@ -277,6 +278,9 @@ interface RuntimeState {
    *  draft with no entry starts on the default agent from Settings. */
   draftRuntimes: Record<string, string | null>;
   setDraftRuntime: (draftKey: string, agentId: string | null) => void;
+  /** The agent a new conversation starts on (Settings), or null for OpenCode. */
+  defaultRuntime: string | null;
+  setDefaultRuntime: (agentId: string | null) => void;
   /** List an ACP agent's existing session (one started in a terminal) as a
    *  conversation here, so opening it replays it on that agent. Its folder and
    *  title come from the agent's own list; `directory` is the fallback. */
@@ -636,6 +640,9 @@ const acpRuntimes = new Map<string, AcpRuntime>();
 /** Agents being started, so two sessions of one agent opened at once share
  *  one child (the Rust supervisor keeps one child per agent id). */
 const acpStarts = new Map<string, Promise<AcpRuntime>>();
+/** When each agent's session titles were last read (`refreshSessions`). */
+const acpTitleSyncAt = new Map<string, number>();
+const ACP_TITLE_SYNC_MS = 30_000;
 let openSessionSeq = 0;
 /** The model the user last DELIBERATELY switched to, and when. A switch does a
  *  masked reconnect, and connect() fires loadCatalog() un-awaited — so the
@@ -857,12 +864,12 @@ function clientForSession(get: StoreGet, sid: string): AgentRuntime | null {
  * the composer shows is what the first message runs on.
  */
 export function acpAgentFor(
-  s: Pick<RuntimeState, "acpSessions" | "draftRuntimes">,
+  s: Pick<RuntimeState, "acpSessions" | "draftRuntimes" | "defaultRuntime">,
   key: string,
 ): string | null {
   if (!isDraftKey(key)) return s.acpSessions[key]?.agentId ?? null;
   if (key in s.draftRuntimes) return s.draftRuntimes[key];
-  return activeAcpAgent()?.id ?? null;
+  return s.defaultRuntime;
 }
 
 /**
@@ -1140,7 +1147,7 @@ export async function startSessionScreen(projectId: string, agentId?: string): P
   // `agentId`: the conversation runs on that ACP agent. Without one it starts on
   // the default — set explicitly, since a reused blank draft may hold a pick.
   const aim = (leafId: string) =>
-    runtime.setDraftRuntime(draftKeyFor(leafId), agentId ?? activeAcpAgent()?.id ?? null);
+    runtime.setDraftRuntime(draftKeyFor(leafId), agentId ?? runtime.defaultRuntime);
   if (!project) {
     aim(openDraftScreen(DEFAULT_PROJECT));
     runtime.startDraft();
@@ -2747,6 +2754,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   draftRuntimes: {},
   setDraftRuntime: (draftKey, agentId) =>
     set((s) => ({ draftRuntimes: { ...s.draftRuntimes, [draftKey]: agentId } })),
+  // A saved default naming an agent no longer configured is OpenCode.
+  defaultRuntime: activeAcpAgent()?.id ?? null,
+  setDefaultRuntime: (agentId) => {
+    setActiveAcpAgentId(agentId);
+    set({ defaultRuntime: agentId });
+  },
   adoptAcpSession: async (agentId, sessionId, directory) => {
     // The folder matters beyond grouping: Claude Code files a session under the
     // folder it ran in, and resuming it from any other folder finds nothing.
@@ -4245,9 +4258,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     }
     // A running agent knows its sessions' current titles. Only the sessions this
     // app records are taken: the agent also lists every conversation it ever
-    // had (Claude Code: every terminal session on the machine).
-    for (const rt of acpRuntimes.values()) {
+    // had (Claude Code: every terminal session on the machine), which is also
+    // why this is asked at most every ACP_TITLE_SYNC_MS, not after every turn.
+    for (const [agentId, rt] of acpRuntimes) {
       if (rt.getStatus() !== "ready") continue;
+      const last = acpTitleSyncAt.get(agentId) ?? 0;
+      if (Date.now() - last < ACP_TITLE_SYNC_MS) continue;
+      acpTitleSyncAt.set(agentId, Date.now());
       let metas: SessionMeta[];
       try {
         metas = await rt.listSessions();

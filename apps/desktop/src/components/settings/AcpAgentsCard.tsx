@@ -3,16 +3,14 @@ import { useTranslation } from "react-i18next";
 import { Check, Pencil, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { isTauri } from "@/lib/tauri";
-import { stopAcpAgent } from "@/lib/runtime";
+import { stopAcpAgent, useRuntimeStore } from "@/lib/runtime";
 import {
   ACP_PRESETS,
-  activeAcpAgentId,
   formatCommandArgs,
   loadAcpAgents,
   newAcpAgentId,
   parseCommandArgs,
   saveAcpAgents,
-  setActiveAcpAgentId,
   type AcpAgentConfig,
 } from "@/lib/acpAgents";
 import { inputCls } from "./inputCls";
@@ -35,16 +33,15 @@ import { Section } from "./Section";
 export function AcpAgentsCard() {
   const { t } = useTranslation(["settings", "common"]);
   const [agents, setAgents] = useState<AcpAgentConfig[]>(() => loadAcpAgents());
-  const [selected, setSelected] = useState<string | null>(() => activeAcpAgentId());
+  const selected = useRuntimeStore((s) => s.defaultRuntime);
   const [editing, setEditing] = useState<AcpAgentConfig | null>(null);
   const [adding, setAdding] = useState(false);
   if (!isTauri) return null;
 
   const apply = (next: AcpAgentConfig[], nextSelected: string | null) => {
     saveAcpAgents(next);
-    setActiveAcpAgentId(nextSelected);
+    useRuntimeStore.getState().setDefaultRuntime(nextSelected);
     setAgents(next);
-    setSelected(nextSelected);
   };
 
   const select = (id: string | null) => {
