@@ -269,6 +269,12 @@ export interface PaneState {
   showTrajectory: boolean;
 }
 
+/** Where reading an agent's selectors stands (see `fetchAcpAgentOptions`). */
+export type AcpOptionsProbe =
+  | { status: "loading" }
+  | { status: "empty" }
+  | { status: "error"; error: string };
+
 interface RuntimeState {
   status: RuntimeStatus;
   serverUrl: string;
@@ -289,6 +295,12 @@ interface RuntimeState {
    *  the moment its agent creates it. */
   draftAcpPicks: Record<string, Record<string, string>>;
   setDraftAcpOption: (draftKey: string, configId: string, value: string) => void;
+  /** Reading an agent's selectors before its first conversation, by agent id:
+   *  absent once they are known (`acpAgentOptions`). */
+  acpOptionsProbe: Record<string, AcpOptionsProbe>;
+  /** Read an agent's selectors when none are known yet, so a new conversation
+   *  can choose its model before the first message. */
+  fetchAcpAgentOptions: (agentId: string) => Promise<void>;
   /** List an ACP agent's existing session (one started in a terminal) as a
    *  conversation here, so opening it replays it on that agent. Its folder and
    *  title come from the agent's own list; `directory` is the fallback. */
@@ -2803,6 +2815,29 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       return { draftRuntimes: { ...s.draftRuntimes, [draftKey]: agentId }, draftAcpPicks };
     }),
   acpAgentOptions: loadAcpAgentOptions(),
+  acpOptionsProbe: {},
+  fetchAcpAgentOptions: async (agentId) => {
+    const s = get();
+    if ((s.acpAgentOptions[agentId]?.length ?? 0) > 0 || s.acpOptionsProbe[agentId]?.status === "loading") return;
+    const cwd = s.workspace;
+    if (!cwd) return;
+    const mark = (probe: AcpOptionsProbe | null) =>
+      set((st) => {
+        const acpOptionsProbe = { ...st.acpOptionsProbe };
+        if (probe) acpOptionsProbe[agentId] = probe;
+        else delete acpOptionsProbe[agentId];
+        return { acpOptionsProbe };
+      });
+    mark({ status: "loading" });
+    try {
+      const rt = await startAcpRuntime(agentId, cwd);
+      const options = await rt.probeConfigOptions(cwd);
+      rememberAgentOptions(set, get, agentId, options);
+      mark(options.length > 0 ? null : { status: "empty" });
+    } catch (err) {
+      mark({ status: "error", error: err instanceof Error ? err.message : String(err) });
+    }
+  },
   draftAcpPicks: {},
   setDraftAcpOption: (draftKey, configId, value) =>
     set((s) => ({

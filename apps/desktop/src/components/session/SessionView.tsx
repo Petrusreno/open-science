@@ -199,6 +199,8 @@ export function SessionView({
   const acp = acpAgentId !== null;
   const setDraftRuntime = useRuntimeStore((s) => s.setDraftRuntime);
   const setDraftAcpOption = useRuntimeStore((s) => s.setDraftAcpOption);
+  const fetchAcpAgentOptions = useRuntimeStore((s) => s.fetchAcpAgentOptions);
+  const acpProbe = useRuntimeStore((s) => (acpAgentId ? s.acpOptionsProbe[acpAgentId] : undefined));
   // A new conversation's agent has no session yet, so its selectors are the
   // ones it last reported, with this draft's picks shown as chosen.
   const agentOptions = useRuntimeStore((s) => (acpAgentId ? s.acpAgentOptions[acpAgentId] : undefined));
@@ -1237,6 +1239,9 @@ export function SessionView({
                             ? void setAcpConfigOption(eid, configId, value)
                             : setDraftAcpOption(draftKey, configId, value),
                         busy: running,
+                        probe: acpProbe,
+                        onNeedOptions:
+                          !eid && acpAgentId ? () => void fetchAcpAgentOptions(acpAgentId) : undefined,
                       }
                     : undefined
                 }

@@ -165,8 +165,10 @@
       "aria": "智能体",
       "title": "智能体与模型",
       "locked": "换智能体请新建对话",
-      "optionsLater": "{{agent}} 启动后才会列出它的模型。发出第一条消息后，就能在这里选。",
-      "manage": "管理智能体"
+      "manage": "管理智能体",
+      "optionsLoading": "正在读取 {{agent}} 的模型…",
+      "optionsNone": "{{agent}} 没有提供可选的模型。",
+      "optionsFailed": "{{agent}} 没能启动：{{error}}"
     }
   },
   "localCommand": {

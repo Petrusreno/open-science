@@ -165,8 +165,10 @@
       "aria": "Agent",
       "title": "Agent et modèle",
       "locked": "Un autre agent dans une nouvelle conversation",
-      "optionsLater": "{{agent}} liste ses modèles une fois démarré. Après le premier message, le choix se fait ici.",
-      "manage": "Gérer les agents"
+      "manage": "Gérer les agents",
+      "optionsLoading": "Lecture des modèles de {{agent}}…",
+      "optionsNone": "{{agent}} ne propose aucun modèle au choix.",
+      "optionsFailed": "{{agent}} n’a pas démarré : {{error}}"
     }
   },
   "localCommand": {

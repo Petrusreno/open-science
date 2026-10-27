@@ -346,6 +346,34 @@ export class AcpRuntime extends BaseAgentRuntime implements AgentRuntime {
     return result.sessionId;
   }
 
+  /**
+   * The selectors a new session would offer (model, reasoning level, mode),
+   * read before there is one to offer them. ACP v1 reports them only with
+   * `session/new`, so this creates a session in `cwd`, reads them, and removes
+   * it again: `session/delete` where the agent supports it, else
+   * `session/close`. No connectors are passed: nothing runs in it. Measured on
+   * Claude Code (claude-agent-acp 0.97.0): about 1.5 s, and nothing is written
+   * for a session that never had a message.
+   */
+  async probeConfigOptions(cwd: string): Promise<AcpConfigOption[]> {
+    let result: AcpNewSessionResult;
+    try {
+      result = await this.peer.request<AcpNewSessionResult>("session/new", { cwd, mcpServers: [] });
+    } catch (err) {
+      throw this.explainAuthRequired(err);
+    }
+    const sessionId = result.sessionId;
+    const cleanup = this.supportsSessionDelete
+      ? "session/delete"
+      : this.agentCapabilities?.sessionCapabilities?.close !== undefined
+        ? "session/close"
+        : null;
+    // Not awaited: the options are already in hand, and an agent slow to tidy
+    // up must not hold the picker on its spinner.
+    if (cleanup) void this.peer.request(cleanup, { sessionId }).catch(() => {});
+    return result.configOptions ?? [];
+  }
+
   async forkSession(_sessionId: string, _messageId?: string): Promise<string> {
     throw new Error(`${this.displayName} does not support session forks`);
   }

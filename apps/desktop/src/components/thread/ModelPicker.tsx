@@ -22,7 +22,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { agentForTurn, useRuntimeStore } from "@/lib/runtime";
+import { agentForTurn, useRuntimeStore, type AcpOptionsProbe } from "@/lib/runtime";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { useAgentChoices } from "@/lib/agentChoices";
 import { cn } from "@/lib/cn";
@@ -229,6 +229,10 @@ export interface AgentControl {
   onOption: (configId: string, value: string) => void;
   /** A turn is running: the agent's selectors wait for it to end. */
   busy?: boolean;
+  /** Reading the selectors of an agent that has never reported any. */
+  probe?: AcpOptionsProbe;
+  /** Asked when the picker shows an agent with no selectors known yet. */
+  onNeedOptions?: () => void;
 }
 
 export function ModelPicker({
@@ -408,6 +412,13 @@ export function ModelPicker({
   // spec offers for it, else by the id agents use in practice.
   const acpModel = acpOptions.find((o) => o.category === "model") ?? acpOptions.find((o) => o.id === "model");
   const acpModelName = acpModel?.options?.find((v) => v.value === acpModel.currentValue)?.name;
+  // An agent shown with nothing to choose from: ask for its list now rather
+  // than make the user send a message first.
+  const needsOptions = open && acp && acpOptions.length === 0 && !agent?.probe;
+  const onNeedOptions = agent?.onNeedOptions;
+  useEffect(() => {
+    if (needsOptions) onNeedOptions?.();
+  }, [needsOptions, onNeedOptions, agent?.value]);
 
   const chipLabel = acp
     ? acpModelName
@@ -689,8 +700,25 @@ export function ModelPicker({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto pb-1">
         {acpOptions.length === 0 ? (
-          <p className="px-3 py-5 text-xs leading-relaxed text-muted">
-            {t("composer.agent.optionsLater", { agent: agentName })}
+          <p
+            className={cn(
+              "flex items-start gap-2 px-3 py-5 text-xs leading-relaxed",
+              agent?.probe?.status === "error" ? "text-error" : "text-muted",
+            )}
+          >
+            {agent?.probe?.status === "error" ? (
+              t("composer.agent.optionsFailed", { agent: agentName, error: agent.probe.error })
+            ) : agent?.probe?.status !== "loading" && !agent?.onNeedOptions ? (
+              // Nothing to read and nothing being read: the agent offered none.
+              t("composer.agent.optionsNone", { agent: agentName })
+            ) : agent?.probe?.status === "empty" ? (
+              t("composer.agent.optionsNone", { agent: agentName })
+            ) : (
+              <>
+                <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" />
+                {t("composer.agent.optionsLoading", { agent: agentName })}
+              </>
+            )}
           </p>
         ) : (
           acpOptions.map((option, i) => (

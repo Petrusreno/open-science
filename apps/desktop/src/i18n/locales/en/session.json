@@ -165,8 +165,10 @@
       "aria": "Agent",
       "title": "Agent and model",
       "locked": "New conversation to use another agent",
-      "optionsLater": "{{agent}} lists its models once it has started. Send a message, or pick here after the first one.",
-      "manage": "Manage agents"
+      "manage": "Manage agents",
+      "optionsLoading": "Reading {{agent}}'s models…",
+      "optionsNone": "{{agent}} offers no models to choose from.",
+      "optionsFailed": "{{agent}} did not start: {{error}}"
     }
   },
   "localCommand": {

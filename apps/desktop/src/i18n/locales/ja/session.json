@@ -165,8 +165,10 @@
       "aria": "エージェント",
       "title": "エージェントとモデル",
       "locked": "別のエージェントは新しい会話で",
-      "optionsLater": "{{agent}} は起動後にモデルを一覧にします。最初のメッセージを送ると、ここで選べます。",
-      "manage": "エージェントを管理"
+      "manage": "エージェントを管理",
+      "optionsLoading": "{{agent}} のモデルを読み込んでいます…",
+      "optionsNone": "{{agent}} には選べるモデルがありません。",
+      "optionsFailed": "{{agent}} を起動できませんでした：{{error}}"
     }
   },
   "localCommand": {

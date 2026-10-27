@@ -165,8 +165,10 @@
       "aria": "Agent",
       "title": "Agent und Modell",
       "locked": "Für einen anderen Agenten neue Unterhaltung",
-      "optionsLater": "{{agent}} zeigt seine Modelle, sobald er gestartet ist. Nach der ersten Nachricht kannst du hier wählen.",
-      "manage": "Agenten verwalten"
+      "manage": "Agenten verwalten",
+      "optionsLoading": "Modelle von {{agent}} werden gelesen…",
+      "optionsNone": "{{agent}} bietet keine Modelle zur Auswahl.",
+      "optionsFailed": "{{agent}} ist nicht gestartet: {{error}}"
     }
   },
   "localCommand": {

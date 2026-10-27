@@ -70,11 +70,26 @@ describe("ModelPicker with an agent", () => {
     expect(agent.onOption).toHaveBeenCalledWith("model", "sonnet");
   });
 
-  it("says when the agent will list its models, before it ever has", async () => {
+  it("asks for an agent's models the moment it is shown without any", async () => {
     const user = userEvent.setup();
-    renderPicker(control({ value: "cli-claude-code" }));
+    const onNeedOptions = vi.fn();
+    renderPicker(control({ value: "cli-claude-code", onNeedOptions }));
     await user.click(screen.getByRole("button", { name: /switch model/i }));
-    expect(screen.getByText(/Claude Code lists its models once it has started/)).toBeInTheDocument();
+    expect(onNeedOptions).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Reading Claude Code's models…")).toBeInTheDocument();
+  });
+
+  it("says why when the agent could not be read", async () => {
+    const user = userEvent.setup();
+    renderPicker(
+      control({
+        value: "cli-claude-code",
+        onNeedOptions: vi.fn(),
+        probe: { status: "error", error: "npx is not installed" },
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /switch model/i }));
+    expect(screen.getByText("Claude Code did not start: npx is not installed")).toBeInTheDocument();
   });
 
   it("keeps an existing conversation on its agent", async () => {

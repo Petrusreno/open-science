@@ -153,7 +153,8 @@ function fakeAgent() {
             ],
           },
         });
-      if (msg.method === "session/close") push({ jsonrpc: "2.0", id: msg.id, result: {} });
+      if (msg.method === "session/close" || msg.method === "session/delete")
+        push({ jsonrpc: "2.0", id: msg.id, result: {} });
       if (msg.method === "session/load") {
         // History arrives as notifications, then the request is answered.
         const sessionId = (msg.params as { sessionId: string }).sessionId;
@@ -427,6 +428,26 @@ describe("ACP conversations beside OpenCode", () => {
     expect(methods.indexOf("session/set_config_option")).toBeGreaterThan(methods.indexOf("session/new"));
     expect(methods.indexOf("session/set_config_option")).toBeLessThan(methods.indexOf("session/prompt"));
     expect(useRuntimeStore.getState().draftAcpPicks[draft]).toBeUndefined();
+  });
+
+  it("reads an agent's selectors before its first conversation, and leaves no session behind", async () => {
+    const { useRuntimeStore } = await freshStore(null);
+    await useRuntimeStore.getState().fetchAcpAgentOptions("acp-1");
+    expect(useRuntimeStore.getState().acpAgentOptions["acp-1"]).toEqual([MODEL_OPTION]);
+    expect(useRuntimeStore.getState().acpOptionsProbe["acp-1"]).toBeUndefined();
+    const sent = mocks.agent!.sent;
+    const created = sent.find((m) => m.method === "session/new");
+    // No connectors for a session nothing runs in.
+    expect((created?.params as { mcpServers: unknown[] }).mcpServers).toEqual([]);
+    expect(sent.find((m) => m.method === "session/delete")?.params).toEqual({ sessionId: "acp-session-1" });
+    expect(useRuntimeStore.getState().sessions.map((m) => m.id)).not.toContain("acp-session-1");
+  });
+
+  it("reports an agent whose selectors could not be read", async () => {
+    mocks.failStart = true;
+    const { useRuntimeStore } = await freshStore(null);
+    await useRuntimeStore.getState().fetchAcpAgentOptions("acp-1");
+    expect(useRuntimeStore.getState().acpOptionsProbe["acp-1"]).toMatchObject({ status: "error" });
   });
 
   it("drops a draft's picks when it switches agent", async () => {
