@@ -9,6 +9,7 @@ import { toast } from "@/lib/toast";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { draftKeyFor, useRuntimeStore } from "@/lib/runtime";
 import { startPaneDrag } from "@/lib/dragPane";
+import { terminalTransport } from "@/lib/terminalTransport";
 import { extOf } from "@/lib/artifacts";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { TerminalSenders } from "@/components/terminal/TerminalSenders";
@@ -70,8 +71,9 @@ export function ContentPane({
 
   /**
    * Continue the terminal's agent session as a conversation in the app, in the
-   * terminal's place, after the user confirms. The terminal closes: two
-   * processes writing one session would fork its history. The conversation
+   * terminal's place, after the user confirms. The terminal closes — and is
+   * stopped before the app takes the session: two processes writing one
+   * session would fork its history. The conversation
    * offers the way back (SessionView's terminal button).
    */
   const continueInApp = async (agent: TerminalAgent) => {
@@ -82,6 +84,10 @@ export function ContentPane({
       const folder = content.kind === "terminal" ? content.cwd : undefined;
       const fallback = folder ?? useRuntimeStore.getState().workspace;
       if (!fallback) throw new Error("No folder to resume this conversation in.");
+      // Stop the terminal's process first: while it runs, the app's agent and
+      // the CLI would both write this session's history. If it cannot be
+      // stopped, nothing is adopted and the terminal stays as it was.
+      await terminalTransport.close(leafId);
       await adoptAcpSession(entry.id, agent.sessionId, fallback);
       replacePane(leafId, { sessionId: agent.sessionId });
     } catch (err) {

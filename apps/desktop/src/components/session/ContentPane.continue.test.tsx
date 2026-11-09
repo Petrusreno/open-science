@@ -17,7 +17,21 @@ vi.mock("@/lib/tauri", async (importOriginal) => ({
   isTauri: true,
 }));
 
-const adoptAcpSession = vi.fn(async () => {});
+const order: string[] = [];
+const closePty = vi.fn(async (_id: string) => {
+  order.push("close terminal");
+});
+vi.mock("@/lib/terminalTransport", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/terminalTransport")>();
+  return {
+    ...actual,
+    terminalTransport: { ...actual.terminalTransport, close: (id: string) => closePty(id) },
+  };
+});
+
+const adoptAcpSession = vi.fn(async (..._args: string[]) => {
+  order.push("adopt");
+});
 
 function openTerminal(content: PaneContent) {
   useLayoutStore.setState({ groups: [], activeGroupId: "", tree: null, focusedLeafId: null });
@@ -32,6 +46,8 @@ describe("continuing a terminal agent as a conversation", () => {
     await i18n.changeLanguage("en");
     window.localStorage.clear();
     adoptAcpSession.mockClear();
+    closePty.mockClear();
+    order.length = 0;
     useRuntimeStore.setState({ adoptAcpSession });
   });
 
@@ -60,6 +76,36 @@ describe("continuing a terminal agent as a conversation", () => {
     // The terminal is gone (its shell closes with it); the conversation is there.
     expect(all.some((l) => l.id === leafId)).toBe(false);
     expect(all.map((l) => l.sessionId)).toEqual(["0b1c2d3e-aaaa"]);
+  });
+
+  it("ends the terminal's process before the app adopts its session", async () => {
+    const user = userEvent.setup();
+    const leafId = openTerminal({
+      kind: "terminal",
+      cwd: "/ws/project",
+      agent: { kind: "claude", sessionId: "0b1c2d3e-aaaa", running: true },
+    });
+    await user.click(screen.getByRole("button", { name: "Open as conversation" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Open as conversation" }));
+    await waitFor(() => expect(adoptAcpSession).toHaveBeenCalled());
+    // Two processes on one history would fork it: the origin stops first.
+    expect(order).toEqual(["close terminal", "adopt"]);
+    expect(closePty).toHaveBeenCalledWith(leafId);
+  });
+
+  it("does not adopt while the terminal could not be stopped", async () => {
+    const user = userEvent.setup();
+    closePty.mockRejectedValueOnce(new Error("host unreachable"));
+    const leafId = openTerminal({
+      kind: "terminal",
+      cwd: "/ws/project",
+      agent: { kind: "codex", sessionId: "019a", running: true },
+    });
+    await user.click(screen.getByRole("button", { name: "Open as conversation" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Open as conversation" }));
+    await waitFor(() => expect(closePty).toHaveBeenCalled());
+    expect(adoptAcpSession).not.toHaveBeenCalled();
+    expect(leaves(useLayoutStore.getState().tree!).map((l) => l.id)).toEqual([leafId]);
   });
 
   it("leaves the terminal alone when the user cancels", async () => {
