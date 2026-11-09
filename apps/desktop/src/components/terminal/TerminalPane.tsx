@@ -20,6 +20,7 @@ import {
 import {
   findLeaf,
   resumeCommand,
+  terminalAgentName,
   terminalStartup,
   useLayoutStore,
   type TerminalAgent,
@@ -27,7 +28,8 @@ import {
 import { registerTerminalLinks } from "./terminalLinks";
 import { TerminalSearch } from "./TerminalSearch";
 import { isJumpChord } from "@/components/jump-palette/JumpPalette";
-import { createKeyTranslator } from "./terminalKeys";
+import { createKeyTranslator, isModifierKey, releaseImeGate } from "./terminalKeys";
+import { readRepaint, spliceRepaint, type Repaint } from "./terminalResize";
 
 /**
  * A real shell in a pane.
@@ -106,8 +108,8 @@ export function TerminalPane({
     // what the user had half-typed — is still there.
     const existing = getTerminal(leafId);
     if (existing) {
+      // Its new box reaches the shell through the resize observer.
       parent.appendChild(existing.container);
-      existing.fit.fit();
       existing.term.focus();
       return () => {
         // Park it, do not destroy it. Destruction belongs to the layout, which
@@ -130,11 +132,13 @@ export function TerminalPane({
         import("@xterm/addon-unicode11"),
         import("@xterm/addon-webgl"),
         import("@xterm/xterm/css/xterm.css"),
+        loadTerminalFont(),
       ]);
       if (disposed) return;
 
       const container = document.createElement("div");
-      container.className = "h-full w-full";
+      // Clips the old grid while a resize waits to be applied.
+      container.className = "h-full w-full overflow-hidden";
       parent.appendChild(container);
 
       const term = new Terminal({
@@ -158,6 +162,7 @@ export function TerminalPane({
         // Keys a native terminal sends differently (Shift+Enter, Option as
         // Meta, ⌘←/→/⌫) — see terminalKeys.
         const translated = translateKey(event);
+        if (event.type === "keydown" && isModifierKey(event)) releaseImeGate(term);
         if (translated === false) return false;
         if (translated !== null) {
           event.preventDefault();
@@ -218,8 +223,23 @@ export function TerminalPane({
       });
 
       const created = await terminalTransport.open(leafId, cwd, term.cols, term.rows);
+      // Output that answers a resize the pane is still applying; see below.
+      let reply: {
+        cols: number;
+        rows: number;
+        data: string;
+        timer: ReturnType<typeof setTimeout>;
+        /** The repaint is being written; later output only queues. */
+        writing: boolean;
+      } | null = null;
       const unsubscribe = await terminalTransport.subscribe(leafId, {
-        onData: (chunk) => term.write(chunk),
+        onData: (chunk) => {
+          if (!reply) return term.write(chunk);
+          reply.data += chunk;
+          if (reply.writing) return;
+          const repaint = readRepaint(reply.data, reply.rows);
+          if (repaint) applyResize(repaint);
+        },
         onExit: () => term.write(`\r\n${t("terminal.exited")}\r\n`),
         onReset: () => term.reset(),
       });
@@ -233,25 +253,60 @@ export function TerminalPane({
       // The pane is resizable and tiled; the shell has to be told, or every
       // full-screen program keeps drawing into the old box.
       //
-      // Coalesced to one frame, and the shell is told only when the GRID
-      // changed. Collapsing the sidebar animates a width for 200ms, which fires
-      // this a dozen times per terminal; each call re-measures the DOM
-      // synchronously and used to cross into Rust for a PTY ioctl, so a window
-      // with a few terminals in it visibly stuttered for the whole animation.
+      // Applied once, to the grid the pane SETTLES on: collapsing the sidebar
+      // animates a width for 200ms, and each step would re-measure the DOM and
+      // make Claude Code repaint its conversation.
       //
-      // The shell hears only the grid the pane SETTLES on. Claude Code and
-      // Codex repaint their whole conversation on every width change and never
-      // clear the scrollback, so an animation that walks the width down one
-      // column per frame left a dozen stacked copies of it above the prompt.
-      // xterm still refits every frame; only the PTY waits for a quiet moment.
+      // xterm waits too, until the program answers. Claude Code answers with a
+      // repaint of its latest turn, which would land on top of the copy
+      // already here; it is spliced in instead (see `spliceRepaint`), the old
+      // rows it replaces erased BEFORE xterm re-wraps them. Any other program
+      // (a shell prompt, vim) prints no such repaint: after RESIZE_REPLY_MS its
+      // output is written after the resize, as before.
       let queued = 0;
       let settle: ReturnType<typeof setTimeout> | undefined;
       let sent = { cols: term.cols, rows: term.rows };
+      const applyResize = (repaint: Repaint | null) => {
+        if (!reply || reply.writing) return;
+        const { cols, rows, data, timer } = reply;
+        clearTimeout(timer);
+        const resizeAndWrite = (text: string) => {
+          reply = null;
+          term.resize(cols, rows);
+          term.write(text);
+        };
+        if (repaint === null) return resizeAndWrite(data);
+        // Output arriving meanwhile queues behind the repaint.
+        reply.data = "";
+        reply.writing = true;
+        term.write(repaint.before, () => {
+          const buffer = term.buffer.active;
+          const screen = Array.from(
+            { length: term.rows },
+            (_, y) => buffer.getLine(buffer.baseY + y)?.translateToString(true) ?? "",
+          );
+          const splice = spliceRepaint(repaint, screen);
+          term.write(splice.clear, () => resizeAndWrite(splice.repaint + (reply?.data ?? "")));
+        });
+      };
       const tellShell = () => {
         settle = undefined;
-        if (term.cols === sent.cols && term.rows === sent.rows) return;
-        sent = { cols: term.cols, rows: term.rows };
-        void terminalTransport.resize(leafId, term.cols, term.rows);
+        if (reply?.writing) {
+          settle = setTimeout(tellShell, RESIZE_SETTLE_MS);
+          return;
+        }
+        const size = fit.proposeDimensions();
+        if (!size || (size.cols === sent.cols && size.rows === sent.rows)) return;
+        applyResize(null);
+        sent = { cols: size.cols, rows: size.rows };
+        reply = {
+          ...sent,
+          data: "",
+          writing: false,
+          // A program that prints nothing, or only part of a repaint.
+          timer: setTimeout(() => applyResize(null), RESIZE_REPLY_MS),
+        };
+        void terminalTransport.resize(leafId, size.cols, size.rows);
       };
       const observer = new ResizeObserver(() => {
         if (queued) return;
@@ -265,12 +320,18 @@ export function TerminalPane({
             !container.clientHeight
           )
             return;
-          fit.fit();
           clearTimeout(settle);
           settle = setTimeout(tellShell, RESIZE_SETTLE_MS);
         });
       });
       observer.observe(container);
+
+      // Follows the theme as it changes (Settings, or the system's light/dark
+      // when the theme is "system"), not just the one it opened in.
+      const themeWatch = new MutationObserver(() => {
+        term.options.theme = readTheme();
+      });
+      themeWatch.observe(document.documentElement, { attributeFilter: ["data-theme"] });
 
       // Sent once, on the pane's FIRST open — never on a remount, which would
       // re-run it over whatever the user is doing in that shell.
@@ -292,8 +353,10 @@ export function TerminalPane({
           input.dispose();
           links.dispose();
           observer.disconnect();
+          themeWatch.disconnect();
           if (queued) cancelAnimationFrame(queued);
           clearTimeout(settle);
+          if (reply) clearTimeout(reply.timer);
         },
       });
       if (disposed) container.remove();
@@ -379,7 +442,7 @@ export function TerminalPane({
           }}
         >
           {t("terminal.menu.resumeAgent", {
-            agent: agent.kind === "claude" ? "Claude Code" : "Codex",
+            agent: terminalAgentName(agent.kind),
           })}
         </ContextMenuItem>
       )}
@@ -462,6 +525,10 @@ const findControls = new Map<string, FindControls>();
  *  longer than a frame, shorter than a person notices after letting go. */
 const RESIZE_SETTLE_MS = 150;
 
+/** How long a resize waits for Claude Code's repaint before xterm resizes
+ *  anyway. Claude Code answers within 10ms; a shell waits this long. */
+const RESIZE_REPLY_MS = 100;
+
 /**
  * Terminal defaults, borrowed from Orca's `lib/pane-manager/pane-terminal-options.ts`
  * (MIT) — a set of settings it arrived at the hard way, each for a reason worth
@@ -504,6 +571,21 @@ const TERMINAL_OPTIONS = {
   drawBoldTextInBrightColors: true,
 } as const;
 
+/** Waits for the terminal's own font before a terminal opens. xterm measures
+ *  its cell when it opens and again on every resize, and JetBrains Mono is a
+ *  web font that loads on first use. A pane opened before it arrived (the
+ *  restored layout at launch) measured a fallback font; its next resize
+ *  measured the taller real one but kept the row count, so the bottom rows,
+ *  Claude Code's input box among them, sat below the pane where no scrolling
+ *  reaches them. */
+function loadTerminalFont(): Promise<unknown> {
+  if (!document.fonts) return Promise.resolve();
+  const { fontSize, fontFamily, fontWeight, fontWeightBold } = TERMINAL_OPTIONS;
+  return Promise.all(
+    [fontWeight, fontWeightBold].map((w) => document.fonts.load(`${w} ${fontSize}px ${fontFamily}`)),
+  ).catch(() => undefined);
+}
+
 /** Clipboard reads and Finder, kept out of the menu body so it reads as a list
  *  of actions rather than a list of dynamic imports. */
 function canReadClipboard(): boolean {
@@ -522,15 +604,18 @@ async function revealPath(path: string): Promise<void> {
 }
 
 /** xterm paints its own canvas, so it cannot inherit CSS variables — the
- *  current values are read once and handed over. */
+ *  current values are read and handed over, again on every theme change. */
 function readTheme() {
   const style = getComputedStyle(document.documentElement);
   const value = (name: string, fallback: string) =>
     style.getPropertyValue(name).trim() || fallback;
+  const accent = value("--accent", "#c15f3c");
   return {
     background: value("--surface", "#ffffff"),
     foreground: value("--text", "#2a2723"),
-    cursor: value("--accent", "#c15f3c"),
-    selectionBackground: value("--surface-2", "#f2efe7"),
+    cursor: accent,
+    // Accent at 30% (hex alpha 4d): agents paint the input line in a pale
+    // surface tone, so a surface-coloured selection would vanish on it.
+    selectionBackground: `${accent}4d`,
   };
 }

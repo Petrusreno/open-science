@@ -122,11 +122,17 @@ export function LiveSessionPage() {
   // pane. Read fresh layout state so this reacts only to real URL changes.
   const urlId = params.sessionId ?? null;
   useEffect(() => {
+    // A bare "/live" names no session, so it says nothing about any pane. It is
+    // where every launch lands (the index route redirects here), and binding
+    // that "nothing" onto the focused pane turned the restored conversation
+    // into a new draft on every relaunch. Whoever wants a draft makes one
+    // before navigating here (/new, /clear, "New").
+    if (!urlId) return;
     const st = useLayoutStore.getState();
     const leaf = st.tree && st.focusedLeafId ? findLeaf(st.tree, st.focusedLeafId) : null;
-    if ((leaf?.sessionId ?? null) === urlId) return;
+    if (leaf?.sessionId === urlId) return;
     // Already shown in the ACTIVE group → just focus that pane.
-    if (urlId && st.tree) {
+    if (st.tree) {
       const inActive = leaves(st.tree).find((l) => l.sessionId === urlId);
       if (inActive) {
         st.focusLeaf(inActive.id);
@@ -135,20 +141,18 @@ export function LiveSessionPage() {
     }
     // Shown in ANOTHER group (e.g. Back after a group switch) → switch to that
     // group and focus it, rather than clobbering the active group's pane.
-    if (urlId) {
-      for (const g of st.groups) {
-        if (g.id === st.activeGroupId || !g.tree) continue;
-        const hit = leaves(g.tree).find((l) => l.sessionId === urlId);
-        if (hit) {
-          st.setActiveGroup(g.id);
-          st.focusLeaf(hit.id);
-          return;
-        }
+    for (const g of st.groups) {
+      if (g.id === st.activeGroupId || !g.tree) continue;
+      const hit = leaves(g.tree).find((l) => l.sessionId === urlId);
+      if (hit) {
+        st.setActiveGroup(g.id);
+        st.focusLeaf(hit.id);
+        return;
       }
     }
     // Brand-new target: fill an empty group, else bind onto the active focus.
     if (!st.tree || !st.focusedLeafId) {
-      if (urlId) st.reset(urlId);
+      st.reset(urlId);
       return;
     }
     st.bindSession(st.focusedLeafId, urlId);
@@ -208,9 +212,28 @@ export function LiveSessionPage() {
   }, [runningCount, reconcileRunning]);
 
   // Drop tiled panes whose session was deleted, collapsing toward one pane.
+  // The list is only a recent window (and can come back partial while the
+  // runtime starts), so a pane's session missing from it is asked about
+  // directly; only a confirmed deletion closes the pane.
   useEffect(() => {
     if (sessions.length === 0) return;
-    pruneSessions(new Set(sessions.map((s) => s.id)));
+    const listed = new Set(sessions.map((s) => s.id));
+    const missing = new Set<string>();
+    for (const g of useLayoutStore.getState().groups) {
+      if (!g.tree) continue;
+      for (const l of leaves(g.tree)) if (l.sessionId && !listed.has(l.sessionId)) missing.add(l.sessionId);
+    }
+    if (missing.size === 0) return;
+    let cancelled = false;
+    void useRuntimeStore
+      .getState()
+      .findDeletedSessions([...missing])
+      .then((gone) => {
+        if (!cancelled && gone.size > 0) pruneSessions(gone);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [sessions, pruneSessions]);
 
   // File Screens under their projects once both lists are in: Screens saved

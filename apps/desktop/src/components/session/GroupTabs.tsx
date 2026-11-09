@@ -33,7 +33,7 @@ import { isTauri } from "@/lib/tauri";
 import { isGatewayWeb, layoutSource, type LayoutSource } from "@/lib/webMode";
 import { switchLayoutSource } from "@/lib/layoutSync";
 import { startSessionScreen, useRuntimeStore } from "@/lib/runtime";
-import { detectCliAgents, selectCliAgent, type CliAgent } from "@/lib/cliAgents";
+import { detectCliAgentsOnce, ensureCliAgent, type CliAgent } from "@/lib/cliAgents";
 import { useOverlayTitlebar, useUiStore } from "@/lib/store";
 import { overlayTitlebarStyle } from "@/lib/titlebar";
 import { cn } from "@/lib/cn";
@@ -59,7 +59,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
  * on PATH (`lib/cliAgents.ts`), so the menu describes THIS machine rather than a
  * fixed list of things that might not be installed.
  */
-function NewScreenButton({ onNewScreen }: { onNewScreen: () => void }) {
+function NewScreenButton({ onNewScreen }: { onNewScreen: (agentId?: string) => void }) {
   const { t } = useTranslation(["session", "nav"]);
   const [agents, setAgents] = useState<CliAgent[]>([]);
   const [busy, setBusy] = useState(false);
@@ -73,7 +73,7 @@ function NewScreenButton({ onNewScreen }: { onNewScreen: () => void }) {
   // every open would put a filesystem walk behind a menu.
   useEffect(() => {
     let cancelled = false;
-    void detectCliAgents().then((found) => {
+    void detectCliAgentsOnce().then((found) => {
       if (!cancelled) setAgents(found);
     });
     return () => {
@@ -97,14 +97,11 @@ function NewScreenButton({ onNewScreen }: { onNewScreen: () => void }) {
     }
   };
 
-  const run = async (agent: CliAgent) => {
-    setBusy(true);
-    selectCliAgent(agent);
-    onNewScreen();
-    // The runtime is chosen when the connection is made, so switching agents
-    // means reconnecting — the same path Settings uses.
-    await useRuntimeStore.getState().connectRetry(8);
-    setBusy(false);
+  /** A new conversation on this agent. Only that conversation runs on it;
+   *  every other one keeps its own agent. */
+  const run = (agent: CliAgent) => {
+    ensureCliAgent(agent);
+    onNewScreen(agent.id);
   };
 
   return (
@@ -126,7 +123,7 @@ function NewScreenButton({ onNewScreen }: { onNewScreen: () => void }) {
           className="z-50 min-w-[220px] rounded-card border border-border bg-surface p-1 text-[13px] text-text shadow-pop"
         >
           <DropdownMenu.Item
-            onSelect={onNewScreen}
+            onSelect={() => onNewScreen()}
             className="flex cursor-pointer items-center gap-2 rounded-input px-2 py-1.5 outline-none data-[highlighted]:bg-surface-2"
           >
             <Plus size={13} className="shrink-0 text-muted" />
@@ -556,7 +553,7 @@ export function GroupTabs() {
           })}
           {/* A new Screen is a new conversation in this project — never an
               empty Screen the user then has to fill. */}
-          <NewScreenButton onNewScreen={() => void startSessionScreen(projectId)} />
+          <NewScreenButton onNewScreen={(agentId) => void startSessionScreen(projectId, agentId)} />
         </div>
       </div>
       {confirmCloseId && (

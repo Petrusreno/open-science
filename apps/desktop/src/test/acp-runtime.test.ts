@@ -632,7 +632,7 @@ describe("AcpRuntime", () => {
     await runtime.connect();
 
     await expect(runtime.createSession()).rejects.toThrow(
-      /Codex is not signed in: Not logged in\. Its sign-in is its own — run the agent's login command in a terminal \(it offers ChatGPT\), then reconnect/,
+      /Codex is not signed in: Not logged in\. Its sign-in is its own — run the agent's login command in a terminal \(it offers ChatGPT\), then send the message again/
     );
   });
 

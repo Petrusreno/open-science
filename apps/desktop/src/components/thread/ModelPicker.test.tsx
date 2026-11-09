@@ -197,10 +197,16 @@ describe("ModelPicker", () => {
       expect(within(dialog).getByText(/Ling 3.0 Flash \(free\)/)).toBeInTheDocument();
     });
 
+    it("warns on the chip itself, before the picker is opened", () => {
+      renderPicker();
+      expect(chip()).toHaveAttribute("title", expect.stringMatching(/retired by its provider/i));
+    });
+
     it("says nothing once a served model is chosen", async () => {
       useRuntimeStore.setState({ defaultModel: "opencode/hy3-free" });
       const user = userEvent.setup();
       renderPicker();
+      expect(chip()).not.toHaveAttribute("title", expect.stringMatching(/retired/i));
       await user.click(chip());
       expect(within(screen.getByRole("dialog")).queryByText(/retired by its provider/i)).toBeNull();
     });

@@ -262,3 +262,18 @@ describe("OpenCodeClient session edits", () => {
     expect(calls).toEqual(["/session"]);
   });
 });
+
+describe("sessionExists", () => {
+  const client = (status: number) =>
+    new OpenCodeClient({ baseUrl: BASE, fetchImpl: vi.fn(async () => new Response("{}", { status })) as never });
+
+  it("answers from the session itself, not the recent list", async () => {
+    await expect(client(200).sessionExists("ses_old")).resolves.toBe(true);
+    await expect(client(404).sessionExists("ses_gone")).resolves.toBe(false);
+  });
+
+  it("throws when the runtime cannot answer, so the caller keeps the pane", async () => {
+    await expect(client(500).sessionExists("ses_x")).rejects.toThrow();
+  });
+});
+

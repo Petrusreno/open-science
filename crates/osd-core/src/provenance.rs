@@ -431,7 +431,7 @@ fn first_token(s: &str) -> String {
 
 /// Normalize an artifact path (absolute or relative, from tool input) to a
 /// workspace-relative `/`-separated key. Paths escaping the workspace are rejected.
-fn normalize_rel(root: &Path, path: &str) -> Result<String, String> {
+pub(crate) fn normalize_rel(root: &Path, path: &str) -> Result<String, String> {
     let p = Path::new(path);
     let rel: PathBuf = if p.is_absolute() {
         let stripped = match (p.canonicalize(), root.canonicalize()) {
@@ -471,6 +471,18 @@ fn read_all(file: &Path) -> Vec<ProvenanceRecord> {
         .collect()
 }
 
+fn read_records(root: &Path) -> Result<Vec<ProvenanceRecord>, String> {
+    if crate::ledger_v1::enabled(root) { crate::ledger_v1::provenance(root) }
+    else { Ok(read_all(&store_file(root))) }
+}
+
+/// Export the active local provenance source for tools that cannot use the UI.
+/// A migrated workspace reads committed SQLite records; legacy workspaces read
+/// the existing JSONL. Transactional storage errors are never hidden.
+pub fn all_records_for(root: &Path) -> Result<Vec<ProvenanceRecord>, String> {
+    read_records(root)
+}
+
 fn cap_content(mut c: String) -> String {
     if c.len() > CONTENT_CAP {
         let mut end = CONTENT_CAP;
@@ -501,12 +513,18 @@ pub fn append_record(
 ) -> Result<ProvenanceRecord, String> {
     let rel = normalize_rel(root, path)?;
     let guard = lock_ledger(root)?;
+    let transactional = crate::ledger_v1::enabled(root);
+    if transactional && (tool == "run" || run_id.is_some()) {
+        return Err("transactional ledger requires record_run_inner for atomic links".into());
+    }
     let file = store_file(root);
-    let existing: Vec<ProvenanceRecord> = read_all(&file).into_iter().filter(|r| r.path == rel).collect();
+    let existing: Vec<ProvenanceRecord> = if transactional { read_records(root)? } else { read_all(&file) }
+        .into_iter().filter(|r| r.path == rel).collect();
     if let Some(done) = existing.iter().find(|r| call_id.is_some() && r.call_id == call_id) {
         return Ok(done.clone());
     }
-    let version = existing.iter().map(|r| r.version).max().unwrap_or(0) + 1;
+    let latest = existing.iter().map(|r| r.version).max().unwrap_or(0);
+    let version = if transactional { latest.checked_add(1).ok_or("provenance version overflow")? } else { latest + 1 };
     let record = ProvenanceRecord {
         path: rel,
         version,
@@ -524,6 +542,10 @@ pub fn append_record(
         run_id,
         call_id,
     };
+    if transactional {
+        crate::ledger_v1::append(root, &record)?;
+        return Ok(record);
+    }
     let line = serde_json::to_string(&record).map_err(|e| e.to_string())?;
     append_jsonl(&guard, &file, format!("{line}\n").as_bytes(), "provenance")?;
     Ok(record)
@@ -550,8 +572,7 @@ pub fn link_run_outputs(
     link_run_outputs_locked(&guard, root, paths, session_id, model, log, env, run_id)
 }
 
-/// `link_run_outputs` for a caller already holding the ledger lock (run
-/// recording holds it across runs.jsonl and these links).
+/// `link_run_outputs` for a caller already holding the ledger lock.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn link_run_outputs_locked(
     guard: &LedgerGuard,
@@ -563,6 +584,9 @@ pub(crate) fn link_run_outputs_locked(
     env: Option<EnvInfo>,
     run_id: String,
 ) -> Result<(), String> {
+    if crate::ledger_v1::enabled(root) {
+        return Err("transactional ledger requires record_run_inner for atomic links".into());
+    }
     let file = store_file(root);
     // Read once; compute current versions and skip links already committed for
     // this run. If an earlier write partially succeeded, a retry completes only
@@ -613,7 +637,7 @@ pub(crate) fn link_run_outputs_locked(
 /// All recorded versions of one artifact, oldest first.
 pub fn versions_for(root: &Path, path: &str) -> Result<Vec<ProvenanceRecord>, String> {
     let rel = normalize_rel(root, path)?;
-    let mut v: Vec<ProvenanceRecord> = read_all(&store_file(root))
+    let mut v: Vec<ProvenanceRecord> = read_records(root)?
         .into_iter()
         .filter(|r| r.path == rel)
         .collect();
@@ -711,6 +735,15 @@ mod tests {
         assert_eq!(versions.iter().map(|v| v.version).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(versions[1].run_id.as_deref(), Some("run-1"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn child_append_waits_for_workspace_lock() {
+        let Ok(root) = std::env::var("OSD_LEDGER_TEST_ROOT") else { return; };
+        let root = std::path::Path::new(&root);
+        let path = std::env::var("OSD_LEDGER_TEST_PATH").unwrap_or_else(|_| "figure.svg".into());
+        std::fs::write(root.join(".openscience/child-ready"), "ready").unwrap();
+        append_record(root, &path, "write", None, None, None, None, None, None, None, None).unwrap();
     }
 
     #[test]

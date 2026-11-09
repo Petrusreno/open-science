@@ -74,9 +74,9 @@
   },
   "acp": {
     "title": "智能体",
-    "hint": "本应用驱动哪个智能体：内置的 OpenCode 运行时，或任何通过 stdio 使用 Agent Client Protocol（ACP）的智能体。",
+    "hint": "对话可以由哪些智能体运行，以及新对话默认用哪个。在输入框里可以为每个对话单独选。",
     "bundled": "OpenCode（内置）",
-    "bundledHint": "默认运行时——模型供应商、技能、计划模式与已保存的会话。",
+    "bundledHint": "内置运行时，含模型供应商、技能、计划模式与已保存的会话。",
     "add": "添加智能体",
     "edit": "编辑",
     "remove": "删除",
@@ -86,9 +86,7 @@
     "commandPlaceholder": "命令（npx、gemini…）",
     "argsLabel": "参数",
     "argsPlaceholder": "参数（-y @agentclientprotocol/codex-acp）",
-    "limits": "ACP 智能体以命令形式运行在本机的当前工作区文件夹中。它自行管理模型、技能与历史记录，因此模型选择器、计划模式和已保存的会话仍属于 OpenCode——在 ACP 智能体上创建的会话仅在应用运行期间列出。",
-    "running": "已连接到 ACP 智能体。",
-    "starting": "正在启动 ACP 智能体…"
+    "limits": "ACP 智能体以命令形式在本机运行，工作在对话所在的文件夹里，和 OpenCode 并存。它自行管理模型、命令和历史记录，所以模型选择器和计划模式只用于 OpenCode 对话。"
   },
   "updates": {
     "title": "应用更新",

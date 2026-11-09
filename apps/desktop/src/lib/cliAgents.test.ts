@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CLI_AGENTS, detectCliAgents, selectCliAgent } from "./cliAgents";
+import { CLI_AGENTS, detectCliAgents, ensureCliAgent } from "./cliAgents";
 import { activeAcpAgentId, loadAcpAgents, saveAcpAgents } from "./acpAgents";
 
 const invoke = vi.fn();
@@ -38,22 +38,20 @@ describe("choosing an agent to run", () => {
     window.localStorage.clear();
   });
 
-  it("creates the entry on first use and makes it the active one", () => {
+  it("creates the entry on first use without changing the default agent", () => {
     const codex = CLI_AGENTS.find((a) => a.id === "cli-codex")!;
 
-    const next = selectCliAgent(codex);
+    const entry = ensureCliAgent(codex);
 
-    expect(next).toEqual([
-      { id: "cli-codex", name: "Codex", command: codex.command, args: codex.args },
-    ]);
-    expect(loadAcpAgents()).toEqual(next);
-    expect(activeAcpAgentId()).toBe("cli-codex");
+    expect(entry).toEqual({ id: "cli-codex", name: "Codex", command: codex.command, args: codex.args });
+    expect(loadAcpAgents()).toEqual([entry]);
+    expect(activeAcpAgentId()).toBeNull();
   });
 
   it("leaves a user's own entries alone", () => {
     saveAcpAgents([{ id: "mine", name: "My agent", command: "my-agent", args: [] }]);
 
-    selectCliAgent(CLI_AGENTS[0]);
+    ensureCliAgent(CLI_AGENTS[0]);
 
     expect(loadAcpAgents().map((a) => a.id)).toEqual(["mine", CLI_AGENTS[0].id]);
   });
@@ -62,7 +60,7 @@ describe("choosing an agent to run", () => {
     const claude = CLI_AGENTS.find((a) => a.id === "cli-claude-code")!;
     saveAcpAgents([{ id: claude.id, name: claude.name, command: "stale-command", args: [] }]);
 
-    selectCliAgent(claude);
+    ensureCliAgent(claude);
 
     expect(loadAcpAgents()).toEqual([
       { id: claude.id, name: claude.name, command: claude.command, args: claude.args },

@@ -73,8 +73,10 @@ pub fn detect_commands(commands: &[String], path_var: Option<&str>) -> Vec<Strin
 }
 
 /// `detect_commands` against this process's own PATH.
+/// Installed means runnable by what the app starts: looked up on the same PATH
+/// its child processes get, so a command found here is one that will start.
 pub fn detect_installed(commands: &[String]) -> Vec<String> {
-    detect_commands(commands, std::env::var("PATH").ok().as_deref())
+    detect_commands(commands, Some(&crate::runtime::enriched_path()))
 }
 
 #[cfg(test)]

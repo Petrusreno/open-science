@@ -648,6 +648,16 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     return { sessions, nextCursor };
   }
 
+  async sessionExists(sessionId: string): Promise<boolean> {
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}`,
+      { headers: this.headers() },
+    );
+    if (res.status === 404) return false;
+    if (!res.ok) throw await this.apiError(res, "Failed to read the session");
+    return true;
+  }
+
   /** Archive a conversation (or restore it with `false`). Recorded in the
    *  session's `metadata`, preserving anything else stored there. */
   async setSessionArchived(sessionId: string, archived: boolean): Promise<void> {
@@ -939,6 +949,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
             name?: string;
             variants?: Record<string, unknown>;
             limit?: { context?: number };
+            cost?: { input?: number; output?: number };
           }
         >;
       }>;
@@ -953,6 +964,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         // 0 and "absent" mean the same thing here — OpenCode reports an unknown
         // window as 0 — so normalise to 0 and let callers test one value.
         contextLimit: m.limit?.context ?? 0,
+        ...(m.cost ? { free: m.cost.input === 0 && m.cost.output === 0 } : {}),
       })),
     }));
   }

@@ -6,7 +6,7 @@
 // per line under the user's home, keyed by their session id — which the
 // desktop already probes for every terminal (`terminal_probe.rs`) and keeps on
 // the pane. A plain shell has no transcript; its recent output is read instead,
-// with the escape sequences taken out.
+// replayed through a terminal emulator of the pane's size.
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
@@ -217,50 +217,28 @@ pub fn transcript(home: &Path, agent: &str, session_id: &str, turns: usize) -> O
     Some(Transcript { agent: agent.to_string(), busy, entries })
 }
 
-/// A shell's output as text: escape sequences removed, carriage-return
-/// overwrites applied, the last `n` non-empty lines.
-pub fn screen_text(raw: &str, n: usize) -> String {
-    let mut clean = String::with_capacity(raw.len());
-    let mut chars = raw.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\u{1b}' => match chars.next() {
-                // CSI: parameters then one final byte in @–~.
-                Some('[') => {
-                    for c in chars.by_ref() {
-                        if ('@'..='~').contains(&c) {
-                            break;
-                        }
-                    }
-                }
-                // OSC: up to BEL or ST (ESC \).
-                Some(']') => {
-                    while let Some(c) = chars.next() {
-                        if c == '\u{7}' {
-                            break;
-                        }
-                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            },
-            '\r' if chars.peek() != Some(&'\n') => {
-                // Redrawing the line from its start: keep only what follows.
-                if let Some(nl) = clean.rfind('\n') {
-                    clean.truncate(nl + 1);
-                } else {
-                    clean.clear();
-                }
-            }
-            '\r' => {}
-            c if c.is_control() && c != '\n' && c != '\t' => {}
-            c => clean.push(c),
-        }
+/// What a terminal shows, as text: its recent output replayed through a
+/// terminal emulator of the pane's size, so cursor moves, redraws and charset
+/// switches land where they would on screen. A full-screen program (Claude
+/// Code before its first message, a menu, a pager) reads as its current
+/// screen; a shell as its scrollback followed by the screen. The last `n`
+/// non-empty lines.
+pub fn screen_text(raw: &str, n: usize, rows: u16, cols: u16) -> String {
+    let size = |v: u16, default: u16| std::num::NonZeroU16::new(v).unwrap_or(std::num::NonZeroU16::new(default).unwrap());
+    let cols = size(cols, 80);
+    let mut parser = vt100::Parser::new(size(rows, 24), cols, n);
+    parser.process(raw.as_bytes());
+    let screen = parser.screen_mut();
+    let mut lines = Vec::new();
+    // Row 0 of the view scrolled back by `k` is the k-th line above the screen.
+    screen.set_scrollback(usize::MAX);
+    for back in (1..=screen.scrollback()).rev() {
+        screen.set_scrollback(back);
+        lines.extend(screen.rows(0, cols.get()).next());
     }
-    let kept: Vec<&str> = clean.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
+    screen.set_scrollback(0);
+    lines.extend(screen.rows(0, cols.get()));
+    let kept: Vec<&str> = lines.iter().map(|l| l.trim_end()).filter(|l| !l.is_empty()).collect();
     kept[kept.len().saturating_sub(n)..].join("\n")
 }
 
@@ -336,7 +314,24 @@ mod tests {
     #[test]
     fn screen_text_drops_escapes_and_overwritten_lines() {
         let raw = "\u{1b}]0;title\u{7}$ make\r\n\u{1b}[32mok\u{1b}[0m\r\nprogress 10%\rprogress 100%\r\n\r\n$ ";
-        assert_eq!(screen_text(raw, 10), "$ make\nok\nprogress 100%\n$");
-        assert_eq!(screen_text(raw, 1), "$");
+        assert_eq!(screen_text(raw, 10, 24, 80), "$ make\nok\nprogress 100%\n$");
+        assert_eq!(screen_text(raw, 1, 24, 80), "$");
+    }
+
+    #[test]
+    fn screen_text_renders_a_full_screen_program() {
+        // A charset switch (`ESC ( B`, what `tput sgr0` emits) used to leave a
+        // stray "B"; a TUI drawn with cursor addressing used to come out empty.
+        let raw = "\u{1b}(B\u{1b}[?1049h\u{1b}[2J\u{1b}[3;5HDo you trust this folder?\u{1b}[5;5H\u{276f} 1. Yes\u{1b}[6;7H2. No\u{1b}[1;1H";
+        assert_eq!(screen_text(raw, 10, 24, 80), "    Do you trust this folder?\n    \u{276f} 1. Yes\n      2. No");
+    }
+
+    #[test]
+    fn screen_text_keeps_scrollback_in_order() {
+        let raw: String = (1..=30).map(|i| format!("line {i}\r\n")).collect();
+        let text = screen_text(&raw, 1000, 10, 80);
+        assert!(text.starts_with("line 1\nline 2\n"), "{text}");
+        assert!(text.ends_with("line 29\nline 30"), "{text}");
+        assert_eq!(screen_text(&raw, 2, 10, 80), "line 29\nline 30");
     }
 }

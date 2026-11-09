@@ -49,6 +49,10 @@ export interface AgentRuntime {
    *  archived ones excluded. Bounded — a multi-year history is never held in
    *  memory; reach the rest through `querySessions`. */
   listSessions(): Promise<SessionMeta[]>;
+  /** Whether a conversation still exists. `listSessions` cannot say: it is a
+   *  recent window, so a session missing from it may simply be older. Throws
+   *  when the runtime cannot answer — the caller must then assume it exists. */
+  sessionExists(sessionId: string): Promise<boolean>;
   /** One page of conversation history, searched and paged on the server. */
   querySessions(query?: SessionQuery): Promise<SessionPage>;
   /** Archive a conversation, or restore it with `false`. Archiving never

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lineCandidates, logicalLine, pickLongest, rowText } from "./terminalLinks";
+import { BLANK, bufferAnchors, cellStyle, lineCandidates, logicalLine, pickLongest, rowText } from "./terminalLinks";
 
 /** A fake xterm row: each entry is one cell's characters, "" for the second
  *  half of a wide character. */
@@ -10,31 +10,72 @@ function row(cells: string[]) {
       const c = cells[x];
       if (c === undefined) return undefined;
       const wide = cells[x + 1] === "";
-      return { getChars: () => c, getWidth: () => (c === "" ? 0 : wide ? 2 : 1) } as never;
+      return { getChars: () => c, getWidth: () => (c === "" ? 0 : wide ? 2 : 1), ...cell() } as never;
     },
   };
 }
+
+/** A fake cell's style: default unless a foreground color is given. */
+function cell(fg?: number) {
+  const no = () => 0;
+  return {
+    isFgDefault: () => fg === undefined,
+    isBgDefault: () => true,
+    getFgColorMode: () => (fg === undefined ? 0 : 0x3000000),
+    getFgColor: () => fg ?? -1,
+    getBgColorMode: no,
+    getBgColor: () => -1,
+    isBold: no,
+    isItalic: no,
+    isDim: no,
+    isUnderline: no,
+    isInverse: no,
+    isStrikethrough: no,
+  };
+}
+
+describe("cellStyle", () => {
+  it("is empty for the default style and a key otherwise", () => {
+    expect(cellStyle(cell() as never)).toBe("");
+    expect(cellStyle(cell(0x5769f7) as never)).not.toBe("");
+    expect(cellStyle(cell(0x5769f7) as never)).not.toBe(cellStyle(cell(0x000000) as never));
+  });
+});
 
 describe("rowText", () => {
   it("maps each character to its cell, wide characters taking two", () => {
     const { text, cells } = rowText(row(["中", "", "a", "/", "b"]));
     expect(text).toBe("中a/b");
     expect(cells).toEqual([
-      { x: 0, width: 2 },
-      { x: 2, width: 1 },
-      { x: 3, width: 1 },
-      { x: 4, width: 1 },
+      { x: 0, width: 2, style: "" },
+      { x: 2, width: 1, style: "" },
+      { x: 3, width: 1, style: "" },
+      { x: 4, width: 1, style: "" },
     ]);
+  });
+
+  it("reads a cell nothing was printed into as a blank space", () => {
+    const blank = { getChars: () => "", getWidth: () => 1, ...cell() } as never;
+    const { text, cells } = rowText({ length: 3, getCell: (x: number) => (x === 1 ? blank : row(["a", "", "b"]).getCell(x)) });
+    expect(text).toBe("a b");
+    expect(cells[1].style).toBe(BLANK);
   });
 });
 
 /** Rows as text, one cell per character, padded to `cols` like a real buffer.
- *  A leading "↪" marks a row the terminal itself wrapped onto. */
-function screen(lines: string[], cols: number) {
-  const rows = lines.map((l) => {
+ *  A leading "↪" marks a row the terminal itself wrapped onto. `styles` gives
+ *  each row's cells a style, one letter per cell ("." default, "_" nothing
+ *  printed there); the rest of the row takes `pad`. */
+function screen(lines: string[], cols: number, styles: string[] = [], pad = ".") {
+  const rows = lines.map((l, i) => {
     const wrapped = l.startsWith("↪");
     const text = (wrapped ? l.slice(1) : l).padEnd(cols, " ");
-    return { text, cells: [...text].map((_, x) => ({ x, width: 1 })), wrapped };
+    const mask = (styles[i] ?? "").padEnd(cols, pad);
+    return {
+      text,
+      cells: [...text].map((_, x) => ({ x, width: 1, style: mask[x] === "." ? "" : mask[x] === "_" ? BLANK : mask[x] })),
+      wrapped,
+    };
   });
   return (y: number) => rows[y - 1] ?? null;
 }
@@ -64,7 +105,7 @@ describe("logicalLine", () => {
     }
     // The second row's characters keep their own cells.
     const line = logicalLine(rows, 2, cols);
-    expect(line.cells[38]).toEqual({ x: 2, y: 2, width: 1 });
+    expect(line.cells[38]).toEqual({ x: 2, y: 2, width: 1, style: "" });
   });
 
   it("joins rows the terminal wrapped as they are", () => {
@@ -87,6 +128,77 @@ describe("logicalLine", () => {
   });
 });
 
+describe("a highlighted path with spaces", () => {
+  const cols = 40;
+  /** A style mask for `line` with `part` (its first occurrence) in style "b". */
+  const mark = (line: string, part: string) => {
+    const i = line.indexOf(part);
+    return ".".repeat(i) + "b".repeat(part.length) + ".".repeat(line.length - i - part.length);
+  };
+  const at = (lines: string[], styles: string[], y: number, pad = ".") => {
+    const line = logicalLine(screen(lines, cols, styles, pad), y, cols);
+    return { line, spans: lineCandidates(line) };
+  };
+
+  it("is a candidate as a whole, on one row", () => {
+    const text = "see /Users/me/My Files/a b.pdf ok";
+    const { spans } = at([text], [mark(text, "/Users/me/My Files/a b.pdf")], 1);
+    expect(spans.map((s) => s.text)).toContain("/Users/me/My Files/a b.pdf");
+    // The pieces stay candidates too.
+    expect(spans.map((s) => s.text)).toContain("/Users/me/My");
+  });
+
+  it("goes on over a space the TUI skipped instead of printing", () => {
+    // A resumed Claude Code moves the cursor over spaces: nothing is printed there.
+    const text = "  /Users/me/dmg/Open Science.dmg";
+    const styles = ["__" + "b".repeat(18) + "_" + "b".repeat(11)];
+    const { spans } = at([text], styles, 1, "_");
+    expect(spans.map((s) => s.text)).toContain("/Users/me/dmg/Open Science.dmg");
+  });
+
+  it("tries a word wrap with the space it took, when no space was printed", () => {
+    const lines = ["  /Users/me/release/dmg/Open", "  Science_0.7.0_aarch64.dmg"];
+    const styles = [mark(lines[0], "/Users/me/release/dmg/Open").replace(/\./g, "_"), mark(lines[1], "Science_0.7.0_aarch64.dmg").replace(/\./g, "_")];
+    const { spans } = at(lines, styles, 2, "_");
+    expect(spans.map((s) => s.text)).toContain("/Users/me/release/dmg/Open Science_0.7.0_aarch64.dmg");
+  });
+
+  it("gets back the space a word wrap took, from either row", () => {
+    // Claude Code wraps inline code at the space and indents the rest.
+    // The space ending the first row is printed in the path's style.
+    const lines = ["● at /Users/me/release/dmg/Open ", "  Science_0.7.0_aarch64.dmg ok"];
+    const styles = [mark(lines[0], "/Users/me/release/dmg/Open "), mark(lines[1], "Science_0.7.0_aarch64.dmg")];
+    for (const y of [1, 2]) {
+      const { line, spans } = at(lines, styles, y);
+      expect(line.breaks).toEqual([{ at: 31, nearEdge: false }]);
+      const whole = spans.find((s) => s.text === "/Users/me/release/dmg/Open Science_0.7.0_aarch64.dmg");
+      expect(whole).toBeDefined();
+      // The span covers the cells of both rows.
+      expect(line.cells[whole!.start]).toMatchObject({ x: 5, y: 1 });
+      expect(line.cells[whole!.end - 1]).toMatchObject({ x: 26, y: 2 });
+    }
+  });
+
+  it("keeps a path wrapped mid-name whole", () => {
+    const lines = ["at /Users/me/projects/open-ai4s-workbe", "  nch/dmg/Open Science.dmg ok"];
+    const styles = [mark(lines[0], "/Users/me/projects/open-ai4s-workbe"), mark(lines[1], "nch/dmg/Open Science.dmg")];
+    const { line, spans } = at(lines, styles, 2);
+    expect(line.breaks).toEqual([{ at: 38, nearEdge: true }]);
+    expect(spans.map((s) => s.text)).toContain("/Users/me/projects/open-ai4s-workbench/dmg/Open Science.dmg");
+  });
+
+  it("keeps the plain reading of a path wrapped mid-name in a shaded box", () => {
+    const lines = ["  /Users/me/a-very-long-folder/and-a", "  -file.txt"];
+    const { spans } = at(lines, ["gggggggggggggggggggggggggggggggggggg", "gggggggggggg"], 1, "g");
+    expect(spans.map((s) => s.text)).toContain("/Users/me/a-very-long-folder/and-a-file.txt");
+  });
+
+  it("is not tried in unstyled prose", () => {
+    const { spans } = at(["see the a/b notes and c/d"], [], 1);
+    expect(spans.map((s) => s.text)).toEqual(["a/b", "c/d"]);
+  });
+});
+
 describe("pickLongest", () => {
   it("keeps the longest of overlapping spans", () => {
     const spans = [
@@ -99,5 +211,12 @@ describe("pickLongest", () => {
       { start: 0, end: 30 },
       { start: 31, end: 35 },
     ]);
+  });
+});
+
+describe("bufferAnchors", () => {
+  it("reads absolute paths from the output, the latest first, wrapped rows as one line", () => {
+    const rows = screen(["⏺ Read(/Users/me/rep", "↪o/README.md)", "$ cd /Users/me/other", "ok"], 20);
+    expect(bufferAnchors(rows, 4)).toEqual(["/Users/me/other", "/Users/me/repo/README.md"]);
   });
 });

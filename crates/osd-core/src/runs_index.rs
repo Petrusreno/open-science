@@ -4,7 +4,9 @@
 // watermark — and serves fast, keyset-paginated, faceted, searched queries that
 // scale to hundreds of thousands of runs without loading the whole log into
 // memory. Only the app writes the DB (never the skills/helper), so there is no
-// migration and no cross-process write contention.
+// migration and no cross-process write contention. Explicit ledger-v1 opt-in
+// replaces the local JSONL input with committed SQLite ledger records; the
+// index remains disposable and remote JSONL ingestion stays unchanged.
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
@@ -214,7 +216,31 @@ fn sync_index_with_active(conn: &Connection, base: &Path, active: Option<&Path>)
         conn.execute("DELETE FROM meta WHERE key LIKE 'wm:%'", []).map_err(|e| e.to_string())?;
     }
     for p in &files {
-        ingest_source(conn, p, &wm_key(p))?;
+        let root = p.parent().and_then(Path::parent).ok_or("invalid ledger source")?;
+        if p.file_name().is_some_and(|name| name == RUNS_FILE) && crate::ledger_v1::enabled(root) {
+            // Never ingest the frozen local JSONL after explicit activation.
+            // Validation errors abort the query instead of serving a stale index.
+            // The ledger is append-only, so a committed-row count is the watermark
+            // (the "wm:" prefix keeps it inside the shrink reset above).
+            let key = format!("wm:v1rows:{}", p.to_string_lossy());
+            let seen = get_wm(conn, &key);
+            let (total, records) = crate::ledger_v1::runs_since(root, seen)?;
+            if total < seen {
+                // The database was replaced by a shorter one: rebuild from scratch.
+                conn.execute("DELETE FROM runs", []).map_err(|e| e.to_string())?;
+                conn.execute("DELETE FROM meta WHERE key LIKE 'wm:%'", []).map_err(|e| e.to_string())?;
+                return sync_index_with_active(conn, base, active);
+            }
+            let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            for rec in records {
+                let json = serde_json::to_string(&rec).map_err(|e| e.to_string())?;
+                tx.execute("INSERT OR IGNORE INTO runs(run_id,ts,status,surface,session_id,command,json) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![rec.run_id, rec.ts as i64, rec.status, rec.surface.unwrap_or_else(|| "local".into()), rec.session_id, rec.command, json]).map_err(|e| e.to_string())?;
+            }
+            set_wm_tx(&tx, &key, total)?;
+            tx.commit().map_err(|e| e.to_string())?;
+        } else {
+            ingest_source(conn, p, &wm_key(p))?;
+        }
     }
     Ok(())
 }
@@ -454,6 +480,38 @@ mod tests {
     fn rec(run_id: &str, ts: i64, status: &str, surface: Option<&str>, command: &str) -> String {
         let surf = surface.map(|s| format!(r#","surface":"{s}""#)).unwrap_or_default();
         format!(r#"{{"runId":"{run_id}","ts":{ts},"status":"{status}"{surf},"command":"{command}","code":[],"outputs":[]}}"#)
+    }
+
+    #[test]
+    fn transactional_ledger_syncs_only_rows_past_the_row_watermark() {
+        let root = temp_root("v1wm");
+        write_log(&root, RUNS_FILE, &[&rec("r1", 100, "ok", None, "python a.py")]);
+        crate::ledger_v1::migrate_v1(&root).unwrap();
+        let key = format!("wm:v1rows:{}", root.join(".openscience").join(RUNS_FILE).to_string_lossy());
+        let conn = open_index(&root).unwrap();
+        sync_index(&conn, &root).unwrap();
+        assert_eq!(query_runs(&conn, &RunQuery::default()).unwrap().total, 1);
+        assert_eq!(get_wm(&conn, &key), 1);
+
+        let second: crate::runs::RunRecord =
+            serde_json::from_str(&rec("r2", 200, "ok", None, "python b.py")).unwrap();
+        crate::ledger_v1::commit_run(&root, &second).unwrap();
+        sync_index(&conn, &root).unwrap();
+        assert_eq!(query_runs(&conn, &RunQuery::default()).unwrap().total, 2);
+        assert_eq!(get_wm(&conn, &key), 2);
+
+        // Nothing new: the next sync reads no rows at all.
+        assert!(crate::ledger_v1::runs_since(&root, get_wm(&conn, &key)).unwrap().1.is_empty());
+        sync_index(&conn, &root).unwrap();
+        assert_eq!(query_runs(&conn, &RunQuery::default()).unwrap().total, 2);
+
+        // A watermark past the ledger (database replaced by a shorter one) rebuilds.
+        set_wm_tx(&conn.unchecked_transaction().unwrap(), &key, 5).unwrap();
+        sync_index(&conn, &root).unwrap();
+        assert_eq!(query_runs(&conn, &RunQuery::default()).unwrap().total, 2);
+        assert_eq!(get_wm(&conn, &key), 2);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

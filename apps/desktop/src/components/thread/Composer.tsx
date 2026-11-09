@@ -41,9 +41,7 @@ import {
   refTriggerAt,
   walkWorkspace,
 } from "@/components/thread/references";
-import { ModelPicker } from "@/components/thread/ModelPicker";
-import { AcpConfigPicker } from "@/components/thread/AcpConfigPicker";
-import type { AcpConfigOption } from "@ai4s/sdk/acp";
+import { ModelPicker, type AgentControl } from "@/components/thread/ModelPicker";
 import { WorkspaceChip } from "@/components/thread/WorkspaceChip";
 import { AttachmentChip } from "@/components/thread/AttachmentChip";
 import { useUiStore } from "@/lib/store";
@@ -158,8 +156,7 @@ export function Composer({
   onAgentModeChange,
   showModelPicker,
   modelSessionId,
-  configOptions,
-  onConfigOption,
+  agentControl,
   showWorkspaceChip = true,
   draftKey,
   sessionDir,
@@ -201,11 +198,9 @@ export function Composer({
   /** Bind the model picker to a session (per-pane model/effort); omit for the
    *  global default. */
   modelSessionId?: string;
-  /** An ACP agent's OWN session selectors (model, reasoning level, mode). They
-   *  replace the model picker when an ACP agent is driving: the agent owns its
-   *  model, and these are the choices it actually offers (#14). */
-  configOptions?: AcpConfigOption[];
-  onConfigOption?: (configId: string, value: string) => void;
+  /** Which agent this conversation runs on, and that agent's own models. The
+   *  model picker leads with it; omitted where no ACP agent can run (#14). */
+  agentControl?: AgentControl;
   /** Show the draft workspace-folder chip. Only the draft pane opts in — in a
    *  split layout the other panes already have a bound session/folder. */
   showWorkspaceChip?: boolean;
@@ -1293,9 +1288,8 @@ export function Composer({
               onCancel={() => setConfirmCompact(false)}
             />
           )}
-          {showModelPicker && <ModelPicker sessionId={modelSessionId} compact={compactToolbar} />}
-          {configOptions && onConfigOption && (
-            <AcpConfigPicker options={configOptions} onChange={onConfigOption} disabled={working} />
+          {(showModelPicker || agentControl) && (
+            <ModelPicker sessionId={modelSessionId} compact={compactToolbar} agent={agentControl} />
           )}
           {/* Mid-turn, typed text gets its own button — it queues, the same
               as Enter — beside Stop, which stays in the send button's spot. */}

@@ -379,6 +379,67 @@ pub fn term_send(args: &Args) -> Result<(), String> {
     }
 }
 
+/// The bytes a key sends, as xterm sends them (normal cursor mode). A single
+/// character stands for itself, so a numbered menu can be answered with `1`.
+pub fn key_bytes(name: &str) -> Option<String> {
+    let bytes = match name.to_ascii_lowercase().as_str() {
+        "up" => "\u{1b}[A",
+        "down" => "\u{1b}[B",
+        "right" => "\u{1b}[C",
+        "left" => "\u{1b}[D",
+        "enter" | "return" => "\r",
+        "esc" | "escape" => "\u{1b}",
+        "tab" => "\t",
+        "shift-tab" => "\u{1b}[Z",
+        "space" => " ",
+        "backspace" => "\u{7f}",
+        "ctrl-c" => "\u{3}",
+        "ctrl-d" => "\u{4}",
+        _ if name.chars().count() == 1 => name,
+        _ => return None,
+    };
+    Some(bytes.to_string())
+}
+
+/// `osd term key <id> <key…>`: press keys, one at a time — what a menu, a
+/// confirmation or a dialog in a terminal program needs and typed text is not.
+pub fn term_key(args: &Args) -> Result<(), String> {
+    let client = Client::connect(args)?;
+    let id = args.at(0, "terminal id")?;
+    let names = args.rest(1);
+    let names: Vec<&str> = names.split_whitespace().collect();
+    if names.is_empty() {
+        return Err("no keys: osd term key <id> <key…> (up down left right enter esc tab shift-tab space backspace ctrl-c ctrl-d, or one character)".into());
+    }
+    // Check every name first: half a key sequence pressed is worse than none.
+    let keys = names
+        .iter()
+        .map(|n| key_bytes(n).ok_or_else(|| format!("unknown key: {n}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (i, key) in keys.iter().enumerate() {
+        // Apart, so a program reads each as a key press, not a paste.
+        if i > 0 {
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        client.post(&format!("/v1/terminals/{id}/input"), json!({ "data": key }))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::key_bytes;
+
+    #[test]
+    fn keys_send_what_xterm_sends() {
+        assert_eq!(key_bytes("Down").as_deref(), Some("\u{1b}[B"));
+        assert_eq!(key_bytes("enter").as_deref(), Some("\r"));
+        assert_eq!(key_bytes("esc").as_deref(), Some("\u{1b}"));
+        assert_eq!(key_bytes("1").as_deref(), Some("1"));
+        assert_eq!(key_bytes("pagedown"), None);
+    }
+}
+
 // ---- audit ----------------------------------------------------------------------
 
 /// `osd audit`: who did what through the gateway, newest first.

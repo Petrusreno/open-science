@@ -74,9 +74,9 @@
   },
   "acp": {
     "title": "Agente",
-    "hint": "Qué agente controla esta aplicación: el entorno OpenCode incluido, o cualquier agente que hable el Agent Client Protocol (ACP) por stdio.",
+    "hint": "Los agentes en los que puede ejecutarse una conversación y cuál usa una conversación nueva. Elige por conversación en el cuadro de mensaje.",
     "bundled": "OpenCode (incluido)",
-    "bundledHint": "El entorno predeterminado: proveedores, habilidades, modo plan y conversaciones guardadas.",
+    "bundledHint": "El entorno incluido, con proveedores, habilidades, modo plan y conversaciones guardadas.",
     "add": "Añadir un agente",
     "edit": "Editar",
     "remove": "Eliminar",
@@ -86,9 +86,7 @@
     "commandPlaceholder": "Comando (npx, gemini, …)",
     "argsLabel": "Argumentos",
     "argsPlaceholder": "Argumentos (-y @agentclientprotocol/codex-acp)",
-    "limits": "Un agente ACP se ejecuta como un comando en este equipo, dentro de la carpeta del espacio de trabajo actual. Gestiona su propio modelo, habilidades e historial, así que el selector de modelo, el modo plan y las conversaciones guardadas siguen siendo de OpenCode: las sesiones iniciadas en un agente ACP solo aparecen mientras la aplicación está abierta.",
-    "running": "Conectado al agente ACP.",
-    "starting": "Iniciando el agente ACP…"
+    "limits": "Un agente ACP se ejecuta como un comando en este equipo, en la carpeta de la conversación, junto a OpenCode. Gestiona su propio modelo, comandos e historial, así que el selector de modelo y el modo plan solo se aplican a conversaciones de OpenCode."
   },
   "updates": {
     "title": "Actualizaciones de la app",

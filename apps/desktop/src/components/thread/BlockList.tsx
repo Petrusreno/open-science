@@ -1,4 +1,6 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
+import { threadAnchors } from "@/lib/links";
+import { LinkAnchors } from "@/components/markdown-viewer/MarkdownViewer";
 import type { ArtifactBlock, FigureAnnotation, ThreadBlock } from "@ai4s/shared";
 import type { MessageSender } from "@/lib/messageSenders";
 import {
@@ -164,6 +166,11 @@ export const BlockList = memo(function BlockList({
   // compared by identity below. An index would point at whatever shifted into
   // that slot — silently, since a wrong index is still a valid one.
   const shaped = shapeThread(blocks);
+  // Paths in answers are also looked for next to the files and folders the
+  // conversation has touched. Keyed by content, so streaming text does not
+  // hand every link a new list to look up again.
+  const anchorsKey = threadAnchors(blocks).join("\n");
+  const anchors = useMemo(() => (anchorsKey ? anchorsKey.split("\n") : undefined), [anchorsKey]);
   const renderOne = (block: ThreadBlock, key: number) =>
     renderBlock(block, key, handlers, undefined, workspaceDirectory, contextLimit);
   const renderRun = (run: ThreadBlock[], offset: number) =>
@@ -183,7 +190,7 @@ export const BlockList = memo(function BlockList({
     at + turn.lead.length + turn.segments.reduce((n, seg) => n + seg.blocks.length, 0);
   let offset = 0;
   return (
-    <>
+    <LinkAnchors.Provider value={anchors}>
       {splitTurns(shaped).map((turn, turnIndex) => {
         const at = offset;
         offset = cursorAfter(turn, at) + turn.answer.length;
@@ -217,6 +224,6 @@ export const BlockList = memo(function BlockList({
           </div>
         );
       })}
-    </>
+    </LinkAnchors.Provider>
   );
 });

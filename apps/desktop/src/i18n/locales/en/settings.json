@@ -74,9 +74,9 @@
   },
   "acp": {
     "title": "Agent",
-    "hint": "Which agent this app drives: the bundled OpenCode runtime, or any agent that speaks the Agent Client Protocol (ACP) over stdio.",
+    "hint": "The agents a conversation can run on, and which one a new conversation starts on. Pick per conversation in the composer.",
     "bundled": "OpenCode (bundled)",
-    "bundledHint": "The default runtime — providers, skills, plan mode and saved conversations.",
+    "bundledHint": "The bundled runtime, with providers, skills, plan mode and saved conversations.",
     "add": "Add an agent",
     "edit": "Edit",
     "remove": "Remove",
@@ -86,9 +86,7 @@
     "commandPlaceholder": "Command (npx, gemini, …)",
     "argsLabel": "Arguments",
     "argsPlaceholder": "Arguments (-y @agentclientprotocol/codex-acp)",
-    "limits": "An ACP agent runs as a command on this computer, in the current workspace folder. It owns its own model, skills and history, so the model picker, plan mode and saved conversations stay with OpenCode — sessions started on an ACP agent are listed only while the app is running.",
-    "running": "Connected to the ACP agent.",
-    "starting": "Starting the ACP agent…"
+    "limits": "An ACP agent runs as a command on this computer, in the conversation’s folder, beside OpenCode. It owns its model, commands and history, so the model picker and plan mode apply to OpenCode conversations only."
   },
   "updates": {
     "title": "App updates",

@@ -54,6 +54,9 @@ osd — Open Science Desktop without a window
   osd term send <id> <text…> [--wait] [--no-enter] [--timeout S]
                                     type into it (Enter included); --wait
                                     returns the agent's reply
+  osd term key <id> <key…>          press keys, for menus and dialogs: up down
+                                    left right enter esc tab shift-tab space
+                                    backspace ctrl-c ctrl-d, or one character
 
   osd audit [--account NAME] [--session ID] [--action A] [--since 2026-10-01]
             [--until DATE] [--limit N]
@@ -66,6 +69,9 @@ osd — Open Science Desktop without a window
 
   osd run ls
   osd run log <hash>
+  osd provenance dump --workspace DIR [--json]
+  osd ledger export --workspace DIR --output NEW_DIR [--json]
+  osd ledger migrate --workspace DIR --apply [--json]
 
   osd fs ls [path]                  browse the workspace
   osd fs get <path> [--output F]    read one file
@@ -127,6 +133,9 @@ fn main() {
         "server" | "serve" => server::run(&args),
         "auth" => auth::run(&args),
         "account" => account::run(&args),
+        // Internal: the desktop app's terminal host (osd-core termd.rs), which
+        // the app starts on its own. Not in USAGE.
+        "termd" => termd(&args),
         "version" | "--version" => {
             println!("osd {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -151,4 +160,15 @@ pub fn env(args: &Args) -> Result<osd_core::Env, String> {
 fn fail(message: &str) -> ! {
     eprintln!("osd: {message}");
     std::process::exit(1);
+}
+
+/// The terminal host. Its own session first, so nothing aimed at the app's
+/// terminal or process group (a hangup, a Ctrl-C) reaches the shells it holds.
+fn termd(args: &Args) -> Result<(), String> {
+    let dir = args.value("dir").ok_or("termd needs --dir")?;
+    #[cfg(unix)]
+    unsafe {
+        libc::setsid();
+    }
+    osd_core::termd::serve(std::path::Path::new(&dir))
 }

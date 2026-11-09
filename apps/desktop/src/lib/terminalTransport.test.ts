@@ -58,6 +58,27 @@ beforeEach(() => {
 });
 
 describe("the web transport", () => {
+  it("refuses a shared-shell transfer without deleting its shell", async () => {
+    who.account = null;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await terminalTransport.open("transfer-shared", undefined, 80, 24);
+    await expect(terminalTransport.close("transfer-shared", true)).rejects.toThrow(/shared/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([403, 500])("rejects an unconfirmed close (%s), retaining the original shell identity", async (status) => {
+    who.source = "own";
+    await terminalTransport.open("transfer-failed", undefined, 80, 24);
+    const fetchMock = vi.fn(async () => new Response(null, { status }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(terminalTransport.close("transfer-failed", true)).rejects.toThrow(String(status));
+    who.account = null;
+    who.source = "desktop";
+    await terminalTransport.write("transfer-failed", "x");
+    expect(gatewayPost).toHaveBeenLastCalledWith("/v1/terminals/wabcdefabcdef-transfer-failed/input", { data: "x" });
+  });
+
   it("with the token, uses the pane id itself — the same shell as the desktop window's — and never ends it", async () => {
     who.account = null;
     const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));

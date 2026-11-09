@@ -23,7 +23,7 @@ export interface TerminalTransport {
   open(id: string, cwd: string | undefined, cols: number, rows: number): Promise<boolean>;
   write(id: string, data: string): Promise<void>;
   resize(id: string, cols: number, rows: number): Promise<void>;
-  close(id: string): Promise<void>;
+  close(id: string, requireStopped?: boolean): Promise<void>;
   /** Start reading output; the returned function stops. */
   subscribe(id: string, output: TerminalOutput): Promise<() => void>;
 }
@@ -45,17 +45,20 @@ const desktop: TerminalTransport = {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("terminal_close", { id });
   },
+  // Recent output first: a shell that outlived the last app (it lives in the
+  // terminal host) comes back with its screen, not blank.
   async subscribe(id, { onData, onExit }) {
-    const [{ invoke }, { listen }] = await Promise.all([
-      import("@tauri-apps/api/core"),
-      import("@tauri-apps/api/event"),
-    ]);
-    const [dataEvent, exitEvent] = await invoke<[string, string]>("terminal_event_names", { id });
-    const unlistenData = await listen<string>(dataEvent, (event) => onData(event.payload));
-    const unlistenExit = await listen(exitEvent, () => onExit());
+    const { invoke, Channel } = await import("@tauri-apps/api/core");
+    let stopped = false;
+    const onEvent = new Channel<{ kind: "data"; data: string } | { kind: "exit" }>();
+    onEvent.onmessage = (event) => {
+      if (stopped) return;
+      if (event.kind === "data") onData(event.data);
+      else onExit();
+    };
+    await invoke("terminal_subscribe", { id, onEvent });
     return () => {
-      unlistenData();
-      unlistenExit();
+      stopped = true;
     };
   },
 };
@@ -123,15 +126,20 @@ const web: TerminalTransport = {
   async resize(id, cols, rows) {
     await gatewayPost(path(id, "/resize"), { cols, rows });
   },
-  async close(id) {
+  async close(id, requireStopped = false) {
     const shell = shellOf(id);
-    opened.delete(id);
     // A shell shared with the desktop window is the window's: it ends it when
     // the pane leaves the shared layout. Ending it from here as well could kill
     // one the window had just opened, from a moment the two layouts disagreed.
-    if (shell.shared) return;
+    if (shell.shared) {
+      if (requireStopped) throw new Error("Cannot transfer a shared terminal: its source cannot be stopped from this client.");
+      opened.delete(id);
+      return;
+    }
     const url = `${gatewayOrigin()}/v1/terminals/${encodeURIComponent(shell.wire)}`;
-    await fetch(url, { method: "DELETE", headers: authHeader() });
+    const response = await fetch(url, { method: "DELETE", headers: authHeader() });
+    if (!response.ok) throw new Error(`Terminal close was not confirmed (${response.status}).`);
+    opened.delete(id);
   },
   async subscribe(id, output) {
     // Over the tab's one stream (see gatewayMux): a connection per terminal

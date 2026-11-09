@@ -35,6 +35,7 @@ Formerly Open Science. Una alternativa desktop open source a Claude Science y wo
 
 ## Novedades
 
+- **2026-10-26** — 🌐 **El banco de trabajo completo desde cualquier navegador, y agentes que hablan entre sí.** Paneles divididos, Screens y terminales funcionan ahora por acceso remoto, también en el móvil, con cuentas de nombre y contraseña; define tus propios especialistas con sus instrucciones, habilidades, conectores y modelo; y los agentes leen y escriben a las conversaciones y terminales de otros mediante `osd`. Además, mensajes en cola mientras el agente trabaja e instalación en Linux sin root. *(v0.7.0)*
 - **2026-10-04** — 🖱️ **Computer Use, terminales y editores.** El agente ya puede manejar apps de escritorio como ImageJ, Origin o el software de instrumentos; los paneles admiten terminales, archivos y un editor de código, donde Claude Code / Codex se reanudan tras reiniciar; además, búsqueda (⌘F), salto a cualquier sesión o proyecto (⌘J) y Linux ARM64 para DGX Spark. *(v0.6.0)*
 - **2026-08-18** — 🖥️ **Funciona sin pantalla.** `osd server` levanta el banco de trabajo completo — workspace, runtime del agente y la *misma* UI web — en una máquina sin display, y `osd session send … --wait` lo maneja desde un script o desde otro agente. Un archivo comprimido, sin instalador. `osd` viaja dentro del instalador de escritorio y se pone en tu PATH al primer arranque; en un servidor basta el archivo comprimido. Modelos, claves y aprobaciones se configuran desde la terminal (`osd model`, `osd auth`, `osd approval`).
 - **2026-08-13** — 🔌 **Habla el Agent Client Protocol, en ambas direcciones.** Maneja Codex, Gemini CLI, Claude Code o cualquier otro agente ACP desde dentro de esta app — con sus propios modelos, su historial y tus conectores MCP — o maneja Open Science desde Zed, JetBrains o Neovim. *(v0.4.0)*
@@ -384,8 +385,8 @@ Si usas Open Science Desktop en tu investigación, cítalo así:
   author  = {{The Open Science Desktop Contributors}},
   title   = {Open Science Desktop: a local-first, model-agnostic AI research workbench},
   year    = {2026},
-  version = {0.6.0},
-  doi     = {10.5281/zenodo.23138229},
+  version = {0.7.0},
+  doi     = {10.5281/zenodo.23669652},
   url     = {https://github.com/ai4s-research/open-science},
   license = {MIT}
 }

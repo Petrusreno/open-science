@@ -184,9 +184,10 @@ describe("reproducePrompt", () => {
     expect(prompt).toContain(`\`\`\`\`\n${content}\n\`\`\`\``);
   });
 
-  it("flags truncated records and points at the full provenance store", () => {
+  it("flags truncated records without promising missing code is recoverable", () => {
     const prompt = reproducePrompt(record("big = 1\n… [truncated]"));
     expect(prompt).toContain("truncated");
-    expect(prompt).toContain(".openscience/provenance.jsonl");
+    expect(prompt).toContain("Do not run it as complete code");
+    expect(prompt).not.toContain(".openscience/provenance.jsonl");
   });
 });

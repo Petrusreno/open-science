@@ -13,7 +13,9 @@ import {
   projectGroups,
   projectOf,
   selectActiveProjectId,
+  terminalAgentName,
   type LayoutGroup,
+  type PaneContent,
   type PaneLeaf,
 } from "./layout";
 import { projectIdForSession } from "./projectScope";
@@ -65,6 +67,14 @@ const SESSION_LIMIT = 100;
 
 const basename = (path: string): string => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 
+/** What a terminal is called wherever it is listed: its name (else
+ *  `fallback`), its folder, and the coding agent running in it. */
+export function terminalLabel(c: Extract<PaneContent, { kind: "terminal" }>, fallback: string): string {
+  const where = c.cwd ? ` · ${basename(c.cwd)}` : "";
+  const agent = c.agent?.running ? ` · ${terminalAgentName(c.agent.kind)}` : "";
+  return `${c.name || fallback}${where}${agent}`;
+}
+
 export function jumpEntries(input: JumpInput): JumpEntry[] {
   const { groups, sessions, projects, labels } = input;
   const projectName = (id: string) =>
@@ -77,11 +87,8 @@ export function jumpEntries(input: JumpInput): JumpEntry[] {
     const c = leaf.content;
     if (!c) return leaf.artifact?.filename ?? (leaf.sessionId ? titleOf(leaf.sessionId) : labels.session);
     switch (c.kind) {
-      case "terminal": {
-        const where = c.cwd ? ` · ${basename(c.cwd)}` : "";
-        const agent = c.agent?.running ? ` · ${c.agent.kind === "claude" ? "Claude Code" : "Codex"}` : "";
-        return `${c.name || labels.terminal}${where}${agent}`;
-      }
+      case "terminal":
+        return terminalLabel(c, labels.terminal);
       case "files":
         return labels.files;
       case "notebook":

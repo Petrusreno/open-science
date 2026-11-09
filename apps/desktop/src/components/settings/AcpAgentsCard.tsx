@@ -1,29 +1,29 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, Pencil, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { isTauri } from "@/lib/tauri";
-import { useRuntimeStore } from "@/lib/runtime";
+import { stopAcpAgent, useRuntimeStore } from "@/lib/runtime";
 import {
   ACP_PRESETS,
-  activeAcpAgentId,
   formatCommandArgs,
   loadAcpAgents,
   newAcpAgentId,
   parseCommandArgs,
   saveAcpAgents,
-  setActiveAcpAgentId,
   type AcpAgentConfig,
 } from "@/lib/acpAgents";
 import { inputCls } from "./inputCls";
 import { Section } from "./Section";
 
 /**
- * Settings → Runtime → the agent this app drives (#14).
+ * Settings → Runtime → the agents conversations can run on (#14), and which one
+ * a new conversation starts on.
  *
  * The bundled OpenCode runtime, or any agent that speaks the Agent Client
  * Protocol over stdio — Codex, Gemini CLI, Claude Code, anything else with an
- * ACP server. Adding one is configuring a COMMAND, which is why there is no
+ * ACP server. Each conversation keeps the agent it started on; the composer
+ * picks per conversation, this card sets the default. Adding one is configuring a COMMAND, which is why there is no
  * per-agent code here (docs/rfc/multi-agent-acp.md).
  *
  * Desktop only: the agent runs as a child process on this host, which the
@@ -33,36 +33,19 @@ import { Section } from "./Section";
 export function AcpAgentsCard() {
   const { t } = useTranslation(["settings", "common"]);
   const [agents, setAgents] = useState<AcpAgentConfig[]>(() => loadAcpAgents());
-  const [selected, setSelected] = useState<string | null>(() => activeAcpAgentId());
+  const selected = useRuntimeStore((s) => s.defaultRuntime);
   const [editing, setEditing] = useState<AcpAgentConfig | null>(null);
   const [adding, setAdding] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  const status = useRuntimeStore((s) => s.status);
-  const runtimeKind = useRuntimeStore((s) => s.runtimeKind);
-  const error = useRuntimeStore((s) => s.error);
-
   if (!isTauri) return null;
 
-  /** Persist the list, then reconnect if what is RUNNING no longer matches it.
-   *  A reconnect kills the old child and starts the new one — cheap, and the
-   *  only way the change is real (the runtime is chosen at connect time). */
-  const apply = (next: AcpAgentConfig[], nextSelected: string | null, reconnect: boolean) => {
+  const apply = (next: AcpAgentConfig[], nextSelected: string | null) => {
     saveAcpAgents(next);
-    setActiveAcpAgentId(nextSelected);
+    useRuntimeStore.getState().setDefaultRuntime(nextSelected);
     setAgents(next);
-    setSelected(nextSelected);
-    if (!reconnect) return;
-    setBusy(true);
-    void useRuntimeStore
-      .getState()
-      .connectRetry(8)
-      .finally(() => setBusy(false));
   };
 
   const select = (id: string | null) => {
-    if (busy || id === selected) return;
-    apply(agents, id, true);
+    if (id !== selected) apply(agents, id);
   };
 
   const save = (agent: AcpAgentConfig) => {
@@ -70,20 +53,19 @@ export function AcpAgentsCard() {
     const next = exists ? agents.map((a) => (a.id === agent.id ? agent : a)) : [...agents, agent];
     setEditing(null);
     setAdding(false);
-    // Editing the agent that is currently running changes the command that
-    // process was started from — restart it, or Settings would describe one
-    // agent while another one answers.
-    apply(next, selected, selected === agent.id);
+    // A running process was started from the old command: stop it, and the
+    // next message starts the new one (its conversations resume there).
+    if (exists) stopAcpAgent(agent.id);
+    apply(next, selected);
   };
 
   const remove = (id: string) => {
     const next = agents.filter((a) => a.id !== id);
-    // Removing the selected agent falls back to the bundled runtime; the app
-    // must never end up selecting an agent that is no longer configured.
-    apply(next, selected === id ? null : selected, selected === id);
+    // Removing the default falls back to the bundled runtime; the app must
+    // never default to an agent that is no longer configured.
+    stopAcpAgent(id);
+    apply(next, selected === id ? null : selected);
   };
-
-  const running = runtimeKind === "acp" && status === "ready";
 
   return (
     <Section title={t("acp.title")} hint={t("acp.hint")} flush>
@@ -92,7 +74,6 @@ export function AcpAgentsCard() {
           title={t("acp.bundled")}
           subtitle={t("acp.bundledHint")}
           selected={selected === null}
-          busy={busy}
           onSelect={() => select(null)}
         />
 
@@ -111,8 +92,7 @@ export function AcpAgentsCard() {
               subtitle={[agent.command, formatCommandArgs(agent.args)].filter(Boolean).join(" ")}
               mono
               selected={selected === agent.id}
-              busy={busy}
-              onSelect={() => select(agent.id)}
+                  onSelect={() => select(agent.id)}
               actions={
                 <>
                   <button
@@ -173,11 +153,6 @@ export function AcpAgentsCard() {
               ))}
             </div>
             <p className="mt-2.5 text-xs leading-relaxed text-muted">{t("acp.limits")}</p>
-            {runtimeKind === "acp" && (
-              <p className={cn("mt-2 text-xs", running ? "text-muted" : "text-error")}>
-                {running ? t("acp.running") : (error ?? t("acp.starting"))}
-              </p>
-            )}
           </div>
         )}
       </div>
@@ -191,7 +166,6 @@ function RuntimeRow({
   subtitle,
   mono = false,
   selected,
-  busy,
   onSelect,
   actions,
 }: {
@@ -199,7 +173,6 @@ function RuntimeRow({
   subtitle: string;
   mono?: boolean;
   selected: boolean;
-  busy: boolean;
   onSelect: () => void;
   actions?: React.ReactNode;
 }) {
@@ -211,22 +184,16 @@ function RuntimeRow({
         aria-checked={selected}
         aria-label={title}
         onClick={onSelect}
-        disabled={busy}
         className={cn(
           "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors",
           selected ? "border-accent bg-accent text-accent-fg" : "border-border bg-surface-2",
         )}
       >
-        {busy && selected ? (
-          <Loader2 size={9} className="animate-spin" />
-        ) : selected ? (
-          <Check size={9} />
-        ) : null}
+        {selected && <Check size={9} />}
       </button>
       <button
         type="button"
         onClick={onSelect}
-        disabled={busy}
         className="min-w-0 flex-1 text-left"
       >
         <div className="text-[13px] font-medium text-text">{title}</div>

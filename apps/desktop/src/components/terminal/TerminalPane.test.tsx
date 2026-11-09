@@ -7,19 +7,32 @@ vi.mock("@/lib/tauri", () => ({ isTauri: true, isMacUA: () => true }));
 vi.mock("./terminalLinks", () => ({ registerTerminalLinks: () => ({ dispose() {} }) }));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => (cmd === "terminal_event_names" ? ["data", "exit"] : null)),
+  invoke: vi.fn(async () => null),
+  Channel: class {
+    onmessage: (message: unknown) => void = () => {};
+  },
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
 // The one xterm instance, and the key handler it was given when created.
-// `cols` is what the fit addon last measured; a test changes it to resize.
-const xterm = vi.hoisted(() => ({ keyHandler: null as ((e: KeyboardEvent) => boolean) | null, cols: 80 }));
+// `cols` is what the fit addon measures; a test changes it to resize.
+const xterm = vi.hoisted(() => ({
+  keyHandler: null as ((e: KeyboardEvent) => boolean) | null,
+  cols: 80,
+  last: null as { options: Record<string, unknown> } | null,
+}));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
-    get cols() {
-      return xterm.cols;
-    }
+    cols = 80;
     rows = 24;
+    resize(cols: number, rows: number) {
+      this.cols = cols;
+      this.rows = rows;
+    }
+    options: Record<string, unknown> = {};
+    constructor(options: Record<string, unknown>) {
+      xterm.last = this;
+      this.options = { ...options };
+    }
     unicode = { activeVersion: "" };
     loadAddon() {}
     attachCustomKeyEventHandler(fn: (e: KeyboardEvent) => boolean) {
@@ -39,6 +52,9 @@ vi.mock("@xterm/xterm", () => ({
 }));
 const addon = class {
   fit() {}
+  proposeDimensions() {
+    return { cols: xterm.cols, rows: 24 };
+  }
   dispose() {}
   onContextLoss() {}
   onDidChangeResults() {
@@ -130,5 +146,44 @@ describe("TerminalPane resize", () => {
     boxH.mockRestore();
     vi.unstubAllGlobals();
     xterm.cols = 80;
+  });
+});
+
+describe("TerminalPane font", () => {
+  it("opens the terminal only once its web font has loaded, so the cell is measured in it", async () => {
+    const pending: (() => void)[] = [];
+    const load = vi.fn(() => new Promise<FontFace[]>((r) => pending.push(() => r([]))));
+    Object.defineProperty(document, "fonts", { value: { load }, configurable: true });
+    xterm.keyHandler = null;
+    try {
+      render(<TerminalPane leafId="font-1" />);
+      await waitFor(() => expect(load).toHaveBeenCalled());
+      expect(String(load.mock.calls[0])).toContain("JetBrains Mono");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(xterm.keyHandler).toBeNull();
+      pending.forEach((done) => done());
+      await waitFor(() => expect(xterm.keyHandler).not.toBeNull());
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+});
+
+describe("TerminalPane theme", () => {
+  it("repaints in the new theme when the app switches theme", async () => {
+    const root = document.documentElement;
+    root.style.setProperty("--surface", "#ffffff");
+    xterm.keyHandler = null;
+    render(<TerminalPane leafId="theme-1" />);
+    await waitFor(() => expect(xterm.keyHandler).not.toBeNull());
+    expect((xterm.last!.options.theme as { background: string }).background).toBe("#ffffff");
+
+    root.style.setProperty("--surface", "#1e1d24");
+    root.dataset.theme = "dark";
+    await waitFor(() =>
+      expect((xterm.last!.options.theme as { background: string }).background).toBe("#1e1d24"),
+    );
+    delete root.dataset.theme;
+    root.style.removeProperty("--surface");
   });
 });

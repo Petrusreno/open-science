@@ -1,0 +1,49 @@
+name: desktop CI
+
+# Typecheck, lint and unit tests for the desktop app and its packages, on every
+# push to master and every PR that touches them.
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/desktop-ci.yml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - apps/desktop/**
+      - packages/**
+      - "!apps/desktop/src-tauri/**"
+  pull_request:
+    paths:
+      - .github/workflows/desktop-ci.yml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - apps/desktop/**
+      - packages/**
+      - "!apps/desktop/src-tauri/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Pushes land many times an hour; only the newest commit on a ref needs a verdict.
+concurrency:
+  group: desktop-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4   # version comes from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test

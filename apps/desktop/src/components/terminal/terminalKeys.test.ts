@@ -42,4 +42,21 @@ describe("terminal keys", () => {
     t(key({ key: "Alt", code: "AltLeft", altKey: true }));
     expect(t(key({ key: "b", code: "KeyB", altKey: true }))).toBeNull();
   });
+
+  it("a modifier pressed alone never reaches xterm, so the view does not jump to the bottom", () => {
+    for (const mac of [true, false]) {
+      const t = createKeyTranslator(mac);
+      for (const code of ["MetaLeft", "ControlLeft", "ControlRight", "ShiftLeft", "AltRight", "CapsLock"]) {
+        // With an input method on, WebKit reports it as an IME key.
+        expect(t(key({ key: "Process", code, keyCode: 229 }))).toBe(false);
+        expect(t(key({ type: "keyup", key: "Process", code }))).toBeNull();
+      }
+      // The chord itself is still xterm's.
+      expect(t(key({ key: "o", code: "KeyO", ctrlKey: true }))).toBeNull();
+    }
+    // Swallowing the Option keydown still arms Meta.
+    const t = createKeyTranslator(true);
+    expect(t(key({ key: "Alt", code: "AltLeft", altKey: true }))).toBe(false);
+    expect(t(key({ key: "π", code: "KeyP", altKey: true }))).toBe("\x1bp");
+  });
 });

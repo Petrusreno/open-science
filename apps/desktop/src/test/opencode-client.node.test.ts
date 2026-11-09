@@ -169,6 +169,35 @@ describe("OpenCodeClient ↔ OpenCode server", () => {
     expect(models.find((m) => m.id === "no-limit-key")?.contextLimit).toBe(0);
   });
 
+  it("marks a model free only when the catalog prices it at zero", async () => {
+    // The shape OpenCode 1.19 reports: `cost` per model, zero for Zen's free
+    // tier. A model with no price is unknown, never assumed free.
+    const body = {
+      providers: [
+        {
+          id: "opencode",
+          name: "OpenCode Zen",
+          models: {
+            "deepseek-v4.1-flash-free": { name: "Free", cost: { input: 0, output: 0, cache: { read: 0, write: 0 } } },
+            "claude-sonnet-4-5": { name: "Paid", cost: { input: 3, output: 15 } },
+            "half-free": { name: "Half", cost: { input: 0, output: 2 } },
+            "no-cost-key": { name: "Bare" },
+          },
+        },
+      ],
+    };
+    const fetchImpl: typeof fetch = async () =>
+      new Response(JSON.stringify(body), { status: 200 });
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:1", fetchImpl });
+
+    const models = (await client.listProviders())[0].models;
+    const free = (id: string) => models.find((m) => m.id === id)?.free;
+    expect(free("deepseek-v4.1-flash-free")).toBe(true);
+    expect(free("claude-sonnet-4-5")).toBe(false);
+    expect(free("half-free")).toBe(false);
+    expect(free("no-cost-key")).toBeUndefined();
+  });
+
   it("surfaces a model's whole effort vocabulary including `max` (#74)", async () => {
     // From 1.18 on, OpenCode builds a model's variants from the catalog's own
     // `reasoning_options`, so the top of the range is whatever the catalog says —

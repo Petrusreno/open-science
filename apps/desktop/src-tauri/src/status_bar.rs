@@ -186,12 +186,14 @@ pub async fn system_resources(
     }
     tauri::async_runtime::spawn_blocking(move || {
         let rows = read_processes()?;
-        let tree = tree_of(&rows, std::process::id());
+        // The groups, not the app's process tree: terminals live in the
+        // terminal host, outside that tree, and still count. They never overlap.
+        let groups = group_usage(&rows, std::process::id(), &owners);
         Ok(ResourceUsage {
-            memory_bytes: tree.iter().map(|r| r.rss_kb * 1024).sum(),
-            process_count: tree.len(),
-            cpu_percent: tree.iter().map(|r| r.cpu).sum(),
-            groups: group_usage(&rows, std::process::id(), &owners),
+            memory_bytes: groups.iter().map(|g| g.memory_bytes).sum(),
+            process_count: groups.iter().map(|g| g.process_count).sum(),
+            cpu_percent: groups.iter().map(|g| g.cpu_percent).sum(),
+            groups,
         })
     })
     .await
@@ -259,16 +261,22 @@ pub fn parse_lsof(output: &str, own: &HashSet<u32>) -> Vec<ListeningPort> {
 /// `lsof` can take seconds on a busy machine, and holding an async worker for
 /// that long makes the whole app feel wedged.
 #[tauri::command]
-pub async fn listening_ports() -> Result<Vec<ListeningPort>, String> {
-    tauri::async_runtime::spawn_blocking(read_listening_ports)
+pub async fn listening_ports(
+    terminals: tauri::State<'_, crate::terminal::TerminalState>,
+) -> Result<Vec<ListeningPort>, String> {
+    let host = crate::terminal::host_pid(&terminals);
+    tauri::async_runtime::spawn_blocking(move || read_listening_ports(host))
         .await
         .map_err(|e| format!("could not list ports: {e}"))?
 }
 
-fn read_listening_ports() -> Result<Vec<ListeningPort>, String> {
+/// The app's own processes and, under the terminal host, its terminals' (a dev
+/// server started in one).
+fn read_listening_ports(terminal_host: Option<u32>) -> Result<Vec<ListeningPort>, String> {
     let rows = read_processes()?;
-    let own: HashSet<u32> = tree_of(&rows, std::process::id())
-        .iter()
+    let own: HashSet<u32> = std::iter::once(std::process::id())
+        .chain(terminal_host)
+        .flat_map(|root| tree_of(&rows, root))
         .map(|r| r.pid)
         .collect();
     let out = crate::runtime::quiet_command("lsof")

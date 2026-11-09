@@ -160,7 +160,16 @@
       "add": "대기열에 추가",
       "addTitle": "이번 턴이 끝난 뒤 보내기(Enter) · Cmd/Ctrl+Enter로 지금 끼어들기"
     },
-    "busyCommand": "이번 턴이 끝난 뒤에 명령을 실행하세요."
+    "busyCommand": "이번 턴이 끝난 뒤에 명령을 실행하세요.",
+    "agent": {
+      "aria": "에이전트",
+      "title": "에이전트와 모델",
+      "locked": "다른 에이전트는 새 대화에서",
+      "manage": "에이전트 관리",
+      "optionsLoading": "{{agent}}의 모델을 불러오는 중…",
+      "optionsNone": "{{agent}}에는 고를 수 있는 모델이 없습니다.",
+      "optionsFailed": "{{agent}}를 시작하지 못했습니다: {{error}}"
+    }
   },
   "localCommand": {
     "newDescription": "이 폴더에서 새 대화 시작",
@@ -321,7 +330,6 @@
     "via": "· {{tool}} 사용",
     "open": "열기",
     "maximize": "최대화",
-    "close": "닫기",
     "collapse": "접기",
     "expand": "펼치기"
   },
@@ -538,7 +546,18 @@
       "none": "결과 없음",
       "find": "찾기…"
     },
-    "recentInput": "외부에서 온 최근 입력:"
+    "recentInput": "외부에서 온 최근 입력:",
+    "continueInApp": {
+      "label": "대화로 계속",
+      "confirmTitle": "대화로 계속할까요?",
+      "confirmBody": "이 {{agent}} 세션은 앱의 대화 화면에서 이어지고, 이 터미널은 닫힙니다. 언제든 터미널로 되돌릴 수 있습니다."
+    },
+    "continueInTerminal": {
+      "label": "터미널에서 계속",
+      "confirmTitle": "터미널에서 계속할까요?",
+      "confirmBody": "이 대화는 터미널에서 그대로 이어지고, 이 창은 그 터미널이 됩니다. 사이드바에 남아 있어 여기로 돌아올 수 있습니다.",
+      "confirmBodyRunning": "진행 중인 답변을 멈춘 뒤, 이 대화를 터미널에서 그대로 이어갑니다. 사이드바에 남아 있어 여기로 돌아올 수 있습니다."
+    }
   },
   "splitInto": {
     "session": "세션"

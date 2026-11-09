@@ -35,6 +35,7 @@ Formerly Open Science. Claude Science などの AI-for-science ワークベン�
 
 ## ニュース
 
+- **2026-10-26** — 🌐 **どのブラウザからでもワークベンチ全体を、そしてエージェント同士の対話。** リモートアクセスで分割表示・Screen・ターミナルが使え、スマホにも対応、名前とパスワードのアカウントでサインイン。指示・スキル・コネクタ・モデルを持つ独自のスペシャリストを定義でき、エージェントは `osd` で他の会話やターミナルを読み、メッセージを送れます。作業中のメッセージ予約、root 不要の Linux インストールも。*(v0.7.0)*
 - **2026-10-04** — 🖱️ **Computer Use、ターミナル、エディタ。** エージェントが ImageJ、Origin、装置制御ソフトなどのデスクトップアプリを操作できるように。ペインにターミナル・ファイル・コードエディタを置け、Claude Code / Codex は再起動後もそのまま再開。検索（⌘F）、任意のセッションやプロジェクトへのジャンプ（⌘J）、DGX Spark 向け Linux ARM64 も。*(v0.6.0)*
 - **2026-08-18** — 🖥️ **画面がなくても動き、ターミナルのコマンドも同梱。** `osd server` はディスプレイのないマシンでワークベンチ一式（ワークスペース、エージェントランタイム、そして*同じ* Web UI）を起動し、`osd session send … --wait` でスクリプトや別のエージェントから動かせます。`osd` はデスクトップのインストーラーに入り、初回起動で PATH に載ります。サーバーではアーカイブだけで、追加インストールは不要です。モデル・鍵・承認はすべてターミナルから設定できます（`osd model`、`osd auth`、`osd approval`）。
 - **2026-08-13** — 🔌 **Agent Client Protocol に双方向で対応。** Codex、Gemini CLI、Claude Code などの ACP エージェントを、そのエージェント自身のモデル・履歴と本アプリの MCP コネクタごと、このアプリの中から動かせます。逆に Zed、JetBrains、Neovim から Open Science を動かすこともできます。 *(v0.4.0)*
@@ -349,8 +350,8 @@ pnpm lint
   author  = {{The Open Science Desktop Contributors}},
   title   = {Open Science Desktop: a local-first, model-agnostic AI research workbench},
   year    = {2026},
-  version = {0.6.0},
-  doi     = {10.5281/zenodo.23138229},
+  version = {0.7.0},
+  doi     = {10.5281/zenodo.23669652},
   url     = {https://github.com/ai4s-research/open-science},
   license = {MIT}
 }

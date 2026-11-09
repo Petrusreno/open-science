@@ -83,8 +83,53 @@ describe("fallbackDefaultModel", () => {
     expect(fallbackDefaultModel([{ id: "empty", name: "Empty", models: [] }], "empty/x")).toBeNull();
   });
 
-  it("leaves a retired default alone rather than switching the user's model for them", () => {
+  it("leaves a retired default alone when it is not known to be free", () => {
     expect(fallbackDefaultModel(retiredProviders, "zen/dead")).toBeNull();
+  });
+
+  it("re-points a retired free default at a free model of the same provider", () => {
+    // Zen stopped serving a free model before the catalog marked it deprecated:
+    // every turn failed, though a free model of the same provider was there.
+    const zen: ProviderInfo[] = [
+      {
+        id: "zen",
+        name: "Zen",
+        models: [
+          { id: "longcat-free", name: "LongCat", available: false, free: true },
+          { id: "paid", name: "Paid", available: true, free: false },
+          { id: "other-retired-free", name: "Gone", available: false, free: true },
+          { id: "deepseek-free", name: "DeepSeek", available: true, free: true },
+        ],
+      },
+      { id: "local", name: "Local", models: [{ id: "llama", name: "Llama", free: true }] },
+    ];
+    expect(fallbackDefaultModel(zen, "zen/longcat-free")).toBe("zen/deepseek-free");
+  });
+
+  it("never moves a retired default onto a paid model or another provider", () => {
+    const onlyPaid: ProviderInfo[] = [
+      {
+        id: "zen",
+        name: "Zen",
+        models: [
+          { id: "longcat-free", name: "LongCat", available: false, free: true },
+          { id: "paid", name: "Paid", available: true, free: false },
+        ],
+      },
+      { id: "local", name: "Local", models: [{ id: "llama", name: "Llama", free: true }] },
+    ];
+    expect(fallbackDefaultModel(onlyPaid, "zen/longcat-free")).toBeNull();
+    const retiredPaid: ProviderInfo[] = [
+      {
+        id: "zen",
+        name: "Zen",
+        models: [
+          { id: "old-paid", name: "Old", available: false, free: false },
+          { id: "free", name: "Free", available: true, free: true },
+        ],
+      },
+    ];
+    expect(fallbackDefaultModel(retiredPaid, "zen/old-paid")).toBeNull();
   });
 
   it("never re-points a dangling default at a retired model", () => {

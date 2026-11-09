@@ -11,6 +11,7 @@ import {
   Pencil,
   Pin,
   Plus,
+  Terminal as TerminalIcon,
   Trash2,
 } from "lucide-react";
 import {
@@ -62,7 +63,8 @@ import { copyReference, sessionReference } from "@/lib/agentReference";
 import { visibleSections, resolveSection } from "@/components/settings/sections";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { useDragDivider } from "@/lib/useDragDivider";
-import { DEFAULT_PROJECT, draftLeafOf, projectOf, selectActiveProjectId, useLayoutStore } from "@/lib/layout";
+import { DEFAULT_PROJECT, draftLeafOf, leaves, projectOf, selectActiveProjectId, useLayoutStore } from "@/lib/layout";
+import { terminalLabel } from "@/lib/jumpEntries";
 import { startPaneDrag, useDragPane } from "@/lib/dragPane";
 import { isGatewayWeb } from "@/lib/webMode";
 import { pathKey, samePath } from "@/lib/workspacePath";
@@ -98,6 +100,15 @@ interface DraftRow {
   key: string;
   groupId: string | null;
   projectId: string | null;
+}
+
+/** An open terminal, listed in the project its Screen belongs to (null for
+ *  none), so it can be found and returned to like a conversation. */
+interface TerminalRow {
+  leafId: string;
+  groupId: string;
+  projectId: string | null;
+  label: string;
 }
 
 /** Dragging the divider below this pointer x collapses the sidebar; dragging
@@ -422,6 +433,27 @@ export function Sidebar({ project }: { project: Project }) {
   }
   const draftsIn = (projectId: string | null) => draftRows.filter((d) => d.projectId === projectId);
 
+  // Open terminals: a row each, under their Screen's project. A terminal is
+  // not a runtime session, so without this the only way back to one was its
+  // Screen tab.
+  const groups = useLayoutStore((s) => s.groups);
+  const terminalRows: TerminalRow[] = [];
+  for (const g of groups) {
+    if (!g.tree) continue;
+    const owner = projectOf(g);
+    for (const leaf of leaves(g.tree)) {
+      if (leaf.content?.kind !== "terminal") continue;
+      terminalRows.push({
+        leafId: leaf.id,
+        groupId: g.id,
+        projectId: sessionsByProject.has(owner) ? owner : null,
+        label: terminalLabel(leaf.content, t("session:terminal.title")),
+      });
+    }
+  }
+  const terminalsIn = (projectId: string | null) => terminalRows.filter((r) => r.projectId === projectId);
+  const liveIn = (projectId: string | null) => draftsIn(projectId).length + terminalsIn(projectId).length;
+
   // The sidebar shows every pinned project plus the few most-recent others; the
   // full list (search, delete, …) lives on the Projects page. A project with a
   // new conversation in it is shown too, or the conversation would have no row.
@@ -433,7 +465,7 @@ export function Sidebar({ project }: { project: Project }) {
   ];
   const visibleProjects = [
     ...shownProjects,
-    ...byRecency.filter((p) => !shownProjects.includes(p) && draftsIn(p.id).length > 0),
+    ...byRecency.filter((p) => !shownProjects.includes(p) && liveIn(p.id) > 0),
   ];
   const hiddenProjectCount = projects.length - visibleProjects.length;
   const exampleRows: Row[] = project.sessions
@@ -555,6 +587,31 @@ export function Sidebar({ project }: { project: Project }) {
             <span className={css.draftDot} aria-hidden="true" />
           </span>
           <span className={css.title}>{t("history.draft")}</span>
+        </button>
+      </div>
+    );
+  };
+
+  const terminalRow = (r: TerminalRow) => {
+    const g = groups.find((x) => x.id === r.groupId);
+    const selected = r.groupId === activeGroupId && g?.focusedLeafId === r.leafId && location.pathname === "/live";
+    return (
+      <div key={r.leafId} className={css.item}>
+        <button
+          type="button"
+          onClick={() => {
+            const layout = useLayoutStore.getState();
+            layout.setActiveGroup(r.groupId);
+            layout.focusLeaf(r.leafId);
+            navigate("/live");
+          }}
+          aria-current={selected ? "page" : undefined}
+          className={cn(css.sessionRow, selected && css.selected)}
+        >
+          <span className={css.slot}>
+            <TerminalIcon size={13} strokeWidth={1.5} className="text-muted" aria-hidden />
+          </span>
+          <span className={css.title}>{r.label}</span>
         </button>
       </div>
     );
@@ -1173,10 +1230,11 @@ export function Sidebar({ project }: { project: Project }) {
                   )}
                 >
                   <div className="overflow-hidden">
-                    {rows.length === 0 && drafts.length === 0 && (
+                    {rows.length === 0 && liveIn(p.id) === 0 && (
                       <div className={css.empty}>{t("projects.noSessions")}</div>
                     )}
                     {drafts.map(draftRow)}
+                    {terminalsIn(p.id).map(terminalRow)}
                     {rows.slice(0, ROW_LIMIT).map(sessionRow)}
                     {rows.length > ROW_LIMIT && (
                       <MoreRow
@@ -1218,10 +1276,11 @@ export function Sidebar({ project }: { project: Project }) {
               </button>
             </div>
           </div>
-          {looseRows.length === 0 && exampleRows.length === 0 && draftsIn(null).length === 0 && (
+          {looseRows.length === 0 && exampleRows.length === 0 && liveIn(null) === 0 && (
             <div className={css.empty}>{t("history.empty")}</div>
           )}
           {draftsIn(null).map(draftRow)}
+          {terminalsIn(null).map(terminalRow)}
           {looseRows.slice(0, ROW_LIMIT).map(sessionRow)}
           {looseRows.length > ROW_LIMIT && (
             <MoreRow

@@ -74,9 +74,9 @@
   },
   "acp": {
     "title": "Agent",
-    "hint": "Welchen Agenten diese App steuert: die mitgelieferte OpenCode-Laufzeit oder einen beliebigen Agenten, der das Agent Client Protocol (ACP) über stdio spricht.",
+    "hint": "Die Agenten, auf denen eine Unterhaltung laufen kann, und der Standard für neue Unterhaltungen. Pro Unterhaltung wählst du im Eingabefeld.",
     "bundled": "OpenCode (mitgeliefert)",
-    "bundledHint": "Die Standardlaufzeit – Anbieter, Skills, Planmodus und gespeicherte Unterhaltungen.",
+    "bundledHint": "Die mitgelieferte Laufzeit, mit Anbietern, Skills, Planmodus und gespeicherten Unterhaltungen.",
     "add": "Agenten hinzufügen",
     "edit": "Bearbeiten",
     "remove": "Entfernen",
@@ -86,9 +86,7 @@
     "commandPlaceholder": "Befehl (npx, gemini, …)",
     "argsLabel": "Argumente",
     "argsPlaceholder": "Argumente (-y @agentclientprotocol/codex-acp)",
-    "limits": "Ein ACP-Agent läuft als Befehl auf diesem Rechner, im aktuellen Arbeitsbereich-Ordner. Er verwaltet Modell, Skills und Verlauf selbst – Modellauswahl, Planmodus und gespeicherte Unterhaltungen bleiben bei OpenCode, und auf einem ACP-Agenten gestartete Sitzungen erscheinen nur, solange die App läuft.",
-    "running": "Mit dem ACP-Agenten verbunden.",
-    "starting": "ACP-Agent wird gestartet…"
+    "limits": "Ein ACP-Agent läuft als Befehl auf diesem Computer, im Ordner der Unterhaltung, neben OpenCode. Er verwaltet Modell, Befehle und Verlauf selbst, daher gelten Modellauswahl und Planmodus nur für OpenCode-Unterhaltungen."
   },
   "updates": {
     "title": "App-Updates",

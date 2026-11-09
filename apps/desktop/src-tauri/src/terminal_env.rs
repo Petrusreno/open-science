@@ -1,10 +1,10 @@
 // What the user exported by hand in a terminal, kept across a relaunch.
 //
-// Quitting the app kills every shell, and with it whatever `export` typed into
-// it — a proxy, an API key, an activated environment — so the restored pane
-// (and the Claude Code / Codex it resumes) comes back without them. Orca avoids
-// this by keeping its shells alive in a daemon; here the shell writes down what
-// it has instead: a small hook in zsh and bash records, at every prompt, the
+// Shells live in the terminal host and outlive the app (see osd-core termd.rs),
+// but not a reboot or a host that exits. Then whatever `export` was typed into
+// one — a proxy, an API key, an activated environment — would be lost, and the
+// restored pane (and the Claude Code / Codex it resumes) would come back
+// without it. So the shell writes down what it has: a small hook in zsh and bash records, at every prompt, the
 // exported variables that differ from what the startup files produced, as a
 // script the next shell of the same pane sources after those startup files.
 //
@@ -125,11 +125,13 @@ pub fn forget(app: &AppHandle, id: &str) {
 /// terminal was never opened, or while the app was going down. Leaf ids are
 /// reused once the highest one is gone, so a leftover would otherwise be
 /// sourced into an unrelated new pane.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn terminal_env_prune(app: AppHandle, open: Vec<String>) {
     if let Some(data) = data_dir(&app) {
         prune_in(&data, &open);
     }
+    // The same list ends the shells of those panes, still running in the host.
+    crate::terminal::prune(&app, &open);
 }
 
 fn prune_in(data: &Path, open: &[String]) {
