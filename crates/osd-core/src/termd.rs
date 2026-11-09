@@ -211,6 +211,10 @@ fn state_path(dir: &Path) -> PathBuf {
     dir.join(format!("termd-v{PROTOCOL}.json"))
 }
 
+fn lock_path(dir: &Path) -> PathBuf {
+    dir.join(format!("termd-v{PROTOCOL}.lock"))
+}
+
 fn read_state(dir: &Path) -> Result<State, String> {
     let text = std::fs::read_to_string(state_path(dir)).map_err(|e| e.to_string())?;
     serde_json::from_str(&text).map_err(|e| e.to_string())
@@ -273,6 +277,21 @@ fn run(dir: &Path, idle_exit: Option<Duration>) -> Result<(), String> {
         return Ok(()); // One host per data folder.
     }
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    // The connect check above is only a shortcut: two hosts starting together
+    // both pass it. The OS file lock, held for this process's life (and freed
+    // by the OS if it dies), is what makes the choice atomic. The loser leaves
+    // the winner to finish starting; callers dial until it answers.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path(dir))
+        .map_err(|e| e.to_string())?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
+        Err(std::fs::TryLockError::Error(e)) => return Err(e.to_string()),
+    }
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let token = random_token()?;
@@ -721,6 +740,40 @@ mod tests {
         out.push("$ ");
         assert_eq!(out.readers.len(), 1);
         assert_eq!(late.try_iter().collect::<Vec<_>>(), ["$ "]);
+    }
+
+    #[test]
+    fn hosts_starting_together_leave_exactly_one_running() {
+        const STARTERS: usize = 8;
+        let dir = std::env::temp_dir().join(format!("osd-termd-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(STARTERS));
+        let (done, returned) = channel();
+        for _ in 0..STARTERS {
+            let (dir, barrier, done) = (dir.clone(), barrier.clone(), done.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                let result = run(&dir, None); // the winner never returns
+                let _ = done.send(result);
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut losers = 0;
+        while losers < STARTERS - 1 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match returned.recv_timeout(left) {
+                Ok(result) => {
+                    assert!(result.is_ok(), "{result:?}");
+                    losers += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        // Anything beyond the winner returning late would be a second host.
+        assert!(returned.recv_timeout(Duration::from_millis(500)).is_err(), "the winner never returns");
+        assert_eq!(losers, STARTERS - 1, "every starter but one backs off");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
