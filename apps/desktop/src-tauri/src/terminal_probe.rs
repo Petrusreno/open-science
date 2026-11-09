@@ -25,7 +25,10 @@
 //     session directory written since the process started
 //     (`<agent dir>/sessions/--<cwd with / as ->--/<time>_<id>.jsonl`, first
 //     line `{"type":"session","id":…}`). None before its first message: pi
-//     writes nothing until then, and there is nothing to resume.
+//     writes nothing until then, and there is nothing to resume. Nothing ties
+//     a pi process to its file, so the answer is only given when it cannot be
+//     another's: exactly one file written since the process started, and no
+//     other pi process in the same folder. Otherwise nothing is reported.
 //
 // Windows has neither a foreground process group nor a cheap cwd query, so
 // nothing is reported there and terminals restore as before.
@@ -183,26 +186,41 @@ fn pi_agent_dir() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".pi").join("agent"))
 }
 
-/// The session file in `dir` written last at or after `since`, if any.
-fn newest_pi_session(dir: &Path, since: std::time::SystemTime) -> Option<PathBuf> {
-    std::fs::read_dir(dir)
+/// The session file in `dir` written at or after `since`, only when it is the
+/// only one: with two, which belongs to the process is a guess.
+fn only_pi_session(dir: &Path, since: std::time::SystemTime) -> Option<PathBuf> {
+    let mut written = std::fs::read_dir(dir)
         .ok()?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-        .filter(|(modified, _)| *modified >= since)
-        .max_by_key(|(modified, _)| *modified)
-        .map(|(_, p)| p)
+        .filter(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).is_some_and(|m| m >= since));
+    let only = written.next()?;
+    written.next().is_none().then_some(only)
+}
+
+/// Whether another pi process runs in `cwd`. Its parent or child (a launcher
+/// shim and the node process behind it) is the same pi, not another one. When
+/// the processes cannot be listed, assume there is one.
+fn has_pi_peer(pid: u32, cwd: &str) -> bool {
+    let Some(all) = platform::all_pids() else { return true };
+    let mine = platform::children(pid);
+    all.into_iter()
+        .filter(|p| *p != pid && !mine.contains(p) && !platform::children(*p).contains(&pid))
+        .any(|p| is_pi_args(&platform::process_args(p)) && platform::process_cwd(p).as_deref() == Some(cwd))
 }
 
 fn pi_session_of(pid: u32) -> Option<String> {
     if !is_pi_args(&platform::process_args(pid)) {
         return None;
     }
-    let dir = pi_session_dir(&pi_agent_dir()?, &platform::process_cwd(pid)?);
+    let cwd = platform::process_cwd(pid)?;
+    if has_pi_peer(pid, &cwd) {
+        return None;
+    }
+    let dir = pi_session_dir(&pi_agent_dir()?, &cwd);
     let started = platform::process_start(pid)?;
-    parse_pi_session_head(&read_first_line(&newest_pi_session(&dir, started)?)?)
+    parse_pi_session_head(&read_first_line(&only_pi_session(&dir, started)?)?)
 }
 
 fn agent_of(pid: u32) -> Option<AgentProbe> {
@@ -266,6 +284,17 @@ mod platform {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Every process id, from `/proc`.
+    pub fn all_pids() -> Option<Vec<u32>> {
+        Some(
+            std::fs::read_dir("/proc")
+                .ok()?
+                .flatten()
+                .filter_map(|e| e.file_name().to_str()?.parse().ok())
+                .collect(),
+        )
     }
 
     pub fn process_args(pid: u32) -> Vec<String> {
@@ -333,6 +362,17 @@ mod platform {
             )
         };
         (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    }
+
+    /// Every process id, from `ps` (macOS has no `/proc`).
+    pub fn all_pids() -> Option<Vec<u32>> {
+        let out = std::process::Command::new("ps").args(["-A", "-o", "pid="]).output().ok()?;
+        out.status.success().then(|| {
+            String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .filter_map(|p| p.parse().ok())
+                .collect()
+        })
     }
 
     pub fn children(pid: u32) -> Vec<u32> {
@@ -456,6 +496,10 @@ mod platform {
         Vec::new()
     }
 
+    pub fn all_pids() -> Option<Vec<u32>> {
+        None
+    }
+
     pub fn process_args(_pid: u32) -> Vec<String> {
         Vec::new()
     }
@@ -508,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn takes_the_newest_pi_session_written_since_the_process_started() {
+    fn takes_the_one_pi_session_written_since_the_process_started() {
         let dir = std::env::temp_dir().join(format!("osd-pi-probe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let old = dir.join("2026-01-01T00-00-00-000Z_old.jsonl");
@@ -516,11 +560,72 @@ mod tests {
         let started = std::time::SystemTime::now() + std::time::Duration::from_millis(5);
         std::thread::sleep(std::time::Duration::from_millis(20));
         // Before the process wrote anything, the older session must not answer.
-        assert_eq!(newest_pi_session(&dir, started), None);
+        assert_eq!(only_pi_session(&dir, started), None);
         let new = dir.join("2026-01-02T00-00-00-000Z_new.jsonl");
         std::fs::write(&new, "{}\n").unwrap();
-        assert_eq!(newest_pi_session(&dir, started), Some(new));
+        assert_eq!(only_pi_session(&dir, started), Some(new));
+        // Two written since: which is this process's is a guess, so neither.
+        std::fs::write(dir.join("2026-01-03T00-00-00-000Z_other.jsonl"), "{}\n").unwrap();
+        assert_eq!(only_pi_session(&dir, started), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A process whose argv[0] is `pi`, running in `cwd` (what `is_pi_args` knows pi by).
+    #[cfg(target_os = "linux")]
+    fn fake_pi(cwd: &Path) -> std::process::Child {
+        let child = std::process::Command::new("bash")
+            .args(["-c", "exec -a pi sleep 60"])
+            .current_dir(cwd)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !platform::process_args(child.id()).first().is_some_and(|a| a == "pi") {
+            assert!(std::time::Instant::now() < deadline, "fake pi never exec'd");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn two_pi_processes_in_one_folder_are_never_given_each_others_session() {
+        let root = std::env::temp_dir().join(format!("osd-pi-peers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cwd = root.join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.canonicalize().unwrap();
+        let agent = root.join("agent");
+        std::env::set_var("PI_CODING_AGENT_DIR", &agent);
+        let sessions = pi_session_dir(&agent, &cwd.to_string_lossy());
+        std::fs::create_dir_all(&sessions).unwrap();
+        let write_session = |id: &str| {
+            let line = format!(r#"{{"type":"session","id":"{id}"}}"#);
+            std::fs::write(sessions.join(format!("2026-01-01T00-00-00-000Z_{id}.jsonl")), line + "\n").unwrap();
+        };
+
+        // Alone, a pi process is known by the one session written since it started.
+        let mut first = fake_pi(&cwd);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        write_session("session-of-first");
+        assert_eq!(pi_session_of(first.id()).as_deref(), Some("session-of-first"));
+
+        // A second one starts in the same folder and writes nothing yet. Nothing
+        // ties the first's file to either pid, so neither is offered a transfer.
+        let mut second = fake_pi(&cwd);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        write_session("session-of-first-again");
+        assert_eq!(pi_session_of(second.id()), None, "the second must not take the first's session");
+        assert_eq!(pi_session_of(first.id()), None, "ambiguous: not offered");
+
+        // Once the other is gone, the survivor is unambiguous again.
+        let _ = second.kill();
+        let _ = second.wait();
+        let _ = std::fs::remove_file(sessions.join("2026-01-01T00-00-00-000Z_session-of-first-again.jsonl"));
+        assert_eq!(pi_session_of(first.id()).as_deref(), Some("session-of-first"));
+
+        let _ = first.kill();
+        let _ = first.wait();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
