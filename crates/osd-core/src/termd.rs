@@ -22,7 +22,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -36,6 +36,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How much output a reattaching reader is replayed: a few screens of a busy
 /// TUI. Whole chunks are dropped from the front, never half of one.
 pub const RECENT_BYTES: usize = 256 * 1024;
+
+/// Live chunks a reader may have waiting beyond its replay. A reader further
+/// behind than this is dropped, so a stalled client costs bounded memory.
+const READER_BACKLOG: usize = 1024;
 
 /// A host with no terminals and no clients exits after this long.
 const IDLE_EXIT: Duration = Duration::from_secs(10);
@@ -52,12 +56,17 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct Output {
     recent: VecDeque<String>,
     recent_len: usize,
-    readers: Vec<Sender<String>>,
+    readers: Vec<SyncSender<String>>,
 }
 
 impl Output {
     pub fn push(&mut self, chunk: &str) {
-        self.readers.retain(|tx| tx.send(chunk.to_string()).is_ok());
+        // A full queue is a reader that stopped reading: drop it (its channel
+        // closes after what it already holds) instead of buffering without limit.
+        self.readers.retain(|tx| match tx.try_send(chunk.to_string()) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
+        });
         self.recent_len += chunk.len();
         self.recent.push_back(chunk.to_string());
         while self.recent_len > RECENT_BYTES && self.recent.len() > 1 {
@@ -69,7 +78,7 @@ impl Output {
 
     /// Recent output, then everything after it. Closes when the shell exits.
     pub fn subscribe(&mut self) -> Receiver<String> {
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(self.recent.len() + READER_BACKLOG);
         for chunk in &self.recent {
             let _ = tx.send(chunk.clone());
         }
@@ -726,6 +735,7 @@ fn reap(mut child: std::process::Child) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::channel;
 
     #[test]
     fn a_reattaching_reader_gets_recent_output_then_live_output() {
@@ -740,6 +750,20 @@ mod tests {
         out.push("$ ");
         assert_eq!(out.readers.len(), 1);
         assert_eq!(late.try_iter().collect::<Vec<_>>(), ["$ "]);
+    }
+
+    #[test]
+    fn a_reader_that_stops_reading_is_dropped_with_bounded_memory() {
+        let mut out = Output::default();
+        let stalled = out.subscribe();
+        let live = out.subscribe();
+        for i in 0..READER_BACKLOG + 10 {
+            out.push("x");
+            // `live` keeps up; `stalled` never reads.
+            assert_eq!(live.try_recv().as_deref(), Ok("x"), "chunk {i}");
+        }
+        assert_eq!(out.readers.len(), 1, "only the reader that kept up stays");
+        assert_eq!(stalled.try_iter().count(), READER_BACKLOG, "queue never grew past its bound");
     }
 
     #[test]
