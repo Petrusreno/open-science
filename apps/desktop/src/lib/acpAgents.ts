@@ -215,6 +215,9 @@ export function saveAcpAgentOptions(options: Record<string, AcpConfigOption[]>):
 export interface AcpSessionRecord {
   agentId: string;
   title: string;
+  /** The user renamed it here. ACP has no rename, so the agent keeps its own
+   *  title; when it is read again, this one wins. */
+  titleSet?: true;
   directory?: string;
   updated?: number;
 }
@@ -230,11 +233,12 @@ export function loadAcpSessions(): Record<string, AcpSessionRecord> {
     const out: Record<string, AcpSessionRecord> = {};
     for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
       if (!value || typeof value !== "object") continue;
-      const { agentId, title, directory, updated } = value as Record<string, unknown>;
+      const { agentId, title, titleSet, directory, updated } = value as Record<string, unknown>;
       if (typeof agentId !== "string" || !agentId) continue;
       out[id] = {
         agentId,
         title: typeof title === "string" && title ? title : "Session",
+        ...(titleSet === true ? { titleSet } : {}),
         ...(typeof directory === "string" && directory ? { directory } : {}),
         ...(typeof updated === "number" && Number.isFinite(updated) ? { updated } : {}),
       };

@@ -2858,9 +2858,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // The shell may have moved since the agent started, so ask the agent.
     const rt = await startAcpRuntime(agentId, directory);
     const listed = (await rt.listSessions().catch(() => [])).find((m) => m.id === sessionId);
+    const known = get().acpSessions[sessionId];
     const record: AcpSessionRecord = {
       agentId,
-      title: listed?.title || get().acpSessions[sessionId]?.title || "Session",
+      title: (known?.titleSet ? known.title : listed?.title) || known?.title || "Session",
+      ...(known?.titleSet ? { titleSet: true as const } : {}),
       directory: listed?.directory || directory,
       updated: listed?.updated ?? Date.now(),
     };
@@ -4382,7 +4384,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       for (const m of metas) {
         const r = prev[m.id];
         if (!r) continue;
-        const title = m.title && m.title !== "Session" && m.title !== "New session" ? m.title : r.title;
+        // A title the user set here outranks the agent's own.
+        const title = r.titleSet
+          ? r.title
+          : m.title && m.title !== "Session" && m.title !== "New session"
+            ? m.title
+            : r.title;
         const updated = m.updated ?? r.updated;
         if (title === r.title && updated === r.updated) continue;
         next[m.id] = { ...r, title, ...(updated !== undefined ? { updated } : {}) };
@@ -5120,7 +5127,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     const record = get().acpSessions[id];
     if (record) {
       // ACP has no rename; the title is the app's own.
-      const acpSessions = { ...get().acpSessions, [id]: { ...record, title: trimmed } };
+      const acpSessions = { ...get().acpSessions, [id]: { ...record, title: trimmed, titleSet: true as const } };
       set({ acpSessions });
       saveAcpSessions(acpSessions);
     } else {

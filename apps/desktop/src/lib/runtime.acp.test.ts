@@ -389,6 +389,24 @@ describe("ACP conversations beside OpenCode", () => {
     expect((load?.params as { sessionId: string; cwd: string }).cwd).toBe("/ws/older-project");
   });
 
+  it("keeps a title the user set when the agent's own title is read again", async () => {
+    const { useRuntimeStore } = await freshStore(null);
+    await useRuntimeStore.getState().adoptAcpSession("acp-1", "acp-past-1", "/ws/project");
+    expect(await useRuntimeStore.getState().renameSession("acp-past-1", "My own name")).toBe(true);
+    // The agent still calls it "Yesterday's run"; its titles are read at most
+    // every 30 s, so move the clock past that.
+    const later = Date.now() + 60_000;
+    const now = vi.spyOn(Date, "now").mockReturnValue(later);
+    try {
+      await useRuntimeStore.getState().refreshSessions();
+    } finally {
+      now.mockRestore();
+    }
+    const title = (rows: { id: string; title: string }[]) => rows.find((m) => m.id === "acp-past-1")?.title;
+    expect(title(useRuntimeStore.getState().sessions)).toBe("My own name");
+    expect(JSON.parse(window.localStorage.getItem("ai4s.acp.sessions.v1")!)["acp-past-1"].title).toBe("My own name");
+  });
+
   it("keeps one agent process across workspace moves", async () => {
     const { useRuntimeStore, draftKeyFor } = await freshStore("acp-1");
     await useRuntimeStore.getState().sendPrompt("Summarize the data", undefined, draftKeyFor("leaf-1"));
