@@ -27,6 +27,7 @@ const AGENTS_KEY = "ai4s.acp.agents.v1";
 /** Claude Code's ACP adapter. It was published as `@zed-industries/claude-code-acp`
  *  until 0.16.2; that name is deprecated and gets no updates. */
 export const CLAUDE_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp";
+/** Group 1 is the version the user pinned, if any: it is kept when the name moves. */
 const RETIRED_CLAUDE_ACP = /^@zed-industries\/claude-code-acp(@.*)?$/;
 const ACTIVE_KEY = "ai4s.acp.active.v1";
 
@@ -70,7 +71,7 @@ function sanitize(raw: unknown): AcpAgentConfig[] {
       args: Array.isArray(args)
         ? args
             .filter((a): a is string => typeof a === "string")
-            .map((a) => (RETIRED_CLAUDE_ACP.test(a) ? CLAUDE_ACP_PACKAGE : a))
+            .map((a) => a.replace(RETIRED_CLAUDE_ACP, (_, pinned: string | undefined) => CLAUDE_ACP_PACKAGE + (pinned ?? "")))
         : [],
     });
   }

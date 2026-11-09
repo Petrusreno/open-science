@@ -65,7 +65,8 @@ describe("configured ACP agents", () => {
     );
     expect(loadAcpAgents().map((a) => a.args)).toEqual([
       ["-y", "@agentclientprotocol/claude-agent-acp"],
-      ["-y", "@agentclientprotocol/claude-agent-acp"],
+      // Only the package name moves; a version the user pinned stays theirs.
+      ["-y", "@agentclientprotocol/claude-agent-acp@0.16.2"],
     ]);
   });
 
