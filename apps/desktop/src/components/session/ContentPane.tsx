@@ -87,7 +87,7 @@ export function ContentPane({
       // Stop the terminal's process first: while it runs, the app's agent and
       // the CLI would both write this session's history. If it cannot be
       // stopped, nothing is adopted and the terminal stays as it was.
-      await terminalTransport.close(leafId);
+      await terminalTransport.close(leafId, true);
       await adoptAcpSession(entry.id, agent.sessionId, fallback);
       replacePane(leafId, { sessionId: agent.sessionId });
     } catch (err) {

@@ -19,16 +19,10 @@
 //     (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, whose first line is
 //     `session_meta` with the id), so the file it holds names the session.
 //     The newest one wins: the desktop Codex app holds several at once.
-//   - pi runs under node (its process name is `node`), so it is known by its
-//     arguments. It neither records its pid nor keeps its session open (each
-//     entry is an append), so its session is the newest file in its folder's
-//     session directory written since the process started
-//     (`<agent dir>/sessions/--<cwd with / as ->--/<time>_<id>.jsonl`, first
-//     line `{"type":"session","id":…}`). None before its first message: pi
-//     writes nothing until then, and there is nothing to resume. Nothing ties
-//     a pi process to its file, so the answer is only given when it cannot be
-//     another's: exactly one file written since the process started, and no
-//     other pi process in the same folder. Otherwise nothing is reported.
+//   - pi runs under node. A recent file in its cwd is not identity proof:
+//     a peer may have written it and exited. Only report a session file the
+//     live process currently holds open, as for Codex; normally pi closes
+//     files after each append, so an unproven association is not offered.
 //
 // Windows has neither a foreground process group nor a cheap cwd query, so
 // nothing is reported there and terminals restore as before.
@@ -187,13 +181,16 @@ fn pi_agent_dir() -> Option<PathBuf> {
 }
 
 /// The session file in `dir` written at or after `since`, only when it is the
-/// only one: with two, which belongs to the process is a guess.
-fn only_pi_session(dir: &Path, since: std::time::SystemTime) -> Option<PathBuf> {
+/// only one held open by this process. Recency alone is not identity proof.
+fn only_pi_session(dir: &Path, since: std::time::SystemTime, open_files: &[PathBuf]) -> Option<PathBuf> {
     let mut written = std::fs::read_dir(dir)
         .ok()?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .filter(|p| p.canonicalize().ok().is_some_and(|candidate| {
+            open_files.iter().any(|held| held.canonicalize().ok().as_ref() == Some(&candidate))
+        }))
         .filter(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).is_some_and(|m| m >= since));
     let only = written.next()?;
     written.next().is_none().then_some(only)
@@ -220,7 +217,7 @@ fn pi_session_of(pid: u32) -> Option<String> {
     }
     let dir = pi_session_dir(&pi_agent_dir()?, &cwd);
     let started = platform::process_start(pid)?;
-    parse_pi_session_head(&read_first_line(&only_pi_session(&dir, started)?)?)
+    parse_pi_session_head(&read_first_line(&only_pi_session(&dir, started, &platform::open_files(pid))?)?)
 }
 
 fn agent_of(pid: u32) -> Option<AgentProbe> {
@@ -552,6 +549,16 @@ mod tests {
     }
 
     #[test]
+    fn a_single_file_cannot_establish_pi_identity() {
+        let dir = std::env::temp_dir().join(format!("osd-pi-unproven-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("other-process.jsonl"), "{}\n").unwrap();
+        let result = only_pi_session(&dir, std::time::UNIX_EPOCH, &[]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(result, None, "a former peer can leave the only recent file");
+    }
+
+    #[test]
     fn takes_the_one_pi_session_written_since_the_process_started() {
         let dir = std::env::temp_dir().join(format!("osd-pi-probe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -560,13 +567,14 @@ mod tests {
         let started = std::time::SystemTime::now() + std::time::Duration::from_millis(5);
         std::thread::sleep(std::time::Duration::from_millis(20));
         // Before the process wrote anything, the older session must not answer.
-        assert_eq!(only_pi_session(&dir, started), None);
+        assert_eq!(only_pi_session(&dir, started, &[]), None);
         let new = dir.join("2026-01-02T00-00-00-000Z_new.jsonl");
         std::fs::write(&new, "{}\n").unwrap();
-        assert_eq!(only_pi_session(&dir, started), Some(new));
+        assert_eq!(only_pi_session(&dir, started, &[new.clone()]), Some(new.clone()));
         // Two written since: which is this process's is a guess, so neither.
-        std::fs::write(dir.join("2026-01-03T00-00-00-000Z_other.jsonl"), "{}\n").unwrap();
-        assert_eq!(only_pi_session(&dir, started), None);
+        let other = dir.join("2026-01-03T00-00-00-000Z_other.jsonl");
+        std::fs::write(&other, "{}\n").unwrap();
+        assert_eq!(only_pi_session(&dir, started, &[new, other]), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -603,11 +611,11 @@ mod tests {
             std::fs::write(sessions.join(format!("2026-01-01T00-00-00-000Z_{id}.jsonl")), line + "\n").unwrap();
         };
 
-        // Alone, a pi process is known by the one session written since it started.
+        // Even alone, a pi process is not linked to a file it does not hold open.
         let mut first = fake_pi(&cwd);
         std::thread::sleep(std::time::Duration::from_millis(30));
         write_session("session-of-first");
-        assert_eq!(pi_session_of(first.id()).as_deref(), Some("session-of-first"));
+        assert_eq!(pi_session_of(first.id()), None);
 
         // A second one starts in the same folder and writes nothing yet. Nothing
         // ties the first's file to either pid, so neither is offered a transfer.
@@ -617,11 +625,11 @@ mod tests {
         assert_eq!(pi_session_of(second.id()), None, "the second must not take the first's session");
         assert_eq!(pi_session_of(first.id()), None, "ambiguous: not offered");
 
-        // Once the other is gone, the survivor is unambiguous again.
+        // A departed peer still does not establish identity for the survivor.
         let _ = second.kill();
         let _ = second.wait();
         let _ = std::fs::remove_file(sessions.join("2026-01-01T00-00-00-000Z_session-of-first-again.jsonl"));
-        assert_eq!(pi_session_of(first.id()).as_deref(), Some("session-of-first"));
+        assert_eq!(pi_session_of(first.id()), None);
 
         let _ = first.kill();
         let _ = first.wait();

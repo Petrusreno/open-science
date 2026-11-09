@@ -18,14 +18,14 @@ vi.mock("@/lib/tauri", async (importOriginal) => ({
 }));
 
 const order: string[] = [];
-const closePty = vi.fn(async (_id: string) => {
+const closePty = vi.fn(async (_id: string, _requireStopped?: boolean) => {
   order.push("close terminal");
 });
 vi.mock("@/lib/terminalTransport", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/terminalTransport")>();
   return {
     ...actual,
-    terminalTransport: { ...actual.terminalTransport, close: (id: string) => closePty(id) },
+    terminalTransport: { ...actual.terminalTransport, close: (id: string, requireStopped?: boolean) => closePty(id, requireStopped) },
   };
 });
 
@@ -90,7 +90,7 @@ describe("continuing a terminal agent as a conversation", () => {
     await waitFor(() => expect(adoptAcpSession).toHaveBeenCalled());
     // Two processes on one history would fork it: the origin stops first.
     expect(order).toEqual(["close terminal", "adopt"]);
-    expect(closePty).toHaveBeenCalledWith(leafId);
+    expect(closePty).toHaveBeenCalledWith(leafId, true);
   });
 
   it("does not adopt while the terminal could not be stopped", async () => {

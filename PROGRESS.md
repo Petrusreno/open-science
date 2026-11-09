@@ -1,5 +1,7 @@
 # Progress
 
+2026-11-08 22:44 · X7 requires confirmed terminal closure before adoption and open-file identity for pi sessions; Vitest 1925 passed (7 skipped), typecheck passed, desktop Rust 107 passed (4 ignored) with the pre-existing raw-command guard failure recorded separately.
+
 2026-11-09 00:00 · PR #1 review: six findings fixed, one commit each, each reproduced by a test that failed first; osd-core 339 and vitest 1922 green, terminal_probe tested in a standalone crate on Linux only (docs/auditoria/fix-w9-pr1.md).
 
 2026-10-27 09:40 · Every push to master is now tested: core CI (3 platforms, crates only) and a new desktop CI (typecheck, lint, vitest), both green on 2798c21. vitest had been exiting 1 despite all tests passing, because layout.ts fire-and-forget imports finished after teardown; layout.test now mocks them. Notarization finalize no longer runs every 30 min: the tag build starts it, it restarts itself every 10 min while Apple is processing (max 18), and a daily cron is the backstop. Empty-queue dispatch checked: finalize ran, retry skipped. Not yet tried on a real tag.
